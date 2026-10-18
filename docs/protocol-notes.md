@@ -165,8 +165,10 @@ DownloadClSetting → Scv → Firewall → (CONNECTED / Office Mode IP set).
   (SIGTERM + `disconnect` por stdin, restaura DNS), passcode por stdin, sesión guarda DNS/dominios.
 - M5 GUI + tray ✅: `cpvpn-gui` (egui, columna centrada, tema oscuro, ícono shield propio),
   tray StatusNotifierItem (ksni, pixmap por estado, detección de host de bandeja vía DBus),
-  selector de cliente (CheckPoint activo; OpenVPN/F5 "soon"), lanza el motor por **pkexec** con
-  passcode por stdin, hide-to-tray al cerrar. Verificado: arranca en Sway/Wayland, tray activo.
+  selector de cliente (CheckPoint activo; OpenVPN/F5 "soon"), passcode por stdin. Escalada de privilegios
+  **autodetectada**: `sudo -n` si hay sudo sin password (WM mínimos sin agente polkit, p.ej. Sway), si no `pkexec`
+  (override `CPVPN_PRIV`). Cerrar la ventana = desconectar limpio + salir (antes hide-to-tray, confundía).
+  Verificado: conecta end-to-end por la GUI en Sway/Wayland (handshake + tráfico real).
 - Portabilidad ✅: OpenSSL **vendored/estático** (feature `vendored`; motor solo depende de glibc),
   `install.sh` (+`.desktop`, iconos hicolor, regla polkit opcional), README. Opción musl documentada.
 - Rekey de ESP ✅ (validado live): hilo de control IKE renegocia la SA con un Quick Mode nuevo bajo
@@ -175,7 +177,13 @@ DownloadClSetting → Scv → Firewall → (CONNECTED / Office Mode IP set).
   retransmite QM1 si no llega QM2. Test: ping 3/3 antes y después de cada rekey, `dec_err=0`, y fallo
   de rekey degrada con gracia (mantiene SA vieja). **DPD: NO hace falta** — la impl de referencia (cliente
   CP funcional) no lo implementa, y el gateway no manda R-U-THERE (sí un `exchange 6` Transaction, ignorado).
-- Pendiente: **test live de la GUI end-to-end** (connect por pkexec); IKE SA rekey (>8h, raro);
+- **Keepalive de tunnel-test ✅ (CRÍTICO para estabilidad)**: Check Point tira el túnel a los ~15-20 min
+  si no ve su keepalive propietario, aunque fluya ESP. Es un paquete UDP de 12 bytes
+  (`counter(4 BE) | 0x0003 | 0x0002 | 0x000c`) al gateway en **puerto 18234**, **por dentro del túnel**
+  (IP+UDP cifrado en ESP), cada 20s (de snx-rs `ipsec/keepalive.rs`; `trac.exe` tiene el token `keepalive`).
+  El NAT-T keepalive (0xFF en 4500) NO alcanza — solo mantiene el NAT, no es el tunnel-test.
+  Confirmado: test de supervivencia SIN keepalive murió limpio en seq 15→16 (~16 min, 10 timeouts seguidos).
+- Pendiente: validación live del keepalive (en curso); IKE SA rekey (>8h, raro);
   `Delete`-SA al desconectar (cosmético); scope de rutas fino; back-ends OpenVPN/F5.
 - M4: Visitor Mode (ESP-in-TLS, TCP 443) o NAT-T (UDP 4500) + /dev/net/tun + rutas/DNS.
 

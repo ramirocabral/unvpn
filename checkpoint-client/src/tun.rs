@@ -13,8 +13,10 @@ const TUNSETIFF: libc::c_ulong = 0x4004_54ca;
 const IFF_TUN: u16 = 0x0001;
 const IFF_NO_PI: u16 = 0x1000;
 
-/// Open a TUN device, requesting `name` (the kernel may hand back a variant).
-/// Returns the device file and the actual interface name.
+/// Open a TUN device, requesting `name`. If that name is already in use (EBUSY —
+/// e.g. another cpvpn back-end's tunnel is up), fall back to a kernel-assigned
+/// variant (`<base>%d`) instead of failing — so concurrent tunnels coexist and we
+/// never need to touch an existing device. Returns the file and the actual name.
 pub fn open_tun(name: &str) -> Result<(File, String), String> {
     let file = OpenOptions::new()
         .read(true)
@@ -22,6 +24,24 @@ pub fn open_tun(name: &str) -> Result<(File, String), String> {
         .open("/dev/net/tun")
         .map_err(|e| format!("open /dev/net/tun: {e} (need root / CAP_NET_ADMIN)"))?;
 
+    match tunsetiff(&file, name) {
+        Ok(actual) => Ok((file, actual)),
+        Err(e) if e.raw_os_error() == Some(libc::EBUSY) => {
+            // Name taken — ask the kernel to pick the next free `<base>N`.
+            let base = name.trim_end_matches(|c: char| c.is_ascii_digit());
+            let template = format!("{}%d", if base.is_empty() { "tun" } else { base });
+            let actual = tunsetiff(&file, &template)
+                .map_err(|e| format!("TUNSETIFF (fallback {template}): {e}"))?;
+            Ok((file, actual))
+        }
+        Err(e) => Err(format!("TUNSETIFF: {e}")),
+    }
+}
+
+/// Bind the open `/dev/net/tun` file to interface `name` (IFF_TUN | IFF_NO_PI).
+/// An empty or `%d`-templated name lets the kernel assign one. Returns the actual
+/// interface name the kernel used.
+fn tunsetiff(file: &File, name: &str) -> std::io::Result<String> {
     // struct ifreq: 16-byte name, then the flags in the union.
     let mut ifr = [0u8; 40];
     let nb = name.as_bytes();
@@ -31,12 +51,10 @@ pub fn open_tun(name: &str) -> Result<(File, String), String> {
 
     let ret = unsafe { libc::ioctl(file.as_raw_fd(), TUNSETIFF, ifr.as_mut_ptr()) };
     if ret < 0 {
-        return Err(format!("TUNSETIFF: {}", std::io::Error::last_os_error()));
+        return Err(std::io::Error::last_os_error());
     }
-
     let end = ifr[..16].iter().position(|&b| b == 0).unwrap_or(16);
-    let actual = String::from_utf8_lossy(&ifr[..end]).into_owned();
-    Ok((file, actual))
+    Ok(String::from_utf8_lossy(&ifr[..end]).into_owned())
 }
 
 /// Run `ip <args>`, failing on a non-zero exit.

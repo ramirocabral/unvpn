@@ -13,7 +13,9 @@
 //! purely local.
 
 mod ccc;
+mod forti;
 mod ike;
+mod sysnet;
 mod tun;
 
 use std::io::{Read, Write};
@@ -199,59 +201,58 @@ extern "C" fn tunnel_sig_handler(_sig: libc::c_int) {
     TUNNEL_STOP.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
-/// What /etc/resolv.conf looked like before we touched it, so disconnect can
-/// put it back exactly — a plain file's contents, or a symlink (systemd-resolved,
-/// resolvconf, …) we replaced with a static file and must re-link.
-struct DnsBackup {
-    symlink_target: Option<std::path::PathBuf>,
-    content: Option<String>,
+fn ip_checksum(header: &[u8]) -> u16 {
+    let mut sum = 0u32;
+    let mut i = 0;
+    while i + 1 < header.len() {
+        sum += u16::from_be_bytes([header[i], header[i + 1]]) as u32;
+        i += 2;
+    }
+    if i < header.len() {
+        sum += (header[i] as u32) << 8;
+    }
+    while (sum >> 16) != 0 {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    !(sum as u16)
 }
 
-const RESOLV_CONF: &str = "/etc/resolv.conf";
+/// Check Point IPsec "tunnel-test" keepalive: a 12-byte UDP payload to the
+/// gateway on port 18234, carried *inside* the tunnel. Check Point tears a tunnel
+/// down after a few minutes of not seeing these, even if ESP data is flowing —
+/// this is what kept the tunnel from surviving past ~20 min. (From snx-rs.)
+fn ipsec_keepalive_packet(src: std::net::Ipv4Addr, dst: std::net::Ipv4Addr, counter: u32) -> Vec<u8> {
+    let mut payload = [0u8; 12];
+    payload[0..4].copy_from_slice(&counter.to_be_bytes());
+    payload[4..6].copy_from_slice(&3u16.to_be_bytes());
+    payload[6..8].copy_from_slice(&2u16.to_be_bytes());
+    payload[8..10].copy_from_slice(&12u16.to_be_bytes());
 
-/// Point /etc/resolv.conf at the corporate DNS while connected. Works across
-/// distros: if resolv.conf is a symlink (systemd-resolved/resolvconf), we replace
-/// it with a static file and restore the symlink on disconnect; glibc reads this
-/// file regardless of the resolver in use.
-fn set_dns(dns: &[std::net::Ipv4Addr], domains: &str) -> Option<DnsBackup> {
-    if dns.is_empty() {
-        return None;
-    }
-    let is_symlink = std::fs::symlink_metadata(RESOLV_CONF)
-        .map(|m| m.file_type().is_symlink())
-        .unwrap_or(false);
-    let backup = DnsBackup {
-        symlink_target: if is_symlink { std::fs::read_link(RESOLV_CONF).ok() } else { None },
-        content: std::fs::read_to_string(RESOLV_CONF).ok(), // follows the symlink
-    };
+    const PORT: u16 = 18234;
+    let udp_len = (8 + payload.len()) as u16;
+    let mut udp = Vec::with_capacity(udp_len as usize);
+    udp.extend_from_slice(&PORT.to_be_bytes()); // sport
+    udp.extend_from_slice(&PORT.to_be_bytes()); // dport
+    udp.extend_from_slice(&udp_len.to_be_bytes());
+    udp.extend_from_slice(&0u16.to_be_bytes()); // checksum 0 (gateway ignores it)
+    udp.extend_from_slice(&payload);
 
-    let mut content = String::from("# written by cpvpn — restored on disconnect\n");
-    let search: Vec<&str> = domains.split([',', ';', ' ']).filter(|s| !s.is_empty()).collect();
-    if !search.is_empty() {
-        content.push_str(&format!("search {}\n", search.join(" ")));
-    }
-    for d in dns {
-        content.push_str(&format!("nameserver {d}\n"));
-    }
-    if is_symlink {
-        let _ = std::fs::remove_file(RESOLV_CONF); // replace the symlink with our file
-    }
-    match std::fs::write(RESOLV_CONF, content) {
-        Ok(_) => println!("# DNS → {dns:?} (search {})", search.join(" ")),
-        Err(e) => println!("# (could not set DNS: {e})"),
-    }
-    Some(backup)
-}
-
-fn restore_dns(backup: Option<DnsBackup>) {
-    let Some(b) = backup else { return };
-    if let Some(target) = b.symlink_target {
-        let _ = std::fs::remove_file(RESOLV_CONF);
-        let _ = std::os::unix::fs::symlink(target, RESOLV_CONF);
-    } else if let Some(c) = b.content {
-        let _ = std::fs::write(RESOLV_CONF, c);
-    }
-    println!("# DNS restored");
+    let total_len = (20 + udp.len()) as u16;
+    let mut ip = Vec::with_capacity(total_len as usize);
+    ip.push(0x45); // IPv4, IHL 5
+    ip.push(0x00);
+    ip.extend_from_slice(&total_len.to_be_bytes());
+    ip.extend_from_slice(&(counter as u16).to_be_bytes()); // ID
+    ip.extend_from_slice(&0x4000u16.to_be_bytes()); // DF
+    ip.push(64); // TTL
+    ip.push(17); // UDP
+    ip.extend_from_slice(&[0, 0]); // header checksum placeholder
+    ip.extend_from_slice(&src.octets());
+    ip.extend_from_slice(&dst.octets());
+    let csum = ip_checksum(&ip);
+    ip[10..12].copy_from_slice(&csum.to_be_bytes());
+    ip.extend_from_slice(&udp);
+    ip
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -263,6 +264,8 @@ fn run_tunnel(
     dns: Vec<std::net::Ipv4Addr>,
     domains: String,
     rekey_secs: u32,
+    lease_secs: u32,
+    mac: Vec<u8>,
     session: Option<ike::session::Ikev1Session>,
 ) -> Result<(), String> {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -279,7 +282,7 @@ fn run_tunnel(
     let _ = sock.send(&[0xff]); // NAT-T keepalive
     println!("# ESP on socket {:?} (same NAT-T port as IKE)", sock.local_addr().ok());
 
-    let dns_backup = set_dns(&dns, &domains);
+    let dns_backup = sysnet::set_dns(&dns, &domains);
     TUNNEL_STOP.store(false, Ordering::SeqCst);
     unsafe {
         let h = tunnel_sig_handler as extern "C" fn(libc::c_int) as libc::sighandler_t;
@@ -376,7 +379,7 @@ fn run_tunnel(
             }
         });
     }
-    // NAT-T keepalive.
+    // NAT-T keepalive (keeps the UDP/NAT mapping fresh).
     {
         let s = sock.clone();
         std::thread::spawn(move || loop {
@@ -387,10 +390,32 @@ fn run_tunnel(
             let _ = s.send(&[0xff]);
         });
     }
+    // Check Point IPsec tunnel-test keepalive (through the tunnel → gateway:18234).
+    // Without this the gateway drops the tunnel after a few idle minutes.
+    if let Some(std::net::IpAddr::V4(gw_ip)) = sock.peer_addr().ok().map(|a| a.ip()) {
+        let (esp_c, sock_c) = (esp.clone(), sock.clone());
+        std::thread::spawn(move || {
+            let mut counter = 1u32;
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(20));
+                if TUNNEL_STOP.load(Ordering::SeqCst) {
+                    break;
+                }
+                let pkt = ipsec_keepalive_packet(om_ip, gw_ip, counter);
+                counter = counter.wrapping_add(1);
+                let cur = esp_c.read().unwrap().clone();
+                if let Ok(enc) = cur.encode(&pkt) {
+                    let _ = sock_c.send(&enc);
+                }
+            }
+        });
+    }
     // IKE control thread: ESP SA rekey before the Phase-2 lifetime expires.
     if let (Some(session), Some(ike_rx)) = (session, ike_rx) {
         let (esp_c, sock_c) = (esp.clone(), sock.clone());
-        std::thread::spawn(move || ike_control_loop(session, sock_c, esp_c, om_ip, ike_rx, rekey_secs));
+        std::thread::spawn(move || {
+            ike_control_loop(session, sock_c, esp_c, om_ip, ike_rx, rekey_secs, lease_secs, mac)
+        });
     }
 
     println!("# ✅ TUNNEL UP. (send 'disconnect' on stdin or SIGTERM to stop)");
@@ -410,7 +435,7 @@ fn run_tunnel(
         }
     }
     println!("# disconnecting — restoring DNS, tearing down tun/routes…");
-    restore_dns(dns_backup);
+    sysnet::restore_dns(dns_backup);
     Ok(())
 }
 
@@ -434,6 +459,12 @@ fn rekey_interval(lifetime_secs: u32) -> std::time::Duration {
     Duration::from_secs(at)
 }
 
+/// Renew at the Office Mode lease minus a 300s leeway (min 60s).
+fn lease_renew_at(lease_secs: u32) -> std::time::Duration {
+    std::time::Duration::from_secs(lease_secs.saturating_sub(300).max(60) as u64)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn ike_control_loop(
     mut session: ike::session::Ikev1Session,
     sock: std::sync::Arc<std::net::UdpSocket>,
@@ -441,53 +472,140 @@ fn ike_control_loop(
     om_ip: std::net::Ipv4Addr,
     ike_rx: std::sync::mpsc::Receiver<Vec<u8>>,
     mut lifetime_secs: u32,
+    mut lease_secs: u32,
+    mac: Vec<u8>,
 ) {
     use std::sync::atomic::Ordering;
     use std::sync::mpsc::RecvTimeoutError;
     use std::time::{Duration, Instant};
 
-    let mut interval = rekey_interval(lifetime_secs);
-    let mut next = Instant::now() + interval;
+    let mut esp_interval = rekey_interval(lifetime_secs);
+    let mut esp_next = Instant::now() + esp_interval;
+    // The Office Mode IP has a lease (e.g. 900s); not renewing it is what dropped
+    // the tunnel at ~15 min. Renew it with a fresh OM config request (requesting
+    // the current IP) under the IKE SA before it expires. (From snx-rs.)
+    let mut lease_next = (lease_secs > 0).then(|| Instant::now() + lease_renew_at(lease_secs));
     println!(
-        "# IKE control up — Phase-2 lifetime {lifetime_secs}s → rekey every {}s",
-        interval.as_secs()
+        "# IKE control up — ESP lifetime {lifetime_secs}s (rekey {}s), OM lease {lease_secs}s{}",
+        esp_interval.as_secs(),
+        lease_next.map(|_| format!(" (renew {}s)", lease_renew_at(lease_secs).as_secs())).unwrap_or_default()
     );
 
     loop {
         if TUNNEL_STOP.load(Ordering::SeqCst) {
             break;
         }
-        let wait = next
-            .saturating_duration_since(Instant::now())
-            .min(Duration::from_secs(1));
+        let mut wait = esp_next.saturating_duration_since(Instant::now());
+        if let Some(ln) = lease_next {
+            wait = wait.min(ln.saturating_duration_since(Instant::now()));
+        }
+        wait = wait.min(Duration::from_secs(1));
+
         match ike_rx.recv_timeout(wait) {
             Ok(raw) => {
-                // Unsolicited IKE from the gateway (DPD / rekey / delete). We note it.
                 if raw.len() >= 20 {
                     println!("# IKE control: gateway sent IKE exchange {} (ignored)", raw[18]);
                 }
             }
             Err(RecvTimeoutError::Timeout) => {
-                if Instant::now() >= next {
+                let now = Instant::now();
+                // Office Mode lease renewal — and refresh the ESP SA alongside it,
+                // the way snx-rs's session exchange does.
+                if lease_next.is_some_and(|ln| now >= ln) {
+                    match do_lease_renew(&mut session, &sock, om_ip, &mac, &ike_rx) {
+                        Ok(nl) => {
+                            if nl > 0 {
+                                lease_secs = nl;
+                            }
+                            println!("# ✅ OM lease renewed ({lease_secs}s)");
+                        }
+                        Err(e) => println!("# ⚠ OM lease renew failed: {e}"),
+                    }
+                    lease_next = Some(Instant::now() + lease_renew_at(lease_secs));
                     match do_rekey(&mut session, &sock, &esp, om_ip, &ike_rx) {
                         Ok((si, so, life)) => {
                             if life > 0 {
                                 lifetime_secs = life;
-                                interval = rekey_interval(lifetime_secs);
+                                esp_interval = rekey_interval(lifetime_secs);
                             }
-                            println!(
-                                "# ✅ ESP SA rekeyed (spi_in={si:#010x} spi_out={so:#010x}, lifetime {lifetime_secs}s, next in {}s)",
-                                interval.as_secs()
-                            );
+                            println!("# ✅ ESP SA rekeyed (spi_in={si:#010x} spi_out={so:#010x})");
                         }
                         Err(e) => println!("# ⚠ ESP rekey failed: {e} — keeping current SA"),
                     }
-                    next = Instant::now() + interval;
+                    esp_next = Instant::now() + esp_interval;
+                } else if now >= esp_next {
+                    match do_rekey(&mut session, &sock, &esp, om_ip, &ike_rx) {
+                        Ok((si, so, life)) => {
+                            if life > 0 {
+                                lifetime_secs = life;
+                                esp_interval = rekey_interval(lifetime_secs);
+                            }
+                            println!("# ✅ ESP SA rekeyed (spi_in={si:#010x} spi_out={so:#010x}, next {}s)", esp_interval.as_secs());
+                        }
+                        Err(e) => println!("# ⚠ ESP rekey failed: {e} — keeping current SA"),
+                    }
+                    esp_next = Instant::now() + esp_interval;
                 }
             }
             Err(RecvTimeoutError::Disconnected) => break,
         }
     }
+}
+
+/// Renew the Office Mode IP lease: re-send the OM config request (asking for the
+/// current IP) under the IKE SA, in an ISAKMP-CFG Transaction, and read the fresh
+/// lease back. Returns the new lease in seconds (0 if the reply didn't carry one).
+fn do_lease_renew(
+    session: &mut ike::session::Ikev1Session,
+    sock: &std::net::UdpSocket,
+    om_ip: std::net::Ipv4Addr,
+    mac: &[u8],
+    ike_rx: &std::sync::mpsc::Receiver<Vec<u8>>,
+) -> Result<u32, String> {
+    use ike::model::{ConfigAttributeType, ExchangeType};
+    use std::sync::mpsc::RecvTimeoutError;
+    use std::time::{Duration, Instant};
+
+    let (om_mid, _id, om_pl) = ike::service::build_om_request(session, mac, om_ip);
+    let msg = ike::service::encrypt_message(session, u8::from(ExchangeType::Transaction), om_mid, &om_pl)?;
+
+    let mut reply = None;
+    'retx: for _ in 0..5u32 {
+        send_natt(sock, &msg)?;
+        let sub = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < sub {
+            let left = sub.saturating_duration_since(Instant::now());
+            match ike_rx.recv_timeout(left) {
+                Ok(raw) => {
+                    if raw.len() >= 24
+                        && u32::from_be_bytes(raw[20..24].try_into().unwrap()) == om_mid
+                    {
+                        reply = Some(
+                            ike::service::decrypt_message(session, &raw)
+                                .map_err(|e| format!("OM renew decrypt: {e}"))?,
+                        );
+                        break 'retx;
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) => break,
+                Err(RecvTimeoutError::Disconnected) => return Err("ike channel closed".into()),
+            }
+        }
+    }
+    let reply = reply.ok_or("no OM renew reply")?;
+    let oma = ike::service::find_attributes(&reply).ok_or("no attributes in OM renew reply")?;
+    let to_secs = |v: Vec<u8>| -> Option<u32> {
+        match v.len() {
+            4 => Some(u32::from_be_bytes([v[0], v[1], v[2], v[3]])),
+            2 => Some(u16::from_be_bytes([v[0], v[1]]) as u32),
+            _ => None,
+        }
+    };
+    let lease = ike::service::get_long_attr(&oma, ConfigAttributeType::CccVariableLeaseTime)
+        .and_then(to_secs)
+        .or_else(|| ike::service::get_long_attr(&oma, ConfigAttributeType::AddressExpiry).and_then(to_secs))
+        .unwrap_or(0);
+    Ok(lease)
 }
 
 /// Prepend the NAT-T Non-ESP marker and send an IKE message on the shared socket.
@@ -665,7 +783,7 @@ fn cmd_tunnel_up(args: &[String]) {
         );
         let sock = std::sync::Arc::new(std::net::UdpSocket::bind("0.0.0.0:0").map_err(|e| e.to_string())?);
         sock.connect((host.as_str(), 4500)).map_err(|e| e.to_string())?;
-        run_tunnel(om_ip, om_mask, esp_sa, sock, dns, domains, 0, None)
+        run_tunnel(om_ip, om_mask, esp_sa, sock, dns, domains, 0, 0, Vec::new(), None)
     };
     if let Err(e) = run() {
         eprintln!("tunnel-up failed: {e}");
@@ -839,7 +957,8 @@ fn cmd_ike(args: &[String]) {
 
                     // Office Mode: internal IP + DNS + domains.
                     let mac = ike::crypto::random(6);
-                    let (om_mid, _om_id, om_pl) = service::build_om_request(&session, &mac);
+                    let (om_mid, _om_id, om_pl) =
+                        service::build_om_request(&session, &mac, std::net::Ipv4Addr::UNSPECIFIED);
                     let om_msg = service::encrypt_message(
                         &mut session,
                         u8::from(ExchangeType::Transaction),
@@ -951,7 +1070,10 @@ fn cmd_ike(args: &[String]) {
                     }
                     if connect {
                         let sock = std::sync::Arc::new(udp.try_clone_socket().map_err(|e| e.to_string())?);
-                        return run_tunnel(om_ip, om_mask, esp_sa, sock, dns, domains, esp.lifetime_secs, Some(session));
+                        return run_tunnel(
+                            om_ip, om_mask, esp_sa, sock, dns, domains,
+                            esp.lifetime_secs, lease_secs, mac, Some(session),
+                        );
                     }
                     println!("# Office Mode IP {om_ip} ready. (--connect brings up the tunnel; needs sudo)");
                     break;
@@ -1028,6 +1150,7 @@ fn main() {
         Some("tunnel") => cmd_tunnel(&args[1..]),
         Some("ike") => cmd_ike(&args[1..]),
         Some("tunnel-up") => cmd_tunnel_up(&args[1..]),
+        Some("forti") => forti::cmd_forti(&args[1..]),
         _ => {
             eprintln!("cpvpn — Check Point VPN client (M1/M2/M3)\n");
             eprintln!("usage:");

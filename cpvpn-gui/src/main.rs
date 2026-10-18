@@ -217,7 +217,10 @@ impl Vpn {
         }
     }
 
-    fn connect(&mut self, gateway: &str, user: &str, passcode: &str, ctx: egui::Context) {
+    /// Launch the privileged engine. `engine_args` are the `cpvpn` subcommand args
+    /// (e.g. `ike …` or `forti …`); `stdin_lines` are secrets/inputs piped on
+    /// stdin in order (password, token, …) — never in argv. `label` is a log line.
+    fn connect(&mut self, engine_args: Vec<String>, stdin_lines: Vec<String>, label: String, ctx: egui::Context) {
         if matches!(*self.state.lock().unwrap(), State::Connecting | State::Connected) {
             return;
         }
@@ -229,12 +232,12 @@ impl Vpn {
             s.log.clear();
         }
         let (prog, pre) = priv_escalation();
-        self.log(format!("connecting to {gateway} as {user} (via {prog})…"));
+        self.log(format!("{label} (via {prog})…"));
 
         let mut child = match Command::new(prog)
             .args(&pre)
             .arg(cpvpn_bin())
-            .args(["ike", "-g", gateway, "-u", user, "--connect"])
+            .args(&engine_args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -247,9 +250,11 @@ impl Vpn {
             }
         };
 
-        // Send the passcode as the first stdin line; keep stdin for disconnect.
+        // Pipe inputs (password, token, …) as stdin lines; keep stdin for disconnect.
         if let Some(mut si) = child.stdin.take() {
-            let _ = writeln!(si, "{passcode}");
+            for line in &stdin_lines {
+                let _ = writeln!(si, "{line}");
+            }
             let _ = si.flush();
             self.stdin = Some(si);
         }
@@ -267,13 +272,25 @@ impl Vpn {
                 for line in BufReader::new(r).lines().map_while(Result::ok) {
                     let clean = line.trim_start_matches(['#', ' ']).to_string();
                     eprintln!("[engine] {clean}"); // mirror to our stderr for logs/debugging
+
+                    // SAML: the engine prints the IdP URL; open it in the user's browser
+                    // (the engine runs as root and can't reach the user's session).
+                    if let Some(rest) = clean.split("SAML-URL: ").nth(1) {
+                        let url = rest.trim().to_string();
+                        let _ = Command::new("xdg-open").arg(&url).spawn();
+                    }
                     {
                         let mut s = status.lock().unwrap();
                         s.log.push_back(clean.clone());
                         while s.log.len() > 300 {
                             s.log.pop_front();
                         }
-                        if let Some(rest) = clean.split("Office Mode: IP ").nth(1) {
+                        // Internal IP: Check Point "Office Mode: IP x" / Fortinet "PPP up — IP x".
+                        if let Some(rest) = clean
+                            .split("Office Mode: IP ")
+                            .nth(1)
+                            .or_else(|| clean.split("— IP ").nth(1))
+                        {
                             s.ip = rest.split_whitespace().next().unwrap_or("").to_string();
                         }
                         if let Some(rest) = clean.split("DNS [").nth(1) {
@@ -284,6 +301,9 @@ impl Vpn {
                         *state.lock().unwrap() = State::Connected;
                     } else if clean.contains("AUTH FAILED")
                         || clean.starts_with("IKE failed")
+                        || clean.starts_with("forti failed")
+                        || clean.contains("login rejected")
+                        || clean.contains("Two-factor Authentication failed")
                         || clean.contains("auth not completed")
                     {
                         *state.lock().unwrap() = State::Error(clean.clone());
@@ -347,6 +367,11 @@ struct App {
     user: String,
     pin: String,
     tokencode: String,
+    // Fortinet-specific inputs.
+    password: String,
+    realm: String,
+    code: String,
+    forti_saml: bool,
     vpn: Vpn,
     tray: Option<ksni::Handle<VpnTray>>,
     tray_rx: Option<mpsc::Receiver<TrayCmd>>,
@@ -363,6 +388,10 @@ impl Default for App {
             user: "u-123456".to_string(),
             pin: String::new(),
             tokencode: String::new(),
+            password: String::new(),
+            realm: String::new(),
+            code: String::new(),
+            forti_saml: false,
             vpn: Vpn::new(),
             tray: None,
             tray_rx: None,
@@ -426,6 +455,32 @@ impl App {
             // not cancelled → the window closes and the app exits
         }
     }
+
+    /// Build the Fortinet engine invocation (password or SAML) and launch it.
+    fn start_forti(&mut self, ctx: egui::Context) {
+        let mut args: Vec<String> = vec!["forti".into(), "-g".into(), self.gateway.clone()];
+        if !self.realm.trim().is_empty() {
+            args.push("--realm".into());
+            args.push(self.realm.trim().to_string());
+        }
+        let (stdin_lines, label) = if self.forti_saml {
+            args.push("--saml".into());
+            args.push("--connect".into());
+            (vec![], format!("SAML sign-in to {}", self.gateway))
+        } else {
+            args.push("-u".into());
+            args.push(self.user.clone());
+            args.push("--connect".into());
+            // Password first, then the OTP (consumed only if the gateway challenges).
+            let mut lines = vec![self.password.clone()];
+            if !self.code.trim().is_empty() {
+                lines.push(self.code.trim().to_string());
+            }
+            (lines, format!("connecting to {} as {}", self.gateway, self.user))
+        };
+        self.vpn.connect(args, stdin_lines, label, ctx);
+        self.code.clear(); // OTP is one-time
+    }
 }
 
 fn setup_theme(ctx: &egui::Context) {
@@ -485,47 +540,97 @@ impl eframe::App for App {
                 .selected_text(&self.client)
                 .show_ui(ui, |ui| {
                     ui.selectable_value(&mut self.client, "Check Point".to_string(), "Check Point");
+                    ui.selectable_value(&mut self.client, "FortiClient".to_string(), "FortiClient");
                     ui.add_enabled(false, egui::SelectableLabel::new(false, "OpenVPN (soon)"));
                     ui.add_enabled(false, egui::SelectableLabel::new(false, "F5 (soon)"));
                 });
 
+            let is_forti = self.client == "FortiClient";
             let editable = matches!(state, State::Disconnected | State::Error(_));
             ui.add_space(4.0);
             ui.label("Gateway");
-            ui.add_enabled(editable, egui::TextEdit::singleline(&mut self.gateway).desired_width(f32::INFINITY));
-            ui.label("User");
-            ui.add_enabled(editable, egui::TextEdit::singleline(&mut self.user).desired_width(f32::INFINITY));
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.label("PIN");
+            ui.add_enabled(
+                editable,
+                egui::TextEdit::singleline(&mut self.gateway)
+                    .hint_text(if is_forti { "vpn.example.com:443" } else { "" })
+                    .desired_width(f32::INFINITY),
+            );
+
+            if is_forti {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label("Auth:");
+                    ui.add_enabled_ui(editable, |ui| {
+                        ui.selectable_value(&mut self.forti_saml, false, "Password");
+                        ui.selectable_value(&mut self.forti_saml, true, "SSO / SAML");
+                    });
+                });
+                ui.label("Realm (optional)");
+                ui.add_enabled(editable, egui::TextEdit::singleline(&mut self.realm).desired_width(f32::INFINITY));
+                if !self.forti_saml {
+                    ui.label("User");
+                    ui.add_enabled(editable, egui::TextEdit::singleline(&mut self.user).desired_width(f32::INFINITY));
+                    ui.label("Password");
                     ui.add_enabled(
                         editable,
-                        egui::TextEdit::singleline(&mut self.pin).password(true).desired_width(90.0),
+                        egui::TextEdit::singleline(&mut self.password).password(true).desired_width(f32::INFINITY),
                     );
+                    ui.label(egui::RichText::new("Token / OTP (only if 2FA)").weak().small());
+                    ui.add_enabled(editable, egui::TextEdit::singleline(&mut self.code).desired_width(f32::INFINITY));
+                } else {
+                    ui.add_space(2.0);
+                    ui.label(egui::RichText::new("You'll sign in through your browser.").weak().small());
+                }
+            } else {
+                ui.label("User");
+                ui.add_enabled(editable, egui::TextEdit::singleline(&mut self.user).desired_width(f32::INFINITY));
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.label("PIN");
+                        ui.add_enabled(
+                            editable,
+                            egui::TextEdit::singleline(&mut self.pin).password(true).desired_width(90.0),
+                        );
+                    });
+                    ui.vertical(|ui| {
+                        ui.label("Token (email)");
+                        ui.add_enabled(editable, egui::TextEdit::singleline(&mut self.tokencode).desired_width(130.0));
+                    });
+                    ui.vertical(|ui| {
+                        ui.label(" ");
+                        if ui.button("Get code ↗").clicked() {
+                            let _ = Command::new("xdg-open").arg(SELFSERVICE_URL).spawn();
+                        }
+                    });
                 });
-                ui.vertical(|ui| {
-                    ui.label("Token (email)");
-                    ui.add_enabled(editable, egui::TextEdit::singleline(&mut self.tokencode).desired_width(130.0));
-                });
-                ui.vertical(|ui| {
-                    ui.label(" ");
-                    if ui.button("Get code ↗").clicked() {
-                        let _ = Command::new("xdg-open").arg(SELFSERVICE_URL).spawn();
-                    }
-                });
-            });
+            }
 
             ui.add_space(8.0);
             match state {
                 State::Disconnected | State::Error(_) => {
-                    let ready = !self.gateway.is_empty() && !self.user.is_empty() && !self.tokencode.is_empty();
-                    let btn = egui::Button::new(egui::RichText::new("Connect").strong())
+                    let ready = if is_forti {
+                        !self.gateway.is_empty()
+                            && (self.forti_saml || (!self.user.is_empty() && !self.password.is_empty()))
+                    } else {
+                        !self.gateway.is_empty() && !self.user.is_empty() && !self.tokencode.is_empty()
+                    };
+                    let btn_label = if is_forti && self.forti_saml { "Sign in with browser" } else { "Connect" };
+                    let btn = egui::Button::new(egui::RichText::new(btn_label).strong())
                         .fill(egui::Color32::from_rgb(40, 110, 220))
                         .min_size(egui::vec2(ui.available_width(), 38.0));
                     if ui.add_enabled(ready, btn).clicked() {
-                        let passcode = format!("{}{}", self.pin.trim(), self.tokencode.trim());
-                        self.vpn.connect(&self.gateway, &self.user, &passcode, ctx.clone());
-                        self.tokencode.clear(); // one-time code
+                        if is_forti {
+                            self.start_forti(ctx.clone());
+                        } else {
+                            let passcode = format!("{}{}", self.pin.trim(), self.tokencode.trim());
+                            let args = vec![
+                                "ike".into(), "-g".into(), self.gateway.clone(),
+                                "-u".into(), self.user.clone(), "--connect".into(),
+                            ];
+                            let label = format!("connecting to {} as {}", self.gateway, self.user);
+                            self.vpn.connect(args, vec![passcode], label, ctx.clone());
+                            self.tokencode.clear(); // one-time code
+                        }
                     }
                 }
                 State::Connecting | State::Connected => {

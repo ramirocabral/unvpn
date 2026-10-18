@@ -440,7 +440,11 @@ pub fn challenge_attr_type(ap: &AttributesPayload) -> u16 {
 
 /// Build the Office Mode config Request (asks for an internal IP, DNS, domains,
 /// CCC session id, lease). Returns (message_id, identifier, payloads).
-pub fn build_om_request(session: &Ikev1Session, mac: &[u8]) -> (u32, u16, Vec<Payload>) {
+pub fn build_om_request(
+    session: &Ikev1Session,
+    mac: &[u8],
+    requested_ip: std::net::Ipv4Addr,
+) -> (u32, u16, Vec<Payload>) {
     let message_id = super::crypto::random_u32();
     let identifier = u16::from_be_bytes(super::crypto::random(2).try_into().unwrap());
     let empties = [
@@ -457,7 +461,10 @@ pub fn build_om_request(session: &Ikev1Session, mac: &[u8]) -> (u32, u16, Vec<Pa
         .map(|t| Attribute::long(u16::from(*t), vec![0, 0, 0, 0]))
         .collect();
     attrs.push(Attribute::long(u16::from(ConfigAttributeType::MacAddress), mac.to_vec()));
-    attrs.push(Attribute::long(u16::from(ConfigAttributeType::Ipv4Address), vec![0, 0, 0, 0]));
+    attrs.push(Attribute::long(
+        u16::from(ConfigAttributeType::Ipv4Address),
+        requested_ip.octets().to_vec(),
+    ));
     attrs.push(Attribute::long(u16::from(ConfigAttributeType::Ipv4Netmask), vec![0, 0, 0, 0]));
     let payloads = build_config_payloads(
         session,

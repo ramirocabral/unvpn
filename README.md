@@ -6,8 +6,9 @@
 
 **A native Linux VPN client — reverse-engineered, no vendor binaries.**
 
-Check Point *Endpoint Connect / Trac* today; OpenVPN and F5 planned.
-Pretty GUI, a real system-tray icon, and a self-contained engine that runs on any distro.
+Check Point *Endpoint Connect / Trac* and **Fortinet FortiGate SSL-VPN** today;
+OpenVPN and F5 planned. Pretty GUI, a real system-tray icon, and a self-contained
+engine that runs on any distro.
 
 <img src="docs/screenshot.png" width="420" alt="cpvpn GUI"/>
 
@@ -76,8 +77,13 @@ and **Connect**. Closing the window keeps it running in the tray.
 
 ### CLI
 ```sh
-# Connect (prompts for the passcode on stdin, or pass --passcode):
+# Check Point (prompts for the passcode on stdin, or pass --passcode):
 sudo cpvpn ike -g 203.0.113.10 -u <user> --connect
+
+# Fortinet FortiGate SSL-VPN:
+cpvpn forti -g vpn.example.com:443 --probe                 # non-destructive detection
+sudo cpvpn forti -g vpn.example.com -u <user> --connect    # password (+ OTP) on stdin
+sudo cpvpn forti -g vpn.example.com --saml --connect       # SSO/SAML via the browser
 ```
 Send `disconnect` on stdin (or SIGTERM) for a clean teardown.
 
@@ -117,6 +123,11 @@ for_window [app_id="cpvpn"] floating enable
 - [x] GUI + system tray, DNS, clean connect/disconnect, static/portable engine, installer.
 - [x] ESP SA rekey — renegotiated with no re-auth, seamless hot-swap, keeps long sessions
       alive past the 1-hour SA lifetime. (DPD is not required by Check Point.)
+- [x] **Fortinet FortiGate SSL-VPN** — password, FortiToken/OTP + push, **SAML/SSO**,
+      in-process **PPP** (LCP/IPCP) data plane, split/full-tunnel routing, DNS, GUI selector.
+      *(built + unit-tested; live-gateway verification pending.)* See
+      [`docs/forti-protocol-notes.md`](docs/forti-protocol-notes.md).
+- [ ] Fortinet DTLS acceleration (UDP/PSK) and IPsec/IKEv2 mode.
 - [ ] OpenVPN and F5 back-ends.
 
 ## Legal
