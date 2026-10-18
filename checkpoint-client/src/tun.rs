@@ -57,6 +57,34 @@ fn tunsetiff(file: &File, name: &str) -> std::io::Result<String> {
     Ok(String::from_utf8_lossy(&ifr[..end]).into_owned())
 }
 
+/// Apply many `ip` commands in one process via `ip -force -batch -` (commands on
+/// stdin, one per line, WITHOUT the leading `ip`). `-force` continues past errors
+/// (e.g. a duplicate route), so a large split-tunnel route set installs/removes in
+/// one shot instead of hundreds of `ip` spawns. A no-op for an empty list.
+pub fn ip_batch(lines: &[String]) -> Result<(), String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    if lines.is_empty() {
+        return Ok(());
+    }
+    let mut child = Command::new("ip")
+        .args(["-force", "-batch", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("spawn ip -batch: {e}"))?;
+    {
+        let mut si = child.stdin.take().ok_or("ip -batch: no stdin")?;
+        for l in lines {
+            let _ = writeln!(si, "{l}");
+        }
+        // si dropped here → EOF, so `ip` processes the batch and exits.
+    }
+    child.wait().map_err(|e| format!("ip -batch wait: {e}"))?;
+    Ok(())
+}
+
 /// Run `ip <args>`, failing on a non-zero exit.
 pub fn ip(args: &[&str]) -> Result<(), String> {
     let out = Command::new("ip")
