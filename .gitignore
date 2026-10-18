@@ -1,0 +1,14 @@
+# Rust build artifacts (regenerables)
+target/
+
+# Binarios del vendor (terceros, propietario, pesado) — no son fuente
+vendor-samples/
+
+# Capturas y logs de runtime (pueden contener handshake/credenciales)
+captures/
+
+# Editor / OS
+*.swp
+*.swo
+*~
+.DS_Store

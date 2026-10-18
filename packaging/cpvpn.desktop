@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=cpvpn
+GenericName=VPN Client
+Comment=Native Check Point / OpenVPN / F5 VPN client with a system-tray icon
+Exec=cpvpn-gui
+Icon=cpvpn
+Terminal=false
+Categories=Network;Security;
+Keywords=VPN;CheckPoint;IPSec;IKE;SecurID;
+StartupNotify=true

@@ -1,0 +1,19 @@
+[package]
+name = "cpvpn"
+version = "0.1.0"
+edition = "2021"
+description = "Native Linux Check Point VPN client (reverse-engineered CCC/IKE)."
+
+[dependencies]
+native-tls = "0.2.12"
+openssl = "0.10"
+libc = "0.2"
+
+[features]
+# Statically link OpenSSL (built from source) for a distro-agnostic binary.
+# Dev builds stay fast on the system OpenSSL; release/packaging uses this.
+vendored = ["openssl/vendored", "native-tls/vendored"]
+
+[[bin]]
+name = "cpvpn"
+path = "src/main.rs"

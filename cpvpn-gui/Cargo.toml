@@ -1,0 +1,14 @@
+[package]
+name = "cpvpn-gui"
+version = "0.1.0"
+edition = "2021"
+description = "Native Linux VPN client GUI (Check Point / OpenVPN / F5) with a system-tray icon."
+
+[dependencies]
+eframe = "0.29"
+ksni = "0.2"
+dbus = "0.9"
+
+[[bin]]
+name = "cpvpn-gui"
+path = "src/main.rs"
