@@ -2,10 +2,11 @@
 Type=Application
 Name=cpvpn
 GenericName=VPN Client
-Comment=Native Check Point / FortiClient (FortiGate) VPN client with a system-tray icon
+Comment=Native Check Point / FortiClient (FortiGate) / F5 BIG-IP VPN client with a system-tray icon
 Exec=cpvpn-gui
 Icon=cpvpn
 Terminal=false
 Categories=Network;Security;
-Keywords=VPN;CheckPoint;FortiClient;FortiGate;Fortinet;SAML;SSO;IPSec;IKE;SecurID;
+Keywords=VPN;CheckPoint;FortiClient;FortiGate;Fortinet;F5;BIG-IP;SAML;SSO;IPSec;IKE;SecurID;
 StartupNotify=true
+StartupWMClass=io.github.cpvpn.Client
