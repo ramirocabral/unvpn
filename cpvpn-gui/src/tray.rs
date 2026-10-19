@@ -10,6 +10,8 @@ use crate::icon;
 pub struct VpnTray {
     pub state: Arc<Mutex<State>>,
     pub tx: Tx,
+    /// Active profile name (shown in the tooltip while connected); set by the GUI.
+    pub profile: Arc<Mutex<String>>,
 }
 
 impl VpnTray {
@@ -38,18 +40,22 @@ impl ksni::Tray for VpnTray {
         vec![icon::tray_pixmap(color)]
     }
     fn tool_tip(&self) -> ksni::ToolTip {
+        // While connected, show the active profile name; otherwise the status.
         let desc = match &*self.state.lock().unwrap() {
-            State::Connected => "Connected",
-            State::Connecting => "Connecting…",
-            State::Disconnecting => "Disconnecting…",
-            State::Error(_) => "Error",
-            State::Disconnected => "Disconnected",
+            State::Connected => {
+                let p = self.profile.lock().unwrap().clone();
+                if p.is_empty() { "Connected".to_string() } else { p }
+            }
+            State::Connecting => "Connecting…".to_string(),
+            State::Disconnecting => "Disconnecting…".to_string(),
+            State::Error(_) => "Error".to_string(),
+            State::Disconnected => "Disconnected".to_string(),
         };
         ksni::ToolTip {
             icon_name: String::new(),
             icon_pixmap: vec![],
             title: "cpvpn".into(),
-            description: desc.into(),
+            description: desc,
         }
     }
     fn activate(&mut self, _x: i32, _y: i32) {

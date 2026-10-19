@@ -15,8 +15,9 @@ mod icon;
 mod profiles;
 mod tray;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use adw::prelude::*;
@@ -136,6 +137,12 @@ struct App {
     tray: RefCell<Option<ksni::Handle<tray::VpnTray>>>,
     tx: Tx,
     last_state: RefCell<Option<State>>,
+    /// Name of the profile used for the current connection — shown on hover (header
+    /// status pill + tray tooltip). Shared with the tray thread.
+    active_profile: Arc<Mutex<String>>,
+    /// Set only when the user really quits (tray/menu "Quit"); otherwise closing the
+    /// window just hides it to the tray (the tunnel keeps running).
+    quitting: Cell<bool>,
     /// Self-reference, so `&self` handlers can clone the owning `Rc` for callbacks.
     me: RefCell<Weak<App>>,
 }
@@ -336,6 +343,8 @@ impl App {
             tray: RefCell::new(None),
             tx,
             last_state: RefCell::new(None),
+            active_profile: Arc::new(Mutex::new(String::new())),
+            quitting: Cell::new(false),
             me: RefCell::new(Weak::new()),
         });
         *this.me.borrow_mut() = Rc::downgrade(&this);
@@ -373,7 +382,18 @@ impl App {
             app.ext_group.set_visible(false);
         }));
 
+        // Closing the window keeps the app (and the tunnel) running in the tray, like a
+        // normal VPN client. The user quits only via the tray/menu "Quit". If there's no
+        // tray to return from, closing quits (otherwise the window would be unreachable).
         app.window.connect_close_request(glib::clone!(#[strong] app, move |_| {
+            if app.quitting.get() {
+                app.vpn.borrow_mut().shutdown();
+                return glib::Propagation::Proceed; // destroy the window → app exits
+            }
+            if app.tray.borrow().is_some() {
+                app.window.set_visible(false); // minimize to tray, tunnel stays up
+                return glib::Propagation::Stop;
+            }
             app.vpn.borrow_mut().shutdown();
             glib::Propagation::Proceed
         }));
@@ -603,6 +623,13 @@ impl App {
         let realm = self.realm_row.text().trim().to_string();
         let label = format!("connecting to {gw}");
 
+        // Remember which profile this connection is for (hover tooltip). Fall back to the
+        // gateway when connecting without a saved/named profile.
+        *self.active_profile.lock().unwrap() = {
+            let n = self.name_row.text().trim().to_string();
+            if n.is_empty() { gw.clone() } else { n }
+        };
+
         let (args, stdin_lines, saml): (Vec<String>, Vec<String>, Option<String>) = match self.backend() {
             Backend::CheckPoint => {
                 let passcode = format!("{}{}", self.password_row.text(), self.token_row.text().trim());
@@ -666,14 +693,22 @@ impl App {
     fn handle_tray(&self, cmd: TrayCmd) {
         match cmd {
             TrayCmd::Show | TrayCmd::Connect => {
+                self.window.set_visible(true);
                 self.window.present();
             }
             TrayCmd::Disconnect => {
                 self.vpn.borrow_mut().disconnect();
                 self.sync_ui();
             }
-            TrayCmd::Quit => self.window.close(),
+            TrayCmd::Quit => self.request_quit(),
         }
+    }
+
+    /// Really quit (tray/menu "Quit"): mark it, then close — the close handler tears the
+    /// tunnel down and lets the window be destroyed instead of hiding it.
+    fn request_quit(&self) {
+        self.quitting.set(true);
+        self.window.close();
     }
 
     fn append_log(&self, line: &str) {
@@ -832,6 +867,14 @@ impl App {
         self.status_pill.set_text(&format!("● {txt}"));
         self.status_pill.set_css_classes(&["statuspill", cls]);
 
+        // Hovering the status pill shows the active profile name while connected.
+        if matches!(state, State::Connected) {
+            let name = self.active_profile.lock().unwrap().clone();
+            self.status_pill.set_tooltip_text((!name.is_empty()).then_some(name.as_str()));
+        } else {
+            self.status_pill.set_tooltip_text(None);
+        }
+
         let editable = matches!(state, State::Disconnected | State::Error(_));
         self.form_group.set_sensitive(editable);
         self.profiles_group.set_sensitive(editable);
@@ -893,6 +936,7 @@ impl App {
         let tray = tray::VpnTray {
             state: self.vpn.borrow().state.clone(),
             tx: self.tx.clone(),
+            profile: self.active_profile.clone(),
         };
         let service = ksni::TrayService::new(tray);
         *self.tray.borrow_mut() = Some(service.handle());
