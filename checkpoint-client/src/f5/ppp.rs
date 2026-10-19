@@ -40,6 +40,7 @@ const TERM_REQ: u8 = 5;
 const TERM_ACK: u8 = 6;
 const ECHO_REQ: u8 = 9;
 const ECHO_REP: u8 = 10;
+const DISCARD_REQ: u8 = 11;
 
 // LCP option types.
 const LCP_OPT_MRU: u8 = 1;
@@ -77,6 +78,8 @@ pub struct PppConn<S> {
     stream: S,
     rbuf: Vec<u8>,
     framing: Framing,
+    /// Socket fd to wait on when a non-blocking write would block.
+    poll_fd: Option<i32>,
 }
 
 /// A read returned no data (timeout / WouldBlock).
@@ -84,7 +87,13 @@ pub const WOULDBLOCK: &str = "__wouldblock__";
 
 impl<S: Read + Write> PppConn<S> {
     pub fn new(stream: S, framing: Framing) -> Self {
-        PppConn { stream, rbuf: Vec::with_capacity(4096), framing }
+        PppConn { stream, rbuf: Vec::with_capacity(4096), framing, poll_fd: None }
+    }
+
+    /// The stream is now non-blocking: make `send` wait for `fd` to be writable
+    /// instead of failing when the socket's send buffer is full.
+    pub fn set_poll_fd(&mut self, fd: i32) {
+        self.poll_fd = Some(fd);
     }
 
     pub fn get_ref(&self) -> &S {
@@ -125,7 +134,7 @@ impl<S: Read + Write> PppConn<S> {
             }
             Framing::Hdlc => hdlc_encode(&frame),
         };
-        self.stream.write_all(&out).map_err(|e| format!("ppp write: {e}"))?;
+        crate::sysnet::write_all_polling(&mut self.stream, self.poll_fd, &out).map_err(|e| format!("ppp {e}"))?;
         self.stream.flush().ok();
         Ok(())
     }
@@ -522,9 +531,18 @@ fn ipcp_phase<S: Read + Write>(conn: &mut PppConn<S>, seed_ip: Ipv4Addr) -> Resu
     Ok(IpConfig { addr: want_ip, dns })
 }
 
-/// Build an LCP Echo-Request body for keepalive.
+/// Build an LCP Echo-Request body — used for dead-peer detection (openconnect's
+/// `KA_DPD`): the gateway replies with an Echo-Reply, proving the link is alive.
 pub fn echo_request(id: u8) -> Vec<u8> {
     ctrl(ECHO_REQ, id, &[0, 0, 0, 0])
+}
+
+/// Build an LCP Discard-Request — openconnect's keepalive packet (`KA_KEEPALIVE`).
+/// The peer silently discards it; its only purpose is to keep the link active so the
+/// gateway's idle-session timer does not fire (which was tearing idle F5 tunnels down
+/// after a couple of minutes). Carries the 4-byte Magic-Number field per RFC 1661.
+pub fn discard_request(id: u8) -> Vec<u8> {
+    ctrl(DISCARD_REQ, id, &[0, 0, 0, 0])
 }
 
 /// Build an LCP Terminate-Request for a clean shutdown.

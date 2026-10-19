@@ -93,11 +93,26 @@ pub fn connect_tls(host: &str, port: u16, timeout: Duration) -> Result<TlsStream
         .danger_accept_invalid_hostnames(true)
         .build()
         .map_err(|e| format!("tls builder: {e}"))?;
-    let tcp = TcpStream::connect((host, port)).map_err(|e| format!("connect {host}:{port}: {e}"))?;
+    let tcp = connect_tcp(host, port, timeout)?;
     tcp.set_read_timeout(Some(timeout)).ok();
     tcp.set_write_timeout(Some(timeout)).ok();
     tcp.set_nodelay(true).ok();
     connector.connect(host, tcp).map_err(|e| format!("TLS to {host}: {e}"))
+}
+
+/// TCP connect with a timeout per address (a plain `connect` to a dead gateway
+/// hangs ~2 min), trying each resolved address in turn like `TcpStream::connect`.
+fn connect_tcp(host: &str, port: u16, timeout: Duration) -> Result<TcpStream, String> {
+    use std::net::ToSocketAddrs;
+    let addrs = (host, port).to_socket_addrs().map_err(|e| format!("resolve {host}: {e}"))?;
+    let mut last = format!("connect {host}:{port}: no address");
+    for a in addrs {
+        match TcpStream::connect_timeout(&a, timeout) {
+            Ok(s) => return Ok(s),
+            Err(e) => last = format!("connect {host}:{port} ({a}): {e}"),
+        }
+    }
+    Err(last)
 }
 
 /// Build a raw HTTP/1.1 request. `extra` holds additional header lines
@@ -311,22 +326,27 @@ fn parse_status_and_headers(head: &[u8]) -> Result<(u16, Vec<(String, String)>),
     Ok((status, headers))
 }
 
+/// De-chunk a complete buffer; returns None if the terminating 0-chunk isn't present
+/// yet. Checked arithmetic throughout: a chunk whose trailing CRLF hasn't arrived,
+/// or a bogus huge size, just means "not complete" — never a panic.
 fn try_dechunk_complete(raw: &[u8]) -> Option<Vec<u8>> {
     let mut out = Vec::new();
     let mut i = 0;
     loop {
-        let line_end = raw[i..].windows(2).position(|w| w == b"\r\n")? + i;
+        let rest = raw.get(i..)?;
+        let line_end = rest.windows(2).position(|w| w == b"\r\n")? + i;
         let size_str = std::str::from_utf8(&raw[i..line_end]).ok()?;
         let size = usize::from_str_radix(size_str.split(';').next().unwrap_or("").trim(), 16).ok()?;
         i = line_end + 2;
         if size == 0 {
-            return Some(out);
+            return Some(out); // terminating chunk
         }
-        if i + size > raw.len() {
-            return None;
+        let end = i.checked_add(size)?;
+        if end.checked_add(2)? > raw.len() {
+            return None; // data or its CRLF still incomplete
         }
-        out.extend_from_slice(&raw[i..i + size]);
-        i += size + 2;
+        out.extend_from_slice(&raw[i..end]);
+        i = end + 2; // skip data + CRLF
     }
 }
 

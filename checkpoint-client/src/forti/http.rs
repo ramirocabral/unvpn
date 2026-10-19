@@ -15,7 +15,8 @@
 use native_tls::{TlsConnector, TlsStream};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{Shutdown, TcpStream};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 pub const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 SV1";
@@ -82,11 +83,26 @@ pub fn connect_tls(host: &str, port: u16, timeout: Duration) -> Result<TlsStream
         .danger_accept_invalid_hostnames(true)
         .build()
         .map_err(|e| format!("tls builder: {e}"))?;
-    let tcp = TcpStream::connect((host, port)).map_err(|e| format!("connect {host}:{port}: {e}"))?;
+    let tcp = connect_tcp(host, port, timeout)?;
     tcp.set_read_timeout(Some(timeout)).ok();
     tcp.set_write_timeout(Some(timeout)).ok();
     tcp.set_nodelay(true).ok();
     connector.connect(host, tcp).map_err(|e| format!("TLS to {host}: {e}"))
+}
+
+/// TCP connect with a timeout per address (a plain `connect` to a dead gateway
+/// hangs ~2 min), trying each resolved address in turn like `TcpStream::connect`.
+fn connect_tcp(host: &str, port: u16, timeout: Duration) -> Result<TcpStream, String> {
+    use std::net::ToSocketAddrs;
+    let addrs = (host, port).to_socket_addrs().map_err(|e| format!("resolve {host}: {e}"))?;
+    let mut last = format!("connect {host}:{port}: no address");
+    for a in addrs {
+        match TcpStream::connect_timeout(&a, timeout) {
+            Ok(s) => return Ok(s),
+            Err(e) => last = format!("connect {host}:{port} ({a}): {e}"),
+        }
+    }
+    Err(last)
 }
 
 /// Build a raw HTTP/1.1 request. `extra` holds additional header lines
@@ -145,7 +161,73 @@ pub fn request(
     body: &[u8],
     timeout: Duration,
 ) -> Result<Response, String> {
-    let mut tls = connect_tls(host, port, timeout)?;
+    let tls = connect_tls(host, port, timeout)?;
+    exchange(tls, host, method, path, cookies, extra, body)
+}
+
+/// Lets another thread abort an in-flight [`request_cancellable`]. Sticky: a
+/// cancel that lands before the request has connected still stops it.
+#[derive(Clone, Default)]
+pub struct Cancel(Arc<Mutex<CancelState>>);
+
+#[derive(Default)]
+struct CancelState {
+    cancelled: bool,
+    sock: Option<TcpStream>,
+}
+
+impl Cancel {
+    /// Abort the request: shut its socket down (its blocked read fails at once),
+    /// or make it give up before sending if it hasn't connected yet.
+    pub fn cancel(&self) {
+        let mut st = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        st.cancelled = true;
+        if let Some(s) = st.sock.take() {
+            let _ = s.shutdown(Shutdown::Both);
+        }
+    }
+}
+
+/// [`request`], abortable through `cancel` — for a request the gateway holds open
+/// (a FortiToken push waits for the user to approve on the phone).
+#[allow(clippy::too_many_arguments)]
+pub fn request_cancellable(
+    host: &str,
+    port: u16,
+    method: &str,
+    path: &str,
+    cookies: &mut Cookies,
+    body: &[u8],
+    timeout: Duration,
+    cancel: &Cancel,
+) -> Result<Response, String> {
+    if cancel.0.lock().unwrap_or_else(|e| e.into_inner()).cancelled {
+        return Err("cancelled".into());
+    }
+    let tls = connect_tls(host, port, timeout)?;
+    {
+        // Register under the same lock that cancel() takes, so a cancel between
+        // the check above and here is not lost.
+        let mut st = cancel.0.lock().unwrap_or_else(|e| e.into_inner());
+        if st.cancelled {
+            let _ = tls.get_ref().shutdown(Shutdown::Both);
+            return Err("cancelled".into());
+        }
+        st.sock = tls.get_ref().try_clone().ok();
+    }
+    exchange(tls, host, method, path, cookies, &[], body)
+}
+
+/// Send one request on a fresh TLS stream and read the whole response.
+fn exchange(
+    mut tls: TlsStream<TcpStream>,
+    host: &str,
+    method: &str,
+    path: &str,
+    cookies: &mut Cookies,
+    extra: &[String],
+    body: &[u8],
+) -> Result<Response, String> {
     let req = build_request(method, host, path, cookies, extra, body, false);
     tls.write_all(&req).map_err(|e| format!("write request: {e}"))?;
     tls.flush().ok();
@@ -248,29 +330,54 @@ fn parse_status_and_headers(head: &[u8]) -> Result<(u16, Vec<(String, String)>),
     Ok((status, headers))
 }
 
-/// De-chunk a complete buffer; returns None if the terminating 0-chunk isn't present yet.
+/// De-chunk a complete buffer; returns None if the terminating 0-chunk isn't present
+/// yet. Checked arithmetic throughout: a chunk whose trailing CRLF hasn't arrived,
+/// or a bogus huge size, just means "not complete" — never a panic.
 fn try_dechunk_complete(raw: &[u8]) -> Option<Vec<u8>> {
     let mut out = Vec::new();
     let mut i = 0;
     loop {
-        let line_end = raw[i..].windows(2).position(|w| w == b"\r\n")? + i;
+        let rest = raw.get(i..)?;
+        let line_end = rest.windows(2).position(|w| w == b"\r\n")? + i;
         let size_str = std::str::from_utf8(&raw[i..line_end]).ok()?;
         let size = usize::from_str_radix(size_str.split(';').next().unwrap_or("").trim(), 16).ok()?;
         i = line_end + 2;
         if size == 0 {
             return Some(out); // terminating chunk
         }
-        if i + size > raw.len() {
-            return None; // incomplete
+        let end = i.checked_add(size)?;
+        if end.checked_add(2)? > raw.len() {
+            return None; // data or its CRLF still incomplete
         }
-        out.extend_from_slice(&raw[i..i + size]);
-        i += size + 2; // skip data + CRLF
+        out.extend_from_slice(&raw[i..end]);
+        i = end + 2; // skip data + CRLF
     }
 }
 
 /// Best-effort de-chunk of whatever we have (used when the connection closed).
 fn dechunk_buffer(raw: &[u8]) -> Vec<u8> {
     try_dechunk_complete(raw).unwrap_or_else(|| raw.to_vec())
+}
+
+/// Decode `%XX` escapes only (like JS `decodeURIComponent`: `+` stays `+`, which
+/// matters for an email `tokeninfo` such as `user+vpn@example.com`).
+pub fn percent_decode(s: &str) -> String {
+    let hex = |c: u8| (c as char).to_digit(16).map(|d| d as u8);
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let (Some(h), Some(l)) = (hex(b[i + 1]), hex(b[i + 2])) {
+                out.push(h << 4 | l);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// URL-encode a value for `application/x-www-form-urlencoded` bodies.
@@ -284,4 +391,42 @@ pub fn urlencode(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dechunk_complete_and_partial() {
+        let full = b"5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n";
+        assert_eq!(try_dechunk_complete(full).as_deref(), Some(&b"hello world"[..]));
+        // Every prefix is "not complete yet" — never a panic (a TLS record may end
+        // right after a chunk's data, before its CRLF).
+        for cut in 0..full.len() - 4 {
+            assert_eq!(try_dechunk_complete(&full[..cut]), None, "cut at {cut}");
+        }
+        // A bogus huge size must not overflow.
+        assert_eq!(try_dechunk_complete(b"ffffffffffffffff\r\nab\r\n"), None);
+    }
+
+    #[test]
+    fn percent_decode_keeps_plus_and_bad_escapes() {
+        assert_eq!(percent_decode("ana%2Bvpn%40example.com"), "ana+vpn@example.com");
+        assert_eq!(percent_decode("a+b%zz%4"), "a+b%zz%4");
+        assert_eq!(percent_decode("%C3%A9%"), "é%");
+    }
+
+    #[test]
+    fn cancel_before_connect_sends_nothing() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let cancel = Cancel::default();
+        cancel.cancel(); // e.g. the user typed the code before the push connected
+        let mut jar = Cookies::new();
+        let r = request_cancellable("127.0.0.1", port, "POST", "/x", &mut jar, b"", Duration::from_secs(2), &cancel);
+        assert_eq!(r.err().as_deref(), Some("cancelled"));
+        assert!(listener.accept().is_err(), "a cancelled request must not even connect");
+    }
 }

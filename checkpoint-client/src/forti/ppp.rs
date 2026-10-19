@@ -64,6 +64,8 @@ pub struct IpConfig {
 pub struct PppConn<S> {
     stream: S,
     rbuf: Vec<u8>,
+    /// Socket fd to wait on when a non-blocking write would block.
+    poll_fd: Option<i32>,
 }
 
 /// A read returned no data (timeout in blocking mode, or WouldBlock in
@@ -72,7 +74,13 @@ pub const WOULDBLOCK: &str = "__wouldblock__";
 
 impl<S: Read + Write> PppConn<S> {
     pub fn new(stream: S) -> Self {
-        PppConn { stream, rbuf: Vec::with_capacity(4096) }
+        PppConn { stream, rbuf: Vec::with_capacity(4096), poll_fd: None }
+    }
+
+    /// The stream is now non-blocking: make `send` wait for `fd` to be writable
+    /// instead of failing when the socket's send buffer is full.
+    pub fn set_poll_fd(&mut self, fd: i32) {
+        self.poll_fd = Some(fd);
     }
 
     pub fn get_ref(&self) -> &S {
@@ -91,7 +99,7 @@ impl<S: Read + Write> PppConn<S> {
         out.push(0x03);
         out.extend_from_slice(&proto.to_be_bytes());
         out.extend_from_slice(payload);
-        self.stream.write_all(&out).map_err(|e| format!("ppp write: {e}"))?;
+        crate::sysnet::write_all_polling(&mut self.stream, self.poll_fd, &out).map_err(|e| format!("ppp {e}"))?;
         self.stream.flush().ok();
         Ok(())
     }
@@ -404,6 +412,31 @@ pub fn handle_lcp_in<S: Read + Write>(conn: &mut PppConn<S>, payload: &[u8]) -> 
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn nonblocking_send_waits_for_a_full_buffer_to_drain() {
+        use std::os::unix::io::AsRawFd;
+        use std::os::unix::net::UnixStream;
+        let (tx, mut rx) = UnixStream::pair().unwrap();
+        tx.set_nonblocking(true).unwrap();
+        let fd = tx.as_raw_fd();
+        let mut conn = PppConn::new(tx);
+        conn.set_poll_fd(fd);
+        // A slow peer: starts reading only after the send buffer has long been full.
+        let reader = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            let mut sink = Vec::new();
+            rx.read_to_end(&mut sink).unwrap();
+            sink.len()
+        });
+        let payload = [0x45u8; 1400];
+        for _ in 0..2000 {
+            // ~2.8 MB: far past the socket buffer — must block-and-retry, never fail.
+            conn.send(PPP_IPV4, &payload).expect("send must not fail on WouldBlock");
+        }
+        drop(conn);
+        assert_eq!(reader.join().unwrap(), 2000 * (6 + 4 + 1400));
+    }
 
     #[test]
     fn framing_round_trip() {

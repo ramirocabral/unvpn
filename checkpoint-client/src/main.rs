@@ -12,6 +12,15 @@
 //! `--send` is the only action that touches the network. Without it, cpvpn is
 //! purely local.
 
+/// `println!` that never panics. Once the GUI is gone our stdout is a broken pipe,
+/// and a panicking print on a teardown path would skip restoring DNS and routes.
+macro_rules! out {
+    ($($t:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stdout(), $($t)*);
+    }};
+}
+
 mod ccc;
 mod forti;
 mod f5;
@@ -283,12 +292,16 @@ fn run_tunnel(
     let _ = sock.send(&[0xff]); // NAT-T keepalive
     println!("# ESP on socket {:?} (same NAT-T port as IKE)", sock.local_addr().ok());
 
-    let dns_backup = sysnet::set_dns(&dns, &domains);
+    // Restores DNS when dropped — also on an early return or a panic (e.g. a print
+    // to the GUI's stdout pipe after the GUI is gone).
+    let _restore = sysnet::NetRestore { dns: sysnet::set_dns(&dns, &domains), routes: Vec::new() };
     TUNNEL_STOP.store(false, Ordering::SeqCst);
     unsafe {
         let h = tunnel_sig_handler as extern "C" fn(libc::c_int) as libc::sighandler_t;
         libc::signal(libc::SIGTERM, h);
         libc::signal(libc::SIGINT, h);
+        libc::signal(libc::SIGHUP, h); // terminal closed (sudo relays it)
+        libc::signal(libc::SIGQUIT, h);
     }
     // Disconnect when stdin gets "disconnect" or EOF (the GUI owns this pipe).
     std::thread::spawn(|| {
@@ -334,6 +347,7 @@ fn run_tunnel(
             loop {
                 match std::io::Read::read(&mut rd, &mut buf) {
                     Ok(0) | Err(_) => break,
+                    Ok(n) if !tun::is_ipv4(&buf[..n]) => {} // ESP next-header is IPv4 — drop the rest
                     Ok(n) => {
                         c1.fetch_add(1, Ordering::Relaxed);
                         let cur = sa.read().unwrap().clone();
@@ -425,7 +439,7 @@ fn run_tunnel(
         std::thread::sleep(std::time::Duration::from_millis(500));
         ticks += 1;
         if ticks % 10 == 0 {
-            println!(
+            out!(
                 "#  stats: tun_in={} esp_out={} udp_in={} tun_out={} dec_err={}",
                 tin.load(Ordering::Relaxed),
                 eout.load(Ordering::Relaxed),
@@ -435,9 +449,8 @@ fn run_tunnel(
             );
         }
     }
-    println!("# disconnecting — restoring DNS, tearing down tun/routes…");
-    sysnet::restore_dns(dns_backup);
-    Ok(())
+    out!("# disconnecting — restoring DNS, tearing down tun/routes…");
+    Ok(()) // `_restore` puts DNS back as it drops
 }
 
 /// IKE control loop (runs while connected): renegotiates the ESP SA via a fresh
@@ -1100,8 +1113,12 @@ fn cmd_ike(args: &[String]) {
                         Some(p) => p,
                         None => {
                             // Read the passcode from stdin: the GUI pipes it; a TTY prompts.
-                            eprint!("Passcode (PIN+tokencode): ");
-                            let _ = std::io::stderr().flush();
+                            // (Only a TTY gets the label: on the GUI's pipe it would glue
+                            // itself to the next stderr line and hide "IKE failed".)
+                            if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+                                eprint!("Passcode (PIN+tokencode): ");
+                                let _ = std::io::stderr().flush();
+                            }
                             let mut line = String::new();
                             if std::io::stdin().read_line(&mut line).unwrap_or(0) == 0
                                 || line.trim().is_empty()

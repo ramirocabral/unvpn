@@ -33,6 +33,11 @@ pub struct F5Options {
     pub dtls_port: u16,
     pub dtls12: bool,
     pub idle_timeout: u32,
+    /// `autoreconnectifdropped<n>`: the gateway tells the client to transparently
+    /// reconnect the tunnel if it drops (idle timeout, network blip, server reset).
+    /// Defaults to `true` when the field is absent — the F5 protocol expects clients
+    /// to reconnect, and both openconnect and the shipped client always do.
+    pub autoreconnect: bool,
     /// `UseDefaultGateway0`: full tunnel (default route) vs. split-only.
     pub default_route: bool,
     pub dns: Vec<Ipv4Addr>,
@@ -63,6 +68,9 @@ pub fn parse_profile(xml: &str) -> Option<String> {
 /// at least one address family).
 pub fn parse_options(xml: &str) -> F5Options {
     let mut o = F5Options::default();
+    // The protocol expects clients to reconnect on drop; default on unless the
+    // gateway explicitly sends `autoreconnectifdropped<n>=0`.
+    o.autoreconnect = true;
     for (name, text) in leaf_texts(xml) {
         let text = text.trim();
         match name.as_str() {
@@ -81,6 +89,12 @@ pub fn parse_options(xml: &str) -> F5Options {
             // (only LAN<n> routes), 0 = full tunnel (default route). Authoritative.
             "SplitTunneling0" => o.default_route = bool_or_int(text) == 0,
             _ => {
+                // `autoreconnectifdropped<n>` (case-insensitive; the gateway sends it
+                // lowercase with a `0` index, like the other numbered fields).
+                if name.to_ascii_lowercase().starts_with("autoreconnectifdropped") {
+                    o.autoreconnect = bool_or_int(text) != 0;
+                    continue;
+                }
                 // Numbered families: DNS<n>, DNS6_<n>, WINS<n>, DNSSuffix<n>, LAN<n>,
                 // LAN6_<n>, ExcludeSubnets<n>, ExcludeSubnets6_<n>.
                 if is_numbered(&name, "DNS") || is_numbered(&name, "DNS6_") {
@@ -343,5 +357,19 @@ mod tests {
     fn options_split_tunneling_zero_is_full() {
         let xml = r#"<favorite><object><SplitTunneling0>0</SplitTunneling0></object></favorite>"#;
         assert!(parse_options(xml).default_route);
+    }
+
+    /// `autoreconnectifdropped` defaults to on when absent, honours an explicit 0/1,
+    /// and is matched case-insensitively with its numeric index.
+    #[test]
+    fn options_autoreconnect() {
+        // Absent → default on (the OPTIONS fixture has no such field).
+        assert!(parse_options(OPTIONS).autoreconnect);
+        // Explicit disable.
+        let off = r#"<favorite><object><autoreconnectifdropped0>0</autoreconnectifdropped0></object></favorite>"#;
+        assert!(!parse_options(off).autoreconnect);
+        // Explicit enable (and a capitalised variant).
+        let on = r#"<favorite><object><AutoReconnectIfDropped0>1</AutoReconnectIfDropped0></object></favorite>"#;
+        assert!(parse_options(on).autoreconnect);
     }
 }

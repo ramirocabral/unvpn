@@ -34,6 +34,9 @@ struct Args {
     no_routes: bool,
     /// The `f5-vpn://…` URL for `Action::Launch` (from the webtop "Start" handoff).
     launch_url: Option<String>,
+    /// Path to a status file to publish (so the GUI can see/stop a browser-launched
+    /// tunnel). Set by the scheme-handler wrapper on the `--launch` path.
+    status_file: Option<String>,
 }
 
 #[derive(PartialEq)]
@@ -78,6 +81,7 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
     let mut no_dtls = false;
     let mut no_routes = false;
     let mut launch_url: Option<String> = None;
+    let mut status_file: Option<String> = None;
 
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -104,6 +108,7 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
             "--connect" => action = Action::Connect,
             "--no-dtls" => no_dtls = true,
             "--no-routes" => no_routes = true,
+            "--status-file" => status_file = it.next().cloned(),
             "--launch" => {
                 action = Action::Launch;
                 launch_url = Some(it.next().cloned().ok_or("--launch needs an f5-vpn:// URL")?);
@@ -119,13 +124,13 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
     if action == Action::Launch {
         // host/user come from the URL; nothing else is required here.
         let host = host.unwrap_or_default();
-        return Ok(Args { host, port, user, password, code, action, no_dtls, no_routes, launch_url });
+        return Ok(Args { host, port, user, password, code, action, no_dtls, no_routes, launch_url, status_file });
     }
     let host = host.ok_or("f5 requires --gateway <host[:port]>")?;
     if action != Action::Probe && user.is_empty() {
         return Err("f5 requires --user <user>".into());
     }
-    Ok(Args { host, port, user, password, code, action, no_dtls, no_routes, launch_url })
+    Ok(Args { host, port, user, password, code, action, no_dtls, no_routes, launch_url, status_file })
 }
 
 fn usage() {
@@ -135,7 +140,8 @@ fn usage() {
     eprintln!("  cpvpn f5 -g <host[:port]> -u <user> [...] --connect     # brings up the tunnel (sudo)");
     eprintln!("      [--no-routes]  tunnel up but install no routes/DNS (safe data-plane test;");
     eprintln!("                     verify with: ping -I f5vpn0 <internal-host>)");
-    eprintln!("  cpvpn f5 --launch \"f5-vpn://…\"   # webtop 'Start' handoff (SSO token → tunnel, sudo)");
+    eprintln!("  cpvpn f5 --launch \"f5-vpn://…\" [--status-file PATH]   # webtop 'Start' handoff (SSO token → tunnel, sudo)");
+    eprintln!("      --status-file  publish pid/IP/DNS here so the GUI can show + stop this tunnel");
     eprintln!("  password/OTP are read from stdin (no echo) when not given with --password/--code");
 }
 
@@ -183,12 +189,14 @@ fn probe(a: &Args) -> Result<(), String> {
 /// When stdin is a terminal, echo is turned off for the duration so the secret is
 /// not shown or left in scrollback — matching how a password prompt should behave.
 fn read_stdin_line(prompt: &str) -> Option<String> {
-    eprint!("{prompt}");
-    let _ = std::io::stderr().flush();
-
-    // Disable terminal echo if stdin is a TTY; restore it afterwards.
+    // Disable terminal echo if stdin is a TTY; restore it afterwards. Only a TTY
+    // gets the label: on a pipe it would glue itself to the next stderr line.
     let fd = libc::STDIN_FILENO;
     let is_tty = unsafe { libc::isatty(fd) == 1 };
+    if is_tty {
+        eprint!("{prompt}");
+        let _ = std::io::stderr().flush();
+    }
     let saved = if is_tty {
         unsafe {
             let mut t: libc::termios = std::mem::zeroed();
@@ -264,7 +272,15 @@ fn do_login(a: &Args) -> Result<Session, String> {
             } else {
                 match &a.code {
                     Some(c) => c.clone(),
-                    None => read_stdin_line("Token code (OTP): ").ok_or("OTP required but none provided")?,
+                    None => {
+                        // Second factor: let the front-end collect it. The AUTH-PROMPT
+                        // marker drives the GUI's prompt card (and is harmless on a TTY,
+                        // where read_stdin_line also prints its own label). The code is
+                        // often emailed/SMS and doesn't exist until the password is in.
+                        let msg = if form.banner.is_empty() { "One-time passcode" } else { form.banner.as_str() };
+                        println!("# AUTH-PROMPT: code: {}", msg.replace(['\n', '\r'], " "));
+                        read_stdin_line("Token code (OTP): ").ok_or("OTP required but none provided")?
+                    }
                 }
             };
             for idx in pw_fields {
@@ -295,7 +311,7 @@ fn connect(a: &Args) -> Result<(), String> {
     let mut session = do_login(a)?;
     tunnel::run(
         &mut session,
-        tunnel::RunOpts { no_dtls: a.no_dtls, no_routes: a.no_routes, watch_stdin: true },
+        tunnel::RunOpts { no_dtls: a.no_dtls, no_routes: a.no_routes, watch_stdin: true, status_file: None },
     )
 }
 
@@ -312,7 +328,12 @@ fn launch(a: &Args) -> Result<(), String> {
     println!("# ✅ session acquired via handoff (MRHSession set)");
     tunnel::run(
         &mut session,
-        tunnel::RunOpts { no_dtls: a.no_dtls, no_routes: a.no_routes, watch_stdin: false },
+        tunnel::RunOpts {
+            no_dtls: a.no_dtls,
+            no_routes: a.no_routes,
+            watch_stdin: false,
+            status_file: a.status_file.clone(),
+        },
     )
 }
 

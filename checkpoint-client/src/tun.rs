@@ -17,6 +17,10 @@ const IFF_NO_PI: u16 = 0x1000;
 /// e.g. another cpvpn back-end's tunnel is up), fall back to a kernel-assigned
 /// variant (`<base>%d`) instead of failing — so concurrent tunnels coexist and we
 /// never need to touch an existing device. Returns the file and the actual name.
+///
+/// IPv6 is disabled on the new interface before it goes up: all our tunnels are
+/// IPv4-only, and otherwise the kernel autoconfigures a link-local address and
+/// sends DAD/RS/MLD into the tunnel as soon as the link is up.
 pub fn open_tun(name: &str) -> Result<(File, String), String> {
     let file = OpenOptions::new()
         .read(true)
@@ -24,18 +28,25 @@ pub fn open_tun(name: &str) -> Result<(File, String), String> {
         .open("/dev/net/tun")
         .map_err(|e| format!("open /dev/net/tun: {e} (need root / CAP_NET_ADMIN)"))?;
 
-    match tunsetiff(&file, name) {
-        Ok(actual) => Ok((file, actual)),
+    let actual = match tunsetiff(&file, name) {
+        Ok(actual) => actual,
         Err(e) if e.raw_os_error() == Some(libc::EBUSY) => {
             // Name taken — ask the kernel to pick the next free `<base>N`.
             let base = name.trim_end_matches(|c: char| c.is_ascii_digit());
             let template = format!("{}%d", if base.is_empty() { "tun" } else { base });
-            let actual = tunsetiff(&file, &template)
-                .map_err(|e| format!("TUNSETIFF (fallback {template}): {e}"))?;
-            Ok((file, actual))
+            tunsetiff(&file, &template).map_err(|e| format!("TUNSETIFF (fallback {template}): {e}"))?
         }
-        Err(e) => Err(format!("TUNSETIFF: {e}")),
-    }
+        Err(e) => return Err(format!("TUNSETIFF: {e}")),
+    };
+    // Best-effort: absent when the kernel has no IPv6 at all, which is fine too.
+    let _ = std::fs::write(format!("/proc/sys/net/ipv6/conf/{actual}/disable_ipv6"), "1");
+    Ok((file, actual))
+}
+
+/// True for an IPv4 packet (version nibble 4). The data loops only forward these:
+/// every tunnel we speak (PPP IPCP, ESP next-header 4) carries IPv4 only.
+pub fn is_ipv4(pkt: &[u8]) -> bool {
+    pkt.first().is_some_and(|b| b >> 4 == 4)
 }
 
 /// Bind the open `/dev/net/tun` file to interface `name` (IFF_TUN | IFF_NO_PI).
@@ -85,6 +96,41 @@ pub fn ip_batch(lines: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// [`ip_batch`] that also reports which lines failed (0-based indices into
+/// `lines`). With `-force`, iproute2 keeps going and prints `Command failed -:N`
+/// (1-based line) on stderr for each failure — e.g. a route that already existed,
+/// which then must NOT be deleted again on teardown.
+pub fn ip_batch_failed(lines: &[String]) -> Result<std::collections::HashSet<usize>, String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut failed = std::collections::HashSet::new();
+    if lines.is_empty() {
+        return Ok(failed);
+    }
+    let mut child = Command::new("ip")
+        .args(["-force", "-batch", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("spawn ip -batch: {e}"))?;
+    {
+        let mut si = child.stdin.take().ok_or("ip -batch: no stdin")?;
+        for l in lines {
+            let _ = writeln!(si, "{l}");
+        }
+    }
+    let out = child.wait_with_output().map_err(|e| format!("ip -batch wait: {e}"))?;
+    for line in String::from_utf8_lossy(&out.stderr).lines() {
+        if let Some(n) = line.split("Command failed -:").nth(1) {
+            if let Ok(n) = n.trim().parse::<usize>() {
+                failed.insert(n.saturating_sub(1));
+            }
+        }
+    }
+    Ok(failed)
+}
+
 /// Run `ip <args>`, failing on a non-zero exit.
 pub fn ip(args: &[&str]) -> Result<(), String> {
     let out = Command::new("ip")
@@ -105,4 +151,22 @@ pub fn ip(args: &[&str]) -> Result<(), String> {
 /// Netmask (e.g. 255.255.248.0) → prefix length (e.g. 21).
 pub fn mask_to_prefix(mask: Ipv4Addr) -> u8 {
     u32::from(mask).count_ones() as u8
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_ipv4_passes() {
+        assert!(is_ipv4(&[0x45, 0x00, 0x00, 0x54]));
+        assert!(!is_ipv4(&[0x60, 0x00, 0x00, 0x00])); // IPv6 (RS/MLD from link-local autoconf)
+        assert!(!is_ipv4(&[]));
+    }
+
+    #[test]
+    fn prefix_from_mask() {
+        assert_eq!(mask_to_prefix(Ipv4Addr::new(255, 255, 255, 255)), 32);
+        assert_eq!(mask_to_prefix(Ipv4Addr::new(255, 255, 248, 0)), 21);
+    }
 }
