@@ -1,13 +1,18 @@
 [package]
 name = "cpvpn-gui"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-description = "Native Linux VPN client GUI (Check Point / OpenVPN / F5) with a system-tray icon."
+description = "Native Linux VPN client GUI (Check Point / Fortinet / F5) — GTK4 + libadwaita, with connection profiles."
 
 [dependencies]
-eframe = "0.29"
+gtk = { package = "gtk4", version = "0.11", features = ["v4_12"] }
+adw = { package = "libadwaita", version = "0.9", features = ["v1_5"] }
+async-channel = "2"
 ksni = "0.2"
 dbus = "0.9"
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
 
 [[bin]]
 name = "cpvpn-gui"

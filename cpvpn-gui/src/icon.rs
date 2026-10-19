@@ -1,6 +1,7 @@
-//! Procedural app icon: a shield with a check mark, rendered to RGBA (egui window
-//! icon) and ARGB32 (ksni tray pixmap). Drawn from scratch so the tray icon shows
-//! consistently on every desktop regardless of the installed icon theme.
+//! Procedural app icon: a shield with a check mark, rendered to ARGB32 for the
+//! ksni system-tray pixmap (and RGBA via [`app_icon_rgba`] for `--dump-rgba`).
+//! Drawn from scratch so the tray icon shows consistently on every desktop
+//! regardless of the installed icon theme.
 
 /// Shield silhouette membership in normalized [0,1] coords (x right, y down).
 fn in_shield(x: f32, y: f32) -> bool {
@@ -85,53 +86,6 @@ fn render_rgba(size: u32, color: [u8; 3]) -> Vec<u8> {
 /// The app icon as RGBA at an arbitrary size, transparent background.
 pub fn app_icon_rgba(size: u32) -> Vec<u8> {
     render_rgba(size, [46, 120, 230])
-}
-
-/// Accent-blue shield for the window title bar / taskbar.
-pub fn window_icon() -> eframe::egui::IconData {
-    let size = 64;
-    eframe::egui::IconData {
-        rgba: render_rgba(size, [46, 120, 230]),
-        width: size,
-        height: size,
-    }
-}
-
-fn blit(canvas: &mut [u8], cw: usize, src: &[u8], s: usize, ox: usize, oy: usize) {
-    for y in 0..s {
-        for x in 0..s {
-            let si = (y * s + x) * 4;
-            let a = src[si + 3] as u32;
-            if a == 0 {
-                continue;
-            }
-            let di = ((oy + y) * cw + (ox + x)) * 4;
-            for k in 0..3 {
-                canvas[di + k] =
-                    ((src[si + k] as u32 * a + canvas[di + k] as u32 * (255 - a)) / 255) as u8;
-            }
-        }
-    }
-}
-
-/// A dark preview canvas: the 64px window icon plus the four 32px tray states,
-/// for eyeballing the artwork. Returns (width, height, RGBA).
-pub fn preview_rgba() -> (usize, usize, Vec<u8>) {
-    let bg = [24u8, 26, 32];
-    let (w, h) = (320usize, 90usize);
-    let mut canvas = vec![0u8; w * h * 4];
-    for p in 0..w * h {
-        canvas[p * 4] = bg[0];
-        canvas[p * 4 + 1] = bg[1];
-        canvas[p * 4 + 2] = bg[2];
-        canvas[p * 4 + 3] = 255;
-    }
-    blit(&mut canvas, w, &render_rgba(64, [46, 120, 230]), 64, 16, 13);
-    let states = [[60, 200, 110], [230, 170, 50], [230, 80, 80], [150, 156, 168]];
-    for (i, c) in states.iter().enumerate() {
-        blit(&mut canvas, w, &render_rgba(32, *c), 32, 110 + i * 50, 29);
-    }
-    (w, h, canvas)
 }
 
 /// State-colored shield for the system tray (ARGB32, network byte order).

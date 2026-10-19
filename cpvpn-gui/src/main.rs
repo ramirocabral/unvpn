@@ -1,530 +1,58 @@
-//! cpvpn-gui — a small native VPN client GUI with a system-tray icon.
+//! cpvpn-gui — a native Linux VPN client with a clean GTK4 / libadwaita UI and a
+//! system-tray icon. Supports Check Point, Fortinet (FortiClient) and F5 BIG-IP
+//! APM back-ends, and saved connection **profiles** (switch between gateways
+//! without retyping). Passwords are kept in the system keyring (Secret Service);
+//! 2FA tokens are single-use and always asked for.
 //!
 //! The GUI runs as the user and drives the privileged `cpvpn` engine as a
-//! subprocess via `pkexec` (graphical PolicyKit auth). The passcode is piped on
-//! the engine's stdin (never argv); writing `disconnect` (or closing stdin)
-//! triggers a clean teardown. Engine stdout is parsed for live status, and for
-//! `# AUTH-PROMPT: <kind>: <message>` lines — a mid-login question (2FA code,
-//! challenge answer, new password, push approval) answered with one stdin line.
+//! subprocess (see `engine.rs`); the tray is in `tray.rs`, profiles in
+//! `profiles.rs`.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod engine;
 mod icon;
+mod profiles;
+mod tray;
 
-use std::collections::VecDeque;
-use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::cell::RefCell;
+use std::rc::{Rc, Weak};
+use std::time::Duration;
 
-use eframe::egui;
+use adw::prelude::*;
+use gtk::{gdk, gio, glib};
 
-const SELFSERVICE_URL: &str = "https://securid.example.net/console-selfservice/";
+use engine::{saml_entry, AuthPrompt, EngineEvent, State, TrayCmd, Tx, UiMsg, Vpn};
+use profiles::{Backend, Profile};
 
-#[derive(Clone, PartialEq)]
-enum State {
-    Disconnected,
-    Connecting,
-    Connected,
-    /// `disconnect` sent; the engine is tearing down (DNS/routes) and will exit.
-    Disconnecting,
-    Error(String),
-}
+const APP_ID: &str = "io.github.cpvpn.Client";
 
-#[derive(Default)]
-struct Status {
-    ip: String,
-    dns: String,
-    log: VecDeque<String>,
-    /// A pending engine question (`# AUTH-PROMPT:`), answered with one stdin line.
-    prompt: Option<AuthPrompt>,
-    /// Numbers the prompts, so a new question never inherits the old one's input.
-    prompt_seq: u64,
-}
+const CSS: &str = "
+.statuspill { font-weight: bold; }
+.st-on  { color: #2ec27e; }
+.st-off { color: #9a9fab; }
+.st-busy{ color: #e5a50a; }
+.st-err { color: #e01b24; }
+";
 
-/// What the engine is asking mid-login. `kind` is `code` (OTP / email / SMS
-/// token), `code2` (next token code, drift resync), `answer` (challenge),
-/// `newpass` (password expired), `renew` (password change the user may skip —
-/// an empty answer) or `push` (approve in the app — or type a code).
-#[derive(Clone)]
-struct AuthPrompt {
-    kind: String,
-    message: String,
-    seq: u64,
-}
+// ───────────────────────── browser-launched F5 tunnel ──────────────────────
 
-/// Parse `AUTH-PROMPT: <kind>: <message>` (already stripped of the `# ` prefix).
-/// Only at the start of a line: gateway-supplied text (a challenge message) can
-/// appear later in a line and must not be able to fake a marker.
-fn parse_auth_prompt(line: &str) -> Option<AuthPrompt> {
-    let rest = line.strip_prefix("AUTH-PROMPT: ")?;
-    let (kind, message) = rest.split_once(": ").unwrap_or((rest, ""));
-    Some(AuthPrompt { kind: kind.trim().to_string(), message: message.trim().to_string(), seq: 0 })
-}
-
-/// The SSO entry point the engine prints for `gateway` (`host[:port]`, default 443):
-/// the only URL the GUI will hand to the browser.
-fn saml_entry(gateway: &str) -> String {
-    let g = gateway.trim();
-    let hostport = match g.rsplit_once(':') {
-        Some((h, p)) if p.parse::<u16>().is_ok() => format!("{h}:{p}"),
-        _ => format!("{g}:443"),
-    };
-    format!("https://{hostport}/remote/saml/start?")
-}
-
-/// Resolve the engine binary to an absolute path (pkexec requires absolute).
-/// Order: $CPVPN_BIN, the dev build, $PATH, then a sensible default.
-fn cpvpn_bin() -> String {
-    if let Ok(p) = std::env::var("CPVPN_BIN") {
-        return p;
-    }
-    let dev = "/home/user/projects/re/checkpoint-client/target/release/cpvpn";
-    if std::path::Path::new(dev).exists() {
-        return dev.to_string();
-    }
-    if let Ok(path) = std::env::var("PATH") {
-        for dir in path.split(':').filter(|d| !d.is_empty()) {
-            let cand = std::path::Path::new(dir).join("cpvpn");
-            if cand.is_file() {
-                return cand.to_string_lossy().into_owned();
-            }
-        }
-    }
-    "/usr/local/bin/cpvpn".to_string()
-}
-
-/// How to run the engine as root. `pkexec` needs a PolicyKit agent (GNOME/KDE
-/// have one); minimal WMs (Sway/i3/…) often don't, but frequently have
-/// passwordless sudo, which needs no agent. Auto-picks; override with
-/// `CPVPN_PRIV=pkexec|sudo`.
-fn priv_escalation() -> (&'static str, Vec<&'static str>) {
-    match std::env::var("CPVPN_PRIV").as_deref() {
-        Ok("sudo") => return ("sudo", vec!["-n"]),
-        Ok("pkexec") => return ("pkexec", vec![]),
-        _ => {}
-    }
-    let passwordless_sudo = Command::new("sudo")
-        .args(["-n", "true"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    if passwordless_sudo {
-        ("sudo", vec!["-n"])
-    } else {
-        ("pkexec", vec![])
-    }
-}
-
-// ───────────────────────── system tray (StatusNotifierItem) ─────────────────
-
-enum TrayCmd {
-    Show,
-    Connect,
-    Disconnect,
-    Quit,
-}
-
-struct VpnTray {
-    state: Arc<Mutex<State>>,
-    tx: mpsc::Sender<TrayCmd>,
-    ctx: egui::Context,
-}
-
-impl VpnTray {
-    fn send(&self, cmd: TrayCmd) {
-        let _ = self.tx.send(cmd);
-        self.ctx.request_repaint(); // wake the (possibly hidden) event loop
-    }
-}
-
-impl ksni::Tray for VpnTray {
-    fn id(&self) -> String {
-        "cpvpn".into()
-    }
-    fn title(&self) -> String {
-        "cpvpn".into()
-    }
-    fn icon_name(&self) -> String {
-        String::new() // we supply a pixmap instead, so the icon is theme-independent
-    }
-    fn icon_pixmap(&self) -> Vec<ksni::Icon> {
-        let color = match &*self.state.lock().unwrap() {
-            State::Connected => [60, 200, 110],
-            State::Connecting | State::Disconnecting => [230, 170, 50],
-            State::Error(_) => [230, 80, 80],
-            State::Disconnected => [150, 156, 168],
-        };
-        vec![icon::tray_pixmap(color)]
-    }
-    fn tool_tip(&self) -> ksni::ToolTip {
-        let desc = match &*self.state.lock().unwrap() {
-            State::Connected => "Connected",
-            State::Connecting => "Connecting…",
-            State::Disconnecting => "Disconnecting…",
-            State::Error(_) => "Error",
-            State::Disconnected => "Disconnected",
-        };
-        ksni::ToolTip {
-            icon_name: String::new(),
-            icon_pixmap: vec![],
-            title: "cpvpn".into(),
-            description: desc.into(),
-        }
-    }
-    fn activate(&mut self, _x: i32, _y: i32) {
-        self.send(TrayCmd::Show); // left-click opens the window
-    }
-    fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
-        use ksni::menu::*;
-        let state = self.state.lock().unwrap().clone();
-        let connected = matches!(state, State::Connected | State::Connecting);
-        let label = match state {
-            State::Connected | State::Connecting => "Disconnect",
-            State::Disconnecting => "Disconnecting…",
-            _ => "Connect…",
-        };
-        vec![
-            StandardItem {
-                label: "Show cpvpn".into(),
-                activate: Box::new(|t: &mut Self| t.send(TrayCmd::Show)),
-                ..Default::default()
-            }
-            .into(),
-            MenuItem::Separator,
-            StandardItem {
-                label: label.into(),
-                enabled: state != State::Disconnecting,
-                activate: Box::new(move |t: &mut Self| {
-                    t.send(if connected { TrayCmd::Disconnect } else { TrayCmd::Connect })
-                }),
-                ..Default::default()
-            }
-            .into(),
-            MenuItem::Separator,
-            StandardItem {
-                label: "Quit".into(),
-                icon_name: "application-exit".into(),
-                activate: Box::new(|t: &mut Self| t.send(TrayCmd::Quit)),
-                ..Default::default()
-            }
-            .into(),
-        ]
-    }
-}
-
-/// True if a StatusNotifierWatcher (a tray host) is on the session bus, so it is
-/// safe to hide the window to the tray instead of quitting.
-fn tray_available() -> bool {
-    use dbus::blocking::Connection;
-    let Ok(c) = Connection::new_session() else {
-        return false;
-    };
-    let proxy = c.with_proxy(
-        "org.freedesktop.DBus",
-        "/org/freedesktop/DBus",
-        std::time::Duration::from_millis(400),
-    );
-    let r: Result<(bool,), _> = proxy.method_call(
-        "org.freedesktop.DBus",
-        "NameHasOwner",
-        ("org.kde.StatusNotifierWatcher",),
-    );
-    r.map(|(b,)| b).unwrap_or(false)
-}
-
-/// Manages the privileged engine subprocess.
-struct Vpn {
-    state: Arc<Mutex<State>>,
-    status: Arc<Mutex<Status>>,
-    child: Option<Child>,
-    stdin: Option<std::process::ChildStdin>,
-    /// Bumped per connection: a previous engine's late output can't touch this one.
-    gen: Arc<AtomicU64>,
-}
-
-impl Vpn {
-    fn new() -> Self {
-        Vpn {
-            state: Arc::new(Mutex::new(State::Disconnected)),
-            status: Arc::new(Mutex::new(Status::default())),
-            child: None,
-            stdin: None,
-            gen: Arc::new(AtomicU64::new(0)),
-        }
-    }
-
-    fn log(&self, line: impl Into<String>) {
-        let mut s = self.status.lock().unwrap();
-        s.log.push_back(line.into());
-        while s.log.len() > 300 {
-            s.log.pop_front();
-        }
-    }
-
-    /// Launch the privileged engine. `engine_args` are the `cpvpn` subcommand args
-    /// (e.g. `ike …` or `forti …`); `stdin_lines` are secrets/inputs piped on
-    /// stdin in order (password, token, …) — never in argv. `label` is a log line.
-    /// `saml_entry`: for an SSO login, the only URL the engine may have us open.
-    fn connect(
-        &mut self,
-        engine_args: Vec<String>,
-        stdin_lines: Vec<String>,
-        label: String,
-        saml_entry: Option<String>,
-        ctx: egui::Context,
-    ) {
-        if self.child.is_some()
-            || matches!(*self.state.lock().unwrap(), State::Connecting | State::Connected | State::Disconnecting)
-        {
-            return;
-        }
-        let my_gen = self.gen.fetch_add(1, Ordering::SeqCst) + 1;
-        *self.state.lock().unwrap() = State::Connecting;
-        {
-            let mut s = self.status.lock().unwrap();
-            s.ip.clear();
-            s.dns.clear();
-            s.log.clear();
-            s.prompt = None;
-        }
-        let (prog, pre) = priv_escalation();
-        self.log(format!("{label} (via {prog})…"));
-
-        let mut child = match Command::new(prog)
-            .args(&pre)
-            .arg(cpvpn_bin())
-            .args(&engine_args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-        {
-            Ok(c) => c,
-            Err(e) => {
-                *self.state.lock().unwrap() = State::Error(format!("spawn {prog}: {e}"));
-                return;
-            }
-        };
-
-        // Pipe inputs (password, token, …) as stdin lines; keep stdin for disconnect.
-        if let Some(mut si) = child.stdin.take() {
-            for line in &stdin_lines {
-                let _ = writeln!(si, "{line}");
-            }
-            let _ = si.flush();
-            self.stdin = Some(si);
-        }
-
-        // Pump stdout + stderr → status/log.
-        for (reader, is_err) in [
-            (child.stdout.take().map(|o| Box::new(o) as Box<dyn std::io::Read + Send>), false),
-            (child.stderr.take().map(|o| Box::new(o) as Box<dyn std::io::Read + Send>), true),
-        ] {
-            let Some(r) = reader else { continue };
-            let state = self.state.clone();
-            let status = self.status.clone();
-            let gen = self.gen.clone();
-            let saml_entry = saml_entry.clone();
-            let ctx = ctx.clone();
-            std::thread::spawn(move || {
-                let mut saml_opened = false;
-                for line in BufReader::new(r).lines().map_while(Result::ok) {
-                    let clean = line.trim_start_matches(['#', ' ']).to_string();
-                    eprintln!("[engine] {clean}"); // mirror to our stderr for logs/debugging
-                    if gen.load(Ordering::SeqCst) != my_gen {
-                        continue; // a previous connection's engine, still draining
-                    }
-
-                    // Markers come only from the engine's stdout, only at the start of a
-                    // line (gateway text is flattened into the middle of other lines).
-                    let mut prompt = None;
-                    if !is_err {
-                        // SAML: open the IdP sign-in in the user's browser (the engine
-                        // runs as root and can't reach the user's session) — once, and
-                        // only the exact entry point of the gateway the user typed.
-                        if let Some(rest) = clean.strip_prefix("SAML-URL: ") {
-                            let url = rest.trim();
-                            if !saml_opened && saml_entry.as_deref().is_some_and(|e| url.starts_with(e)) {
-                                saml_opened = true;
-                                let _ = Command::new("xdg-open").arg(url).spawn();
-                            }
-                        }
-                        prompt = parse_auth_prompt(&clean);
-                    }
-                    let disconnecting = *state.lock().unwrap() == State::Disconnecting;
-                    {
-                        let mut s = status.lock().unwrap();
-                        s.log.push_back(clean.clone());
-                        while s.log.len() > 300 {
-                            s.log.pop_front();
-                        }
-                        if let Some(mut p) = prompt {
-                            if !disconnecting {
-                                s.prompt_seq += 1;
-                                p.seq = s.prompt_seq;
-                                s.prompt = Some(p);
-                            }
-                            // carries gateway text — don't mine it for IP/DNS/state
-                            drop(s);
-                            ctx.request_repaint();
-                            continue;
-                        }
-                        if !is_err {
-                            // Internal IP: Check Point "Office Mode: IP x" / Fortinet "PPP up — IP x".
-                            if let Some(rest) = clean
-                                .split("Office Mode: IP ")
-                                .nth(1)
-                                .or_else(|| clean.split("— IP ").nth(1))
-                            {
-                                s.ip = rest.split_whitespace().next().unwrap_or("").to_string();
-                            }
-                            if let Some(rest) = clean.split("DNS [").nth(1) {
-                                s.dns = rest.split(']').next().unwrap_or("").to_string();
-                            }
-                        }
-                    }
-                    if disconnecting {
-                        // teardown chatter ("cancelled", …) must not override Disconnecting
-                    } else if !is_err && clean.contains("TUNNEL UP") {
-                        *state.lock().unwrap() = State::Connected;
-                        status.lock().unwrap().prompt = None;
-                    } else if clean.contains("AUTH FAILED")
-                        || clean.starts_with("IKE failed")
-                        || clean.starts_with("forti failed")
-                        || clean.starts_with("f5 failed")
-                        || clean.contains("login rejected")
-                        || clean.contains("Two-factor Authentication failed")
-                        || clean.contains("auth not completed")
-                    {
-                        *state.lock().unwrap() = State::Error(clean.clone());
-                    }
-                    ctx.request_repaint();
-                }
-            });
-        }
-
-        self.child = Some(child);
-    }
-
-    /// Answer the engine's pending `AUTH-PROMPT` number `seq` with one stdin line.
-    fn answer_prompt(&mut self, seq: u64, line: &str) {
-        if let Some(si) = self.stdin.as_mut() {
-            let _ = writeln!(si, "{line}");
-            let _ = si.flush();
-        }
-        let mut s = self.status.lock().unwrap();
-        if s.prompt.as_ref().is_some_and(|p| p.seq == seq) {
-            s.prompt = None; // a newer question that already arrived stays up
-        }
-    }
-
-    /// Ask the engine to stop — never waits on the UI thread. The engine aborts a
-    /// login in progress, or restores DNS/routes, and exits; [`poll_exit`] reaps it.
-    fn disconnect(&mut self) {
-        self.status.lock().unwrap().prompt = None;
-        if let Some(mut si) = self.stdin.take() {
-            let _ = writeln!(si, "disconnect");
-            let _ = si.flush();
-        } // stdin dropped: EOF too
-        let mut st = self.state.lock().unwrap();
-        if self.child.is_some() {
-            if *st != State::Disconnecting {
-                *st = State::Disconnecting;
-                drop(st);
-                self.log("disconnecting…");
-            }
-        } else {
-            *st = State::Disconnected;
-        }
-    }
-
-    /// For quitting: ask the engine to stop and give it a few seconds to finish its
-    /// teardown before the window goes away (it completes on its own regardless).
-    fn shutdown(&mut self) {
-        self.disconnect();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-        while let Some(c) = self.child.as_mut() {
-            if !matches!(c.try_wait(), Ok(None)) || std::time::Instant::now() >= deadline {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-    }
-
-    fn poll_exit(&mut self) {
-        if let Some(c) = self.child.as_mut() {
-            if let Ok(Some(status)) = c.try_wait() {
-                self.child = None;
-                self.stdin = None;
-                let mut st = self.state.lock().unwrap();
-                match *st {
-                    State::Disconnecting => {
-                        *st = State::Disconnected;
-                        drop(st);
-                        self.log("disconnected");
-                        return;
-                    }
-                    // Exited before the tunnel came up, and the stdout parser didn't
-                    // already record a specific error → pkexec cancelled or auth failed.
-                    State::Connecting => {
-                        *st = State::Error(format!(
-                            "engine exited before connecting ({status}) — auth cancelled or failed; see log"
-                        ));
-                    }
-                    State::Connected => *st = State::Disconnected,
-                    _ => {} // keep a specific Error already set by the parser
-                }
-            }
-        }
-    }
-}
-
-struct App {
-    client: String,
-    gateway: String,
-    user: String,
-    pin: String,
-    tokencode: String,
-    // Fortinet-specific inputs.
-    password: String,
-    realm: String,
-    forti_saml: bool,
-    /// Answer being typed for a pending engine `AUTH-PROMPT` (+ confirmation for `newpass`).
-    prompt_input: String,
-    prompt_confirm: String,
-    /// The prompt (seq) those fields belong to.
-    prompt_seq_seen: u64,
-    vpn: Vpn,
-    tray: Option<ksni::Handle<VpnTray>>,
-    tray_rx: Option<mpsc::Receiver<TrayCmd>>,
-    tray_active: bool,
-    last_tray_state: Option<State>,
-    want_quit: bool,
-    /// An F5 tunnel launched from the browser (webtop "Start"), detected via its
-    /// status file. The GUI shows it and can stop it even though it didn't start it.
-    external_f5: Option<ExternalF5>,
-}
-
-/// An F5 tunnel started outside the GUI (by the `f5-vpn://` scheme handler), read from
-/// `~/.cache/cpvpn-f5/tunnel.status`. The engine writes it; deleting it stops the tunnel.
+/// An F5 tunnel started outside the GUI (by the `f5-vpn://` scheme handler), read
+/// from `~/.cache/cpvpn-f5/tunnel.status`. The engine writes it; deleting it stops
+/// the tunnel (the root engine watches the file and tears down cleanly).
 struct ExternalF5 {
     gateway: String,
     ip: String,
     dns: String,
 }
 
-/// Path of the browser-launch status file (same as the scheme-handler wrapper writes).
 fn f5_status_path() -> Option<std::path::PathBuf> {
     let home = std::env::var_os("HOME")?;
     Some(std::path::PathBuf::from(home).join(".cache/cpvpn-f5/tunnel.status"))
 }
 
 /// Detect a live browser-launched F5 tunnel: parse the status file and confirm its
-/// process is still running. Returns None if there's no such tunnel.
+/// process is still running. None if there's no such tunnel.
 fn detect_external_f5() -> Option<ExternalF5> {
     let content = std::fs::read_to_string(f5_status_path()?).ok()?;
     let (mut pid, mut gateway, mut ip, mut dns) = (0u32, String::new(), String::new(), String::new());
@@ -540,536 +68,907 @@ fn detect_external_f5() -> Option<ExternalF5> {
             }
         }
     }
-    // A stale file whose process is gone is not a live tunnel.
     if pid == 0 || !std::path::Path::new(&format!("/proc/{pid}")).exists() {
-        return None;
+        return None; // a stale file whose process is gone is not a live tunnel
     }
     Some(ExternalF5 { gateway, ip, dns })
 }
 
-/// Stop a browser-launched F5 tunnel: delete its status file. The engine (running as
-/// root) watches the file and tears the tunnel down cleanly when it disappears — which
-/// the GUI, running as the user, could not do by signalling the process directly.
 fn disconnect_external_f5() {
     if let Some(p) = f5_status_path() {
         let _ = std::fs::remove_file(p);
     }
 }
 
-impl Default for App {
-    fn default() -> Self {
-        App {
-            client: "Check Point".to_string(),
-            gateway: "203.0.113.10".to_string(),
-            user: "u-123456".to_string(),
-            pin: String::new(),
-            tokencode: String::new(),
-            password: String::new(),
-            realm: String::new(),
-            forti_saml: false,
-            prompt_input: String::new(),
-            prompt_confirm: String::new(),
-            prompt_seq_seen: 0,
-            vpn: Vpn::new(),
-            tray: None,
-            tray_rx: None,
-            tray_active: false,
-            last_tray_state: None,
-            want_quit: false,
-            external_f5: None,
-        }
-    }
+// ─────────────────────────────────── App ───────────────────────────────────
+
+/// All the GUI state. Held in an `Rc` and cloned into signal handlers; mutable
+/// bits use interior mutability so handlers can take `&self`.
+struct App {
+    window: adw::ApplicationWindow,
+    toast: adw::ToastOverlay,
+
+    // header
+    status_pill: gtk::Label,
+
+    // profiles
+    profiles_group: adw::PreferencesGroup,
+    profile_rows: RefCell<Vec<adw::ActionRow>>,
+    profiles: RefCell<Vec<Profile>>,
+
+    // connection form
+    form_group: adw::PreferencesGroup,
+    name_row: adw::EntryRow,
+    backend_row: adw::ComboRow,
+    gateway_row: adw::EntryRow,
+    user_row: adw::EntryRow,
+    password_row: adw::PasswordEntryRow,
+    token_row: adw::EntryRow,
+    realm_row: adw::EntryRow,
+    forti_auth_row: adw::ComboRow,
+    remember_row: adw::SwitchRow,
+    save_btn: gtk::Button,
+
+    // action
+    connect_btn: gtk::Button,
+
+    // active-connection status
+    status_group: adw::PreferencesGroup,
+    ip_row: adw::ActionRow,
+    dns_row: adw::ActionRow,
+
+    // browser-launched F5
+    ext_group: adw::PreferencesGroup,
+    ext_gw_row: adw::ActionRow,
+    ext_ip_row: adw::ActionRow,
+    ext_dns_row: adw::ActionRow,
+
+    // mid-login question
+    prompt_group: adw::PreferencesGroup,
+    prompt_rows: RefCell<Vec<gtk::Widget>>,
+
+    // log
+    log_buffer: gtk::TextBuffer,
+    log_view: gtk::TextView,
+
+    // engine + tray
+    vpn: RefCell<Vpn>,
+    tray: RefCell<Option<ksni::Handle<tray::VpnTray>>>,
+    tx: Tx,
+    last_state: RefCell<Option<State>>,
+    /// Self-reference, so `&self` handlers can clone the owning `Rc` for callbacks.
+    me: RefCell<Weak<App>>,
 }
 
 impl App {
-    /// Spawn the tray service (if a tray host exists) and keep a handle to refresh
-    /// its icon when the connection state changes.
-    fn init_tray(&mut self, ctx: egui::Context) {
-        if !tray_available() {
+    fn new(app: &adw::Application, tx: Tx) -> Rc<Self> {
+        // ---- header -----------------------------------------------------------
+        let status_pill = gtk::Label::builder().css_classes(["statuspill", "st-off"]).build();
+        let header = adw::HeaderBar::new();
+        header.set_title_widget(Some(&adw::WindowTitle::new("cpvpn", "")));
+        header.pack_start(&status_pill);
+
+        let menu = gio::Menu::new();
+        menu.append(Some("About cpvpn"), Some("app.about"));
+        menu.append(Some("Quit"), Some("app.quit"));
+        let menu_btn = gtk::MenuButton::builder()
+            .icon_name("open-menu-symbolic")
+            .menu_model(&menu)
+            .tooltip_text("Menu")
+            .build();
+        header.pack_end(&menu_btn);
+
+        // ---- profiles ---------------------------------------------------------
+        let add_btn = gtk::Button::builder()
+            .icon_name("list-add-symbolic")
+            .css_classes(["flat"])
+            .tooltip_text("New profile (clears the form)")
+            .build();
+        let profiles_group = adw::PreferencesGroup::builder().title("Profiles").build();
+        profiles_group.set_header_suffix(Some(&add_btn));
+
+        // ---- connection form --------------------------------------------------
+        let name_row = adw::EntryRow::builder().title("Profile name").build();
+
+        let backend_model = gtk::StringList::new(&["Check Point", "FortiClient", "F5"]);
+        let backend_row = adw::ComboRow::builder().title("VPN client").model(&backend_model).build();
+
+        let gateway_row = adw::EntryRow::builder().title("Gateway").build();
+        let user_row = adw::EntryRow::builder().title("User").build();
+        let password_row = adw::PasswordEntryRow::builder().title("Password").build();
+
+        let token_row = adw::EntryRow::builder().title("Token (email)").build();
+
+        let auth_model = gtk::StringList::new(&["Password", "SSO / SAML"]);
+        let forti_auth_row = adw::ComboRow::builder().title("Authentication").model(&auth_model).build();
+        let realm_row = adw::EntryRow::builder().title("Realm (optional)").build();
+
+        let remember_row = adw::SwitchRow::builder()
+            .title("Remember password")
+            .subtitle("Store in the system keyring")
+            .subtitle_lines(0)
+            .build();
+
+        let save_btn = gtk::Button::builder().label("Save").css_classes(["flat"]).build();
+        let form_group = adw::PreferencesGroup::builder().title("Connection").build();
+        form_group.set_header_suffix(Some(&save_btn));
+        form_group.add(&name_row);
+        form_group.add(&backend_row);
+        form_group.add(&forti_auth_row);
+        form_group.add(&gateway_row);
+        form_group.add(&realm_row);
+        form_group.add(&user_row);
+        form_group.add(&password_row);
+        form_group.add(&token_row);
+        form_group.add(&remember_row);
+
+        // ---- connect button ---------------------------------------------------
+        let connect_btn = gtk::Button::builder()
+            .label("Connect")
+            .css_classes(["suggested-action", "pill"])
+            .hexpand(true)
+            .margin_top(4)
+            .build();
+        connect_btn.set_height_request(40);
+
+        // ---- active-connection status ----------------------------------------
+        let ip_row = adw::ActionRow::builder().title("Internal IP").css_classes(["property"]).build();
+        let dns_row = adw::ActionRow::builder().title("DNS").css_classes(["property"]).build();
+        let status_group = adw::PreferencesGroup::builder().title("Active connection").visible(false).build();
+        status_group.add(&ip_row);
+        status_group.add(&dns_row);
+
+        // ---- browser-launched F5 ---------------------------------------------
+        let ext_gw_row = adw::ActionRow::builder().title("Gateway").css_classes(["property"]).build();
+        let ext_ip_row = adw::ActionRow::builder().title("Internal IP").css_classes(["property"]).build();
+        let ext_dns_row = adw::ActionRow::builder().title("DNS").css_classes(["property"]).build();
+        let ext_disconnect = gtk::Button::builder()
+            .icon_name("media-playback-stop-symbolic")
+            .css_classes(["flat"])
+            .valign(gtk::Align::Center)
+            .tooltip_text("Disconnect")
+            .build();
+        ext_gw_row.add_suffix(&ext_disconnect);
+        let ext_group = adw::PreferencesGroup::builder()
+            .title("F5 — opened from the browser")
+            .visible(false)
+            .build();
+        ext_group.add(&ext_gw_row);
+        ext_group.add(&ext_ip_row);
+        ext_group.add(&ext_dns_row);
+
+        // ---- mid-login question ----------------------------------------------
+        let prompt_group = adw::PreferencesGroup::builder().visible(false).build();
+
+        // ---- log --------------------------------------------------------------
+        let log_buffer = gtk::TextBuffer::builder().build();
+        let log_view = gtk::TextView::builder()
+            .buffer(&log_buffer)
+            .editable(false)
+            .cursor_visible(false)
+            .monospace(true)
+            .wrap_mode(gtk::WrapMode::WordChar)
+            .left_margin(8)
+            .right_margin(8)
+            .top_margin(6)
+            .bottom_margin(6)
+            .build();
+        let log_scroll = gtk::ScrolledWindow::builder()
+            .min_content_height(170)
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .child(&log_view)
+            .build();
+        let log_expander = adw::ExpanderRow::builder().title("Connection log").build();
+        log_expander.add_row(&log_scroll);
+        let diag_group = adw::PreferencesGroup::builder().build();
+        diag_group.add(&log_expander);
+
+        // ---- assemble ---------------------------------------------------------
+        let content = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(18)
+            .margin_top(18)
+            .margin_bottom(18)
+            .margin_start(12)
+            .margin_end(12)
+            .build();
+        content.append(&prompt_group);
+        content.append(&ext_group);
+        content.append(&status_group);
+        content.append(&profiles_group);
+        content.append(&form_group);
+        content.append(&connect_btn);
+        content.append(&diag_group);
+
+        let clamp = adw::Clamp::builder().maximum_size(560).child(&content).build();
+        let scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vexpand(true)
+            .child(&clamp)
+            .build();
+        let toast = adw::ToastOverlay::new();
+        toast.set_child(Some(&scroll));
+
+        let toolbar = adw::ToolbarView::new();
+        toolbar.add_top_bar(&header);
+        toolbar.set_content(Some(&toast));
+
+        let window = adw::ApplicationWindow::builder()
+            .application(app)
+            .title("cpvpn")
+            .default_width(600)
+            .default_height(840)
+            .content(&toolbar)
+            .build();
+        window.set_size_request(360, 480);
+
+        let this = Rc::new(App {
+            window,
+            toast,
+            status_pill,
+            profiles_group,
+            profile_rows: RefCell::new(Vec::new()),
+            profiles: RefCell::new(profiles::load()),
+            form_group,
+            name_row,
+            backend_row,
+            gateway_row,
+            user_row,
+            password_row,
+            token_row,
+            realm_row,
+            forti_auth_row,
+            remember_row,
+            save_btn,
+            connect_btn,
+            status_group,
+            ip_row,
+            dns_row,
+            ext_group,
+            ext_gw_row,
+            ext_ip_row,
+            ext_dns_row,
+            prompt_group,
+            prompt_rows: RefCell::new(Vec::new()),
+            log_buffer,
+            log_view,
+            vpn: RefCell::new(Vpn::new(tx.clone())),
+            tray: RefCell::new(None),
+            tx,
+            last_state: RefCell::new(None),
+            me: RefCell::new(Weak::new()),
+        });
+        *this.me.borrow_mut() = Rc::downgrade(&this);
+
+        Self::wire(&this, &add_btn, &ext_disconnect);
+        this.refresh_profiles_list();
+        this.update_form_visibility();
+        this.sync_ui();
+        this
+    }
+
+    /// Connect all signal handlers (needs the `Rc` to clone into closures).
+    fn wire(app: &Rc<Self>, add_btn: &gtk::Button, ext_disconnect: &gtk::Button) {
+        app.backend_row.connect_selected_notify(glib::clone!(#[strong] app, move |_| {
+            app.update_form_visibility();
+            app.sync_ui();
+        }));
+        app.forti_auth_row.connect_selected_notify(glib::clone!(#[strong] app, move |_| {
+            app.update_form_visibility();
+            app.sync_ui();
+        }));
+
+        // Re-evaluate the Connect button's "ready" state as the user types.
+        app.gateway_row.connect_changed(glib::clone!(#[strong] app, move |_| app.sync_ui()));
+        app.user_row.connect_changed(glib::clone!(#[strong] app, move |_| app.sync_ui()));
+        app.token_row.connect_changed(glib::clone!(#[strong] app, move |_| app.sync_ui()));
+        app.password_row.connect_changed(glib::clone!(#[strong] app, move |_| app.sync_ui()));
+
+        app.connect_btn.connect_clicked(glib::clone!(#[strong] app, move |_| app.on_connect_clicked()));
+        app.save_btn.connect_clicked(glib::clone!(#[strong] app, move |_| app.save_profile()));
+        add_btn.connect_clicked(glib::clone!(#[strong] app, move |_| app.on_new_profile()));
+
+        ext_disconnect.connect_clicked(glib::clone!(#[strong] app, move |_| {
+            disconnect_external_f5();
+            app.ext_group.set_visible(false);
+        }));
+
+        app.window.connect_close_request(glib::clone!(#[strong] app, move |_| {
+            app.vpn.borrow_mut().shutdown();
+            glib::Propagation::Proceed
+        }));
+    }
+
+    // ── form helpers ───────────────────────────────────────────────────────
+
+    fn backend(&self) -> Backend {
+        Backend::from_index(self.backend_row.selected())
+    }
+    fn forti_saml(&self) -> bool {
+        self.forti_auth_row.selected() == 1
+    }
+
+    /// Show only the rows relevant to the selected back-end / auth method.
+    fn update_form_visibility(&self) {
+        let b = self.backend();
+        let forti = b == Backend::Forti;
+        let cp = b == Backend::CheckPoint;
+        let saml = forti && self.forti_saml();
+        let need_creds = !saml;
+
+        self.forti_auth_row.set_visible(forti);
+        self.realm_row.set_visible(forti);
+        self.user_row.set_visible(need_creds);
+        self.password_row.set_visible(need_creds);
+        self.remember_row.set_visible(need_creds);
+        self.token_row.set_visible(cp);
+        self.password_row.set_title(if cp { "PIN" } else { "Password" });
+
+        let hint = if saml {
+            "You'll sign in through your browser."
+        } else if cp {
+            "SecurID PIN + the one-time token emailed to you."
+        } else {
+            "A token / 2FA code is requested if the gateway needs one."
+        };
+        self.form_group.set_description(Some(hint));
+    }
+
+    fn form_ready(&self) -> bool {
+        let gw = !self.gateway_row.text().trim().is_empty();
+        match self.backend() {
+            Backend::Forti if self.forti_saml() => gw,
+            Backend::Forti | Backend::F5 => {
+                gw && !self.user_row.text().trim().is_empty()
+                    && !self.password_row.text().is_empty()
+            }
+            Backend::CheckPoint => {
+                gw && !self.user_row.text().trim().is_empty()
+                    && !self.token_row.text().trim().is_empty()
+            }
+        }
+    }
+
+    // ── profiles ───────────────────────────────────────────────────────────
+
+    fn refresh_profiles_list(&self) {
+        for row in self.profile_rows.borrow_mut().drain(..) {
+            self.profiles_group.remove(&row);
+        }
+        let profs = self.profiles.borrow();
+        if profs.is_empty() {
+            let row = adw::ActionRow::builder()
+                .title("No saved profiles")
+                .subtitle("Fill in the details and click Save")
+                .sensitive(false)
+                .build();
+            self.profiles_group.add(&row);
+            self.profile_rows.borrow_mut().push(row);
+            return;
+        }
+        for p in profs.iter() {
+            let row = adw::ActionRow::builder()
+                .title(&p.name)
+                .subtitle(&p.subtitle())
+                .subtitle_lines(0)
+                .activatable(true)
+                .build();
+            let conn = gtk::Button::builder()
+                .icon_name("media-playback-start-symbolic")
+                .css_classes(["flat"])
+                .valign(gtk::Align::Center)
+                .tooltip_text("Connect")
+                .build();
+            let del = gtk::Button::builder()
+                .icon_name("user-trash-symbolic")
+                .css_classes(["flat"])
+                .valign(gtk::Align::Center)
+                .tooltip_text("Delete profile")
+                .build();
+            row.add_suffix(&conn);
+            row.add_suffix(&del);
+
+            let app_rc = self.rc();
+            let p1 = p.clone();
+            row.connect_activated(glib::clone!(#[strong] app_rc, move |_| app_rc.load_profile(&p1)));
+            let app2 = app_rc.clone();
+            let p2 = p.clone();
+            conn.connect_clicked(move |_| {
+                app2.load_profile(&p2);
+                app2.on_connect_clicked();
+            });
+            let app3 = app_rc.clone();
+            let name = p.name.clone();
+            del.connect_clicked(move |_| app3.delete_profile(&name));
+
+            self.profiles_group.add(&row);
+            self.profile_rows.borrow_mut().push(row);
+        }
+    }
+
+    fn load_profile(&self, p: &Profile) {
+        self.backend_row.set_selected(p.backend.index());
+        self.forti_auth_row.set_selected(if p.forti_saml { 1 } else { 0 });
+        self.name_row.set_text(&p.name);
+        self.gateway_row.set_text(&p.gateway);
+        self.user_row.set_text(&p.user);
+        self.realm_row.set_text(&p.realm);
+        self.remember_row.set_active(p.remember_password);
+        self.token_row.set_text("");
+        let secret = if p.remember_password { profiles::secret_get(&p.name).unwrap_or_default() } else { String::new() };
+        self.password_row.set_text(&secret);
+        self.update_form_visibility();
+        self.sync_ui();
+    }
+
+    fn save_profile(&self) {
+        let name = self.name_row.text().trim().to_string();
+        if name.is_empty() {
+            self.toast("Enter a name to save the profile");
+            self.name_row.grab_focus();
+            return;
+        }
+        // "Remember" only applies when the password field is in play (not Forti SSO).
+        let creds_in_play = !(self.backend() == Backend::Forti && self.forti_saml());
+        let remember = self.remember_row.is_active() && creds_in_play;
+        let p = Profile {
+            name: name.clone(),
+            backend: self.backend(),
+            gateway: self.gateway_row.text().trim().to_string(),
+            user: self.user_row.text().trim().to_string(),
+            realm: self.realm_row.text().trim().to_string(),
+            forti_saml: self.forti_saml(),
+            remember_password: remember,
+        };
+
+        // Keyring: store the password/PIN only if "remember" is on and non-empty.
+        let pw = self.password_row.text().to_string();
+        if remember && !pw.is_empty() {
+            if !profiles::secret_set(&name, &pw) {
+                self.toast("Couldn't save to the keyring (is a Secret Service running?)");
+            }
+        } else {
+            profiles::secret_delete(&name);
+        }
+
+        {
+            let mut profs = self.profiles.borrow_mut();
+            if let Some(slot) = profs.iter_mut().find(|e| e.name == name) {
+                *slot = p;
+            } else {
+                profs.push(p);
+            }
+            if let Err(e) = profiles::save(&profs) {
+                drop(profs);
+                self.toast(&format!("Couldn't save: {e}"));
+                return;
+            }
+        }
+        self.refresh_profiles_list();
+        self.toast(&format!("Saved profile “{name}”"));
+    }
+
+    fn delete_profile(&self, name: &str) {
+        profiles::secret_delete(name);
+        {
+            let mut profs = self.profiles.borrow_mut();
+            profs.retain(|e| e.name != name);
+            let _ = profiles::save(&profs);
+        }
+        self.refresh_profiles_list();
+        self.toast(&format!("Deleted profile “{name}”"));
+    }
+
+    fn on_new_profile(&self) {
+        self.name_row.set_text("");
+        self.gateway_row.set_text("");
+        self.user_row.set_text("");
+        self.password_row.set_text("");
+        self.realm_row.set_text("");
+        self.token_row.set_text("");
+        self.remember_row.set_active(false);
+        self.update_form_visibility();
+        self.sync_ui();
+        self.name_row.grab_focus();
+    }
+
+    // ── connect / disconnect ────────────────────────────────────────────────
+
+    fn on_connect_clicked(&self) {
+        let st = self.vpn.borrow().state();
+        match st {
+            State::Disconnected | State::Error(_) => self.start_connect(),
+            State::Connecting | State::Connected => {
+                self.vpn.borrow_mut().disconnect();
+                self.sync_ui();
+            }
+            State::Disconnecting => {}
+        }
+    }
+
+    fn start_connect(&self) {
+        if !self.form_ready() {
+            self.toast("Missing details to connect");
+            return;
+        }
+        // Fresh slate for this attempt.
+        self.log_buffer.set_text("");
+        self.ip_row.set_subtitle("");
+        self.dns_row.set_subtitle("");
+        self.status_group.set_visible(false);
+        self.clear_prompt();
+
+        let gw = self.gateway_row.text().trim().to_string();
+        let user = self.user_row.text().trim().to_string();
+        let realm = self.realm_row.text().trim().to_string();
+        let label = format!("connecting to {gw}");
+
+        let (args, stdin_lines, saml): (Vec<String>, Vec<String>, Option<String>) = match self.backend() {
+            Backend::CheckPoint => {
+                let passcode = format!("{}{}", self.password_row.text(), self.token_row.text().trim());
+                self.token_row.set_text(""); // one-time code
+                (
+                    vec!["ike".into(), "-g".into(), gw.clone(), "-u".into(), user, "--connect".into()],
+                    vec![passcode],
+                    None,
+                )
+            }
+            Backend::Forti => {
+                let mut args: Vec<String> = vec!["forti".into(), "-g".into(), gw.clone()];
+                if !realm.is_empty() {
+                    args.push("--realm".into());
+                    args.push(realm);
+                }
+                if self.forti_saml() {
+                    args.push("--saml".into());
+                    args.push("--no-browser".into()); // we open it ourselves, as the user
+                    args.push("--connect".into());
+                    (args, vec![], Some(saml_entry(&gw)))
+                } else {
+                    args.push("-u".into());
+                    args.push(user);
+                    args.push("--connect".into());
+                    (args, vec![self.password_row.text().to_string()], None)
+                }
+            }
+            Backend::F5 => (
+                vec!["f5".into(), "-g".into(), gw.clone(), "-u".into(), user, "--connect".into()],
+                vec![self.password_row.text().to_string()],
+                None,
+            ),
+        };
+
+        self.vpn.borrow_mut().connect(args, stdin_lines, label, saml);
+        self.sync_ui();
+    }
+
+    // ── engine events ────────────────────────────────────────────────────────
+
+    fn handle_msg(&self, msg: UiMsg) {
+        match msg {
+            UiMsg::Engine(ev) => match ev {
+                EngineEvent::Log(s) => self.append_log(&s),
+                EngineEvent::Ip(ip) => {
+                    self.ip_row.set_subtitle(&ip);
+                    self.status_group.set_visible(true);
+                }
+                EngineEvent::Dns(dns) => {
+                    self.dns_row.set_subtitle(&dns);
+                    self.dns_row.set_visible(!dns.is_empty());
+                }
+                EngineEvent::Prompt(p) => self.show_prompt(p),
+                EngineEvent::StateChanged => self.sync_ui(),
+            },
+            UiMsg::Tray(cmd) => self.handle_tray(cmd),
+        }
+    }
+
+    fn handle_tray(&self, cmd: TrayCmd) {
+        match cmd {
+            TrayCmd::Show | TrayCmd::Connect => {
+                self.window.present();
+            }
+            TrayCmd::Disconnect => {
+                self.vpn.borrow_mut().disconnect();
+                self.sync_ui();
+            }
+            TrayCmd::Quit => self.window.close(),
+        }
+    }
+
+    fn append_log(&self, line: &str) {
+        let b = &self.log_buffer;
+        let mut end = b.end_iter();
+        b.insert(&mut end, line);
+        b.insert(&mut b.end_iter(), "\n");
+        let lines = b.line_count();
+        if lines > 500 {
+            if let Some(mut cut) = b.iter_at_line(lines - 500) {
+                let mut start = b.start_iter();
+                b.delete(&mut start, &mut cut);
+            }
+        }
+        self.log_view.scroll_to_iter(&mut b.end_iter(), 0.0, false, 0.0, 0.0);
+    }
+
+    /// Reap the engine and poll for a browser-launched F5 tunnel (timer-driven).
+    fn tick(&self) {
+        if self.vpn.borrow_mut().poll_exit() {
+            self.sync_ui();
+        }
+        match detect_external_f5() {
+            Some(e) => {
+                self.ext_gw_row.set_subtitle(&e.gateway);
+                self.ext_ip_row.set_subtitle(&e.ip);
+                self.ext_dns_row.set_subtitle(&e.dns);
+                self.ext_dns_row.set_visible(!e.dns.is_empty());
+                self.ext_group.set_visible(true);
+            }
+            None => self.ext_group.set_visible(false),
+        }
+    }
+
+    // ── mid-login question UI ────────────────────────────────────────────────
+
+    fn show_prompt(&self, p: AuthPrompt) {
+        self.clear_prompt();
+
+        let (title, hint) = match p.kind.as_str() {
+            "push" => ("Approve the sign-in", "…or type the code"),
+            "newpass" => ("Password expired", "New password"),
+            "renew" => ("Change your password?", "New password"),
+            "answer" => ("Additional verification", "Answer"),
+            "code2" => ("Second code", "Next code"),
+            _ => ("Two-factor authentication", "Code"),
+        };
+        self.prompt_group.set_title(title);
+        self.prompt_group.set_description((!p.message.is_empty()).then_some(p.message.as_str()));
+
+        let new_password = p.kind == "newpass" || p.kind == "renew";
+        let masked = new_password || p.kind == "answer";
+
+        // The input row: masked (password/challenge) vs visible (OTP code).
+        let entry: gtk::Widget = if masked {
+            adw::PasswordEntryRow::builder().title(hint).build().upcast()
+        } else {
+            adw::EntryRow::builder().title(hint).build().upcast()
+        };
+        let confirm = new_password.then(|| adw::PasswordEntryRow::builder().title("Confirm password").build());
+
+        self.prompt_group.add(&entry);
+        self.prompt_rows.borrow_mut().push(entry.clone());
+        if let Some(c) = &confirm {
+            self.prompt_group.add(c);
+            self.prompt_rows.borrow_mut().push(c.clone().upcast());
+        }
+
+        // Buttons row (Send + optional Skip for a renewable password).
+        let btns = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .halign(gtk::Align::End)
+            .margin_top(8)
+            .build();
+        let send = gtk::Button::builder().label("Send").css_classes(["suggested-action"]).build();
+        let skip = (p.kind == "renew").then(|| gtk::Button::with_label("Skip"));
+        if let Some(s) = &skip {
+            btns.append(s);
+        }
+        btns.append(&send);
+        self.prompt_group.add(&btns);
+        self.prompt_rows.borrow_mut().push(btns.upcast());
+
+        self.prompt_group.set_visible(true);
+        entry.grab_focus();
+
+        // Wire actions. The entry widgets are captured directly (no field needed).
+        let app = self.rc();
+        let entry_for_send = entry.clone();
+        let confirm_for_send = confirm.clone();
+        let kind = p.kind.clone();
+        let do_send: Rc<dyn Fn()> = Rc::new(move || {
+            let text = app.editable_text(&entry_for_send);
+            let answer = if masked { text } else { text.trim().to_string() };
+            if new_password {
+                let c = confirm_for_send.as_ref().map(|c| c.text().to_string()).unwrap_or_default();
+                if answer != c {
+                    app.toast("Passwords don't match");
+                    return;
+                }
+            }
+            if answer.is_empty() && kind != "renew" {
+                return;
+            }
+            app.vpn.borrow_mut().answer_prompt(&answer);
+            app.append_log(if masked { "→ password sent" } else { "→ answer sent" });
+            app.clear_prompt();
+        });
+
+        send.connect_clicked({
+            let d = do_send.clone();
+            move |_| d()
+        });
+        if let Some(s) = &skip {
+            let app2 = self.rc();
+            s.connect_clicked(move |_| {
+                app2.vpn.borrow_mut().answer_prompt("");
+                app2.append_log("→ keeping the current password");
+                app2.clear_prompt();
+            });
+        }
+        // Enter in the (visible) code field sends too.
+        if let Ok(er) = entry.clone().downcast::<adw::EntryRow>() {
+            let d = do_send.clone();
+            er.connect_entry_activated(move |_| d());
+        }
+    }
+
+    fn clear_prompt(&self) {
+        for w in self.prompt_rows.borrow_mut().drain(..) {
+            self.prompt_group.remove(&w);
+        }
+        self.prompt_group.set_visible(false);
+    }
+
+    /// Read text from either an AdwEntryRow or an AdwPasswordEntryRow.
+    fn editable_text(&self, w: &gtk::Widget) -> String {
+        w.downcast_ref::<gtk::Editable>()
+            .map(|e| e.text().to_string())
+            .unwrap_or_default()
+    }
+
+    // ── state → UI ────────────────────────────────────────────────────────────
+
+    fn sync_ui(&self) {
+        let state = self.vpn.borrow().state();
+
+        let (txt, cls) = match &state {
+            State::Disconnected => ("Disconnected", "st-off"),
+            State::Connecting => ("Connecting…", "st-busy"),
+            State::Connected => ("Connected", "st-on"),
+            State::Disconnecting => ("Disconnecting…", "st-busy"),
+            State::Error(_) => ("Error", "st-err"),
+        };
+        self.status_pill.set_text(&format!("● {txt}"));
+        self.status_pill.set_css_classes(&["statuspill", cls]);
+
+        let editable = matches!(state, State::Disconnected | State::Error(_));
+        self.form_group.set_sensitive(editable);
+        self.profiles_group.set_sensitive(editable);
+
+        match &state {
+            State::Disconnected | State::Error(_) => {
+                let label = if self.backend() == Backend::Forti && self.forti_saml() {
+                    "Sign in with browser"
+                } else {
+                    "Connect"
+                };
+                self.connect_btn.set_label(label);
+                self.connect_btn.set_css_classes(&["suggested-action", "pill"]);
+                self.connect_btn.set_sensitive(self.form_ready());
+                self.clear_prompt();
+                self.status_group.set_visible(false);
+                self.ip_row.set_subtitle("");
+                self.dns_row.set_subtitle("");
+            }
+            State::Connecting | State::Connected => {
+                self.connect_btn.set_label("Disconnect");
+                self.connect_btn.set_css_classes(&["destructive-action", "pill"]);
+                self.connect_btn.set_sensitive(true);
+            }
+            State::Disconnecting => {
+                self.connect_btn.set_label("Disconnecting…");
+                self.connect_btn.set_css_classes(&["pill"]);
+                self.connect_btn.set_sensitive(false);
+            }
+        }
+
+        // Toast + tray refresh only on an actual state change.
+        let changed = self.last_state.borrow().as_ref() != Some(&state);
+        if changed {
+            if let State::Error(e) = &state {
+                self.toast(e);
+            }
+            if let Some(h) = self.tray.borrow().as_ref() {
+                h.update(|_| {});
+            }
+            *self.last_state.borrow_mut() = Some(state);
+        }
+    }
+
+    fn toast(&self, msg: &str) {
+        self.toast.add_toast(adw::Toast::new(msg));
+    }
+
+    /// The owning `Rc<App>` (set once in [`App::new`]) — for cloning into callbacks.
+    fn rc(&self) -> Rc<App> {
+        self.me.borrow().upgrade().expect("App dropped while a handler ran")
+    }
+
+    fn init_tray(self: &Rc<Self>) {
+        if !tray::tray_available() {
             eprintln!("cpvpn: no system tray detected — running as a normal window.");
             return;
         }
-        let (tx, rx) = mpsc::channel();
-        let tray = VpnTray {
-            state: self.vpn.state.clone(),
-            tx,
-            ctx,
+        let tray = tray::VpnTray {
+            state: self.vpn.borrow().state.clone(),
+            tx: self.tx.clone(),
         };
         let service = ksni::TrayService::new(tray);
-        self.tray = Some(service.handle());
+        *self.tray.borrow_mut() = Some(service.handle());
         service.spawn();
-        self.tray_rx = Some(rx);
-        self.tray_active = true;
-    }
-
-    fn handle_tray(&mut self, ctx: &egui::Context, state: &State) {
-        if let Some(rx) = &self.tray_rx {
-            while let Ok(cmd) = rx.try_recv() {
-                match cmd {
-                    TrayCmd::Show | TrayCmd::Connect => {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-                    }
-                    TrayCmd::Disconnect => self.vpn.disconnect(),
-                    TrayCmd::Quit => self.want_quit = true,
-                }
-            }
-        }
-        if self.want_quit {
-            self.vpn.shutdown();
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            return;
-        }
-        // Refresh the tray icon/menu when the state changes.
-        if let Some(h) = &self.tray {
-            if self.last_tray_state.as_ref() != Some(state) {
-                h.update(|_| {});
-                self.last_tray_state = Some(state.clone());
-            }
-        }
-        // Closing the window disconnects cleanly and quits — predictable (no
-        // vanishing-to-an-invisible-tray). Minimize-to-tray can come back later.
-        if ctx.input(|i| i.viewport().close_requested()) {
-            self.vpn.shutdown();
-            // not cancelled → the window closes and the app exits
-        }
-    }
-
-    /// Build the Fortinet engine invocation (password or SAML) and launch it.
-    fn start_forti(&mut self, ctx: egui::Context) {
-        let mut args: Vec<String> = vec!["forti".into(), "-g".into(), self.gateway.clone()];
-        if !self.realm.trim().is_empty() {
-            args.push("--realm".into());
-            args.push(self.realm.trim().to_string());
-        }
-        let saml = self.forti_saml.then(|| saml_entry(&self.gateway));
-        let (stdin_lines, label) = if self.forti_saml {
-            args.push("--saml".into());
-            args.push("--no-browser".into()); // we open it ourselves, as the user (SAML-URL marker)
-            args.push("--connect".into());
-            (vec![], format!("SAML sign-in to {}", self.gateway))
-        } else {
-            args.push("-u".into());
-            args.push(self.user.clone());
-            args.push("--connect".into());
-            // Only the password up front: any second factor (token, email/SMS code,
-            // push, challenge) is asked interactively via `AUTH-PROMPT` — an emailed
-            // code doesn't even exist until the password has been accepted.
-            (vec![self.password.clone()], format!("connecting to {} as {}", self.gateway, self.user))
-        };
-        self.prompt_input.clear();
-        self.prompt_confirm.clear();
-        self.vpn.connect(args, stdin_lines, label, saml, ctx);
-    }
-
-    /// Build the F5 BIG-IP APM engine invocation and launch it. Only the password is
-    /// sent up front; a one-time passcode (if the gateway asks) is answered
-    /// interactively via `AUTH-PROMPT` — an emailed/SMS code doesn't exist until the
-    /// password has been accepted. The webtop "Start" launch flow is separate (handled
-    /// by the `f5-vpn://` scheme handler, not this GUI).
-    fn start_f5(&mut self, ctx: egui::Context) {
-        let args: Vec<String> = vec![
-            "f5".into(),
-            "-g".into(),
-            self.gateway.clone(),
-            "-u".into(),
-            self.user.clone(),
-            "--connect".into(),
-        ];
-        let label = format!("connecting to {} as {}", self.gateway, self.user);
-        self.prompt_input.clear();
-        self.prompt_confirm.clear();
-        self.vpn.connect(args, vec![self.password.clone()], label, None, ctx);
-    }
-
-    /// The card for a pending engine question (2FA code, challenge, new password, push).
-    fn prompt_ui(&mut self, ui: &mut egui::Ui, p: &AuthPrompt) {
-        // A new question starts with empty fields and the keyboard focus.
-        let fresh = p.seq != self.prompt_seq_seen;
-        if fresh {
-            self.prompt_seq_seen = p.seq;
-            self.prompt_input.clear();
-            self.prompt_confirm.clear();
-        }
-        ui.add_space(6.0);
-        ui.group(|ui| {
-            ui.set_width(ui.available_width());
-            let title = match p.kind.as_str() {
-                "push" => "Approve the sign-in",
-                "newpass" => "Password expired",
-                "renew" => "Change your password?",
-                "answer" => "Additional verification",
-                _ => "Two-factor authentication",
-            };
-            ui.label(egui::RichText::new(title).strong());
-            if !p.message.is_empty() {
-                ui.label(egui::RichText::new(&p.message).small());
-            }
-            let new_password = p.kind == "newpass" || p.kind == "renew";
-            // Challenge answers can be a PIN+tokencode; never shown, never trimmed.
-            let masked = new_password || p.kind == "answer";
-            let hint = match p.kind.as_str() {
-                "push" => "…or type the code instead",
-                "code2" => "Next code",
-                "newpass" | "renew" => "New password",
-                "answer" => "Answer",
-                _ => "Code",
-            };
-            let resp = ui.add(
-                egui::TextEdit::singleline(&mut self.prompt_input)
-                    .password(masked)
-                    .hint_text(hint)
-                    .desired_width(f32::INFINITY),
-            );
-            if fresh {
-                resp.request_focus();
-            }
-            let confirm_resp = new_password.then(|| {
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.prompt_confirm)
-                        .password(true)
-                        .hint_text("Confirm new password")
-                        .desired_width(f32::INFINITY),
-                )
-            });
-            let answer = if masked { self.prompt_input.clone() } else { self.prompt_input.trim().to_string() };
-            let mismatch = new_password && !answer.is_empty() && answer != self.prompt_confirm;
-            if mismatch {
-                ui.label(egui::RichText::new("Passwords don't match").small().color(egui::Color32::from_rgb(230, 120, 120)));
-            }
-            let ready = !answer.is_empty() && !mismatch;
-            let enter = (resp.lost_focus() || confirm_resp.as_ref().is_some_and(|r| r.lost_focus()))
-                && ui.input(|i| i.key_pressed(egui::Key::Enter));
-            let (send, skip) = ui
-                .horizontal(|ui| {
-                    let send = ui.add_enabled(ready, egui::Button::new("Send")).clicked();
-                    // `renew`: an empty answer keeps the current password (portal "Skip").
-                    let skip = p.kind == "renew" && ui.button("Skip").clicked();
-                    (send, skip)
-                })
-                .inner;
-            if skip {
-                self.vpn.answer_prompt(p.seq, "");
-                self.vpn.log("→ keeping the current password");
-                self.prompt_input.clear();
-                self.prompt_confirm.clear();
-            } else if ready && (send || enter) {
-                self.vpn.answer_prompt(p.seq, &answer);
-                self.vpn.log(if masked { "→ new password sent" } else { "→ answer sent" });
-                self.prompt_input.clear();
-                self.prompt_confirm.clear();
-            } else if p.kind == "push" {
-                ui.label(egui::RichText::new("Waiting for approval in FortiToken Mobile…").weak().small());
-            }
-        });
     }
 }
 
-fn setup_theme(ctx: &egui::Context) {
-    let mut v = egui::Visuals::dark();
-    v.panel_fill = egui::Color32::from_rgb(18, 20, 27);
-    v.window_fill = egui::Color32::from_rgb(18, 20, 27);
-    v.override_text_color = Some(egui::Color32::from_rgb(222, 226, 235));
-    v.widgets.noninteractive.rounding = egui::Rounding::same(8.0);
-    v.widgets.inactive.rounding = egui::Rounding::same(8.0);
-    v.widgets.hovered.rounding = egui::Rounding::same(8.0);
-    v.widgets.active.rounding = egui::Rounding::same(8.0);
-    ctx.set_visuals(v);
-    let mut style = (*ctx.style()).clone();
-    style.spacing.item_spacing = egui::vec2(10.0, 10.0);
-    style.spacing.button_padding = egui::vec2(14.0, 8.0);
-    ctx.set_style(style);
-}
+fn build_ui(app: &adw::Application) {
+    let (tx, rx) = async_channel::unbounded::<UiMsg>();
+    let state_app = App::new(app, tx);
 
-fn dot(state: &State) -> (egui::Color32, &'static str) {
-    match state {
-        State::Disconnected => (egui::Color32::from_rgb(120, 125, 135), "Disconnected"),
-        State::Connecting => (egui::Color32::from_rgb(230, 170, 50), "Connecting…"),
-        State::Connected => (egui::Color32::from_rgb(60, 200, 110), "Connected"),
-        State::Disconnecting => (egui::Color32::from_rgb(230, 170, 50), "Disconnecting…"),
-        State::Error(_) => (egui::Color32::from_rgb(230, 80, 80), "Error"),
-    }
-}
+    // App actions for the primary menu.
+    let about = gio::SimpleAction::new("about", None);
+    about.connect_activate(glib::clone!(#[strong] state_app, move |_, _| {
+        let dialog = adw::AboutDialog::builder()
+            .application_name("cpvpn")
+            .version(env!("CARGO_PKG_VERSION"))
+            .developer_name("cpvpn")
+            .comments("Native Linux VPN client — Check Point · Fortinet · F5")
+            .build();
+        dialog.present(Some(&state_app.window));
+    }));
+    let quit = gio::SimpleAction::new("quit", None);
+    quit.connect_activate(glib::clone!(#[strong] state_app, move |_, _| state_app.window.close()));
+    app.add_action(&about);
+    app.add_action(&quit);
 
-impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.vpn.poll_exit();
-        let state = self.vpn.state.lock().unwrap().clone();
-        self.external_f5 = detect_external_f5(); // a browser-launched tunnel, if any
-        self.handle_tray(ctx, &state);
+    state_app.init_tray();
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            // The whole page scrolls, so nothing (a 2FA card's Send button) ever ends
-            // up below a short window's edge. It must wrap the centering row: inside
-            // a horizontal row it would only get the row's few pixels of height.
-            egui::ScrollArea::vertical().id_salt("main").auto_shrink([false, false]).show(ui, |ui| {
-            // Center a fixed-width column so the form looks intentional even when a
-            // tiling WM stretches the window to fill its region.
-            let col_w = 440.0_f32.min((ui.available_width() - 16.0).max(120.0));
-            let side = ((ui.available_width() - col_w) / 2.0).max(0.0);
-            ui.horizontal(|ui| {
-            ui.add_space(side);
-            ui.vertical(|ui| {
-            ui.set_width(col_w);
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.heading(egui::RichText::new("🛡  cpvpn").strong());
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let (c, label) = dot(&state);
-                    ui.label(egui::RichText::new(label).color(c).small());
-                    ui.label(egui::RichText::new("●").color(c));
-                });
-            });
-            ui.label(egui::RichText::new("Native Linux VPN").weak().small());
-            ui.separator();
-
-            // A tunnel started from the browser (webtop "Start") — the GUI didn't launch
-            // it, but detects it via the status file and can stop it (by deleting that
-            // file; the root engine watches it and tears down cleanly).
-            if let Some(ext) = &self.external_f5 {
-                let (gw, ip, dns) = (ext.gateway.clone(), ext.ip.clone(), ext.dns.clone());
-                egui::Frame::group(ui.style()).show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("●").color(egui::Color32::from_rgb(70, 190, 120)));
-                        ui.label(egui::RichText::new("F5 conectada (desde el navegador)").strong());
-                    });
-                    if !gw.is_empty() {
-                        ui.label(egui::RichText::new(format!("Gateway:  {gw}")).small());
-                    }
-                    if !ip.is_empty() {
-                        ui.label(egui::RichText::new(format!("Internal IP:  {ip}")).monospace().small());
-                    }
-                    if !dns.is_empty() {
-                        ui.label(egui::RichText::new(format!("DNS:  {dns}")).monospace().small());
-                    }
-                    ui.add_space(4.0);
-                    let btn = egui::Button::new(egui::RichText::new("Disconnect").strong())
-                        .fill(egui::Color32::from_rgb(170, 60, 60))
-                        .min_size(egui::vec2(ui.available_width(), 32.0));
-                    if ui.add(btn).clicked() {
-                        disconnect_external_f5();
-                        self.external_f5 = None; // optimistic; detection reconfirms next frames
-                    }
-                });
-                ui.add_space(6.0);
-            }
-
-            // Mid-login question from the engine (2FA code, challenge, push, …): first
-            // thing in the window, where it can't be missed.
-            let prompt = self.vpn.status.lock().unwrap().prompt.clone();
-            if let (State::Connecting, Some(p)) = (&state, prompt) {
-                self.prompt_ui(ui, &p);
-                ui.add_space(4.0);
-            }
-
-            ui.label(egui::RichText::new("VPN client").weak().small());
-            egui::ComboBox::from_id_salt("vpn")
-                .selected_text(&self.client)
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.client, "Check Point".to_string(), "Check Point");
-                    ui.selectable_value(&mut self.client, "FortiClient".to_string(), "FortiClient");
-                    ui.selectable_value(&mut self.client, "F5".to_string(), "F5");
-                    ui.add_enabled(false, egui::SelectableLabel::new(false, "OpenVPN (soon)"));
-                });
-
-            let is_forti = self.client == "FortiClient";
-            let is_f5 = self.client == "F5";
-            let editable = matches!(state, State::Disconnected | State::Error(_));
-            ui.add_space(4.0);
-            ui.label("Gateway");
-            ui.add_enabled(
-                editable,
-                egui::TextEdit::singleline(&mut self.gateway)
-                    .hint_text(if is_forti || is_f5 { "vpn.example.com:443" } else { "" })
-                    .desired_width(f32::INFINITY),
-            );
-
-            if is_forti {
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.label("Auth:");
-                    ui.add_enabled_ui(editable, |ui| {
-                        ui.selectable_value(&mut self.forti_saml, false, "Password");
-                        ui.selectable_value(&mut self.forti_saml, true, "SSO / SAML");
-                    });
-                });
-                ui.label("Realm (optional)");
-                ui.add_enabled(editable, egui::TextEdit::singleline(&mut self.realm).desired_width(f32::INFINITY));
-                if !self.forti_saml {
-                    ui.label("User");
-                    ui.add_enabled(editable, egui::TextEdit::singleline(&mut self.user).desired_width(f32::INFINITY));
-                    ui.label("Password");
-                    ui.add_enabled(
-                        editable,
-                        egui::TextEdit::singleline(&mut self.password).password(true).desired_width(f32::INFINITY),
-                    );
-                    ui.label(egui::RichText::new("A token / 2FA code is asked for if the gateway needs one.").weak().small());
-                } else {
-                    ui.add_space(2.0);
-                    ui.label(egui::RichText::new("You'll sign in through your browser.").weak().small());
-                }
-            } else if is_f5 {
-                ui.label("User");
-                ui.add_enabled(editable, egui::TextEdit::singleline(&mut self.user).desired_width(f32::INFINITY));
-                ui.label("Password");
-                ui.add_enabled(
-                    editable,
-                    egui::TextEdit::singleline(&mut self.password).password(true).desired_width(f32::INFINITY),
-                );
-                ui.label(egui::RichText::new("A one-time passcode is asked for if the gateway needs one.").weak().small());
-            } else {
-                ui.label("User");
-                ui.add_enabled(editable, egui::TextEdit::singleline(&mut self.user).desired_width(f32::INFINITY));
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.label("PIN");
-                        ui.add_enabled(
-                            editable,
-                            egui::TextEdit::singleline(&mut self.pin).password(true).desired_width(90.0),
-                        );
-                    });
-                    ui.vertical(|ui| {
-                        ui.label("Token (email)");
-                        ui.add_enabled(editable, egui::TextEdit::singleline(&mut self.tokencode).desired_width(130.0));
-                    });
-                    ui.vertical(|ui| {
-                        ui.label(" ");
-                        if ui.button("Get code ↗").clicked() {
-                            let _ = Command::new("xdg-open").arg(SELFSERVICE_URL).spawn();
-                        }
-                    });
-                });
-            }
-
-            ui.add_space(8.0);
-            match state {
-                State::Disconnected | State::Error(_) => {
-                    let ready = if is_forti {
-                        !self.gateway.is_empty()
-                            && (self.forti_saml || (!self.user.is_empty() && !self.password.is_empty()))
-                    } else if is_f5 {
-                        !self.gateway.is_empty() && !self.user.is_empty() && !self.password.is_empty()
-                    } else {
-                        !self.gateway.is_empty() && !self.user.is_empty() && !self.tokencode.is_empty()
-                    };
-                    let btn_label = if is_forti && self.forti_saml { "Sign in with browser" } else { "Connect" };
-                    let btn = egui::Button::new(egui::RichText::new(btn_label).strong())
-                        .fill(egui::Color32::from_rgb(40, 110, 220))
-                        .min_size(egui::vec2(ui.available_width(), 38.0));
-                    if ui.add_enabled(ready, btn).clicked() {
-                        if is_forti {
-                            self.start_forti(ctx.clone());
-                        } else if is_f5 {
-                            self.start_f5(ctx.clone());
-                        } else {
-                            let passcode = format!("{}{}", self.pin.trim(), self.tokencode.trim());
-                            let args = vec![
-                                "ike".into(), "-g".into(), self.gateway.clone(),
-                                "-u".into(), self.user.clone(), "--connect".into(),
-                            ];
-                            let label = format!("connecting to {} as {}", self.gateway, self.user);
-                            self.vpn.connect(args, vec![passcode], label, None, ctx.clone());
-                            self.tokencode.clear(); // one-time code
-                        }
-                    }
-                }
-                State::Connecting | State::Connected => {
-                    let btn = egui::Button::new(egui::RichText::new("Disconnect").strong())
-                        .fill(egui::Color32::from_rgb(170, 60, 60))
-                        .min_size(egui::vec2(ui.available_width(), 38.0));
-                    if ui.add(btn).clicked() {
-                        self.vpn.disconnect();
-                    }
-                }
-                State::Disconnecting => {
-                    let btn = egui::Button::new(egui::RichText::new("Disconnecting…").strong())
-                        .min_size(egui::vec2(ui.available_width(), 38.0));
-                    ui.add_enabled(false, btn);
-                }
-            }
-
-            if let State::Error(ref e) = state {
-                ui.add_space(4.0);
-                ui.label(egui::RichText::new(e).color(egui::Color32::from_rgb(230, 120, 120)).small());
-            }
-
-            // Status card
-            {
-                let st = self.vpn.status.lock().unwrap();
-                if !st.ip.is_empty() {
-                    ui.add_space(6.0);
-                    ui.group(|ui| {
-                        ui.label(egui::RichText::new(format!("Internal IP:  {}", st.ip)).monospace());
-                        if !st.dns.is_empty() {
-                            ui.label(egui::RichText::new(format!("DNS:  {}", st.dns)).monospace().small());
-                        }
-                    });
-                }
-            }
-
-            ui.add_space(6.0);
-            ui.label(egui::RichText::new("Log").weak().small());
-            egui::ScrollArea::vertical().id_salt("log").stick_to_bottom(true).max_height(160.0).show(ui, |ui| {
-                let st = self.vpn.status.lock().unwrap();
-                for l in &st.log {
-                    ui.label(egui::RichText::new(l).monospace().small().color(egui::Color32::from_rgb(150, 156, 168)));
-                }
-            });
-            }); // fixed-width column
-            }); // centering row
-            }); // scroll area
-        });
-
-        if matches!(state, State::Connecting | State::Connected | State::Disconnecting) {
-            ctx.request_repaint_after(std::time::Duration::from_millis(500));
-        } else {
-            // Keep polling (while the window is open) for a browser-launched F5 tunnel,
-            // and to reflect its teardown after a Disconnect.
-            ctx.request_repaint_after(std::time::Duration::from_secs(1));
+    // Engine/tray events → UI.
+    glib::spawn_future_local(glib::clone!(#[strong] state_app, async move {
+        while let Ok(msg) = rx.recv().await {
+            state_app.handle_msg(msg);
         }
+    }));
+
+    // Reap the engine + detect a browser-launched tunnel.
+    glib::timeout_add_local(Duration::from_millis(800), glib::clone!(#[strong] state_app, move || {
+        state_app.tick();
+        glib::ControlFlow::Continue
+    }));
+
+    state_app.window.present();
+}
+
+fn install_css() {
+    let provider = gtk::CssProvider::new();
+    provider.load_from_string(CSS);
+    if let Some(display) = gdk::Display::default() {
+        gtk::style_context_add_provider_for_display(
+            &display,
+            &provider,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
     }
 }
 
-fn dump_icon(path: &str) {
-    let (w, h, rgba) = icon::preview_rgba();
-    let mut ppm = format!("P6\n{w} {h}\n255\n").into_bytes();
-    for p in 0..w * h {
-        ppm.extend_from_slice(&rgba[p * 4..p * 4 + 3]);
-    }
-    std::fs::write(path, ppm).expect("write ppm");
-    eprintln!("wrote {path}");
-}
-
-fn main() -> eframe::Result<()> {
+fn main() -> glib::ExitCode {
     let args: Vec<String> = std::env::args().collect();
-    if args.get(1).map(String::as_str) == Some("--dump-icon") {
-        dump_icon(args.get(2).map(String::as_str).unwrap_or("/tmp/cpvpn-icon.ppm"));
-        return Ok(());
-    }
     if args.get(1).map(String::as_str) == Some("--dump-rgba") {
         let path = args.get(2).map(String::as_str).unwrap_or("/tmp/cpvpn.raw");
         let size: u32 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(256);
         std::fs::write(path, icon::app_icon_rgba(size)).expect("write raw");
         eprintln!("wrote {path} ({size}x{size} rgba)");
-        return Ok(());
+        return glib::ExitCode::SUCCESS;
     }
 
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([440.0, 620.0])
-            .with_min_inner_size([380.0, 520.0])
-            .with_icon(std::sync::Arc::new(icon::window_icon()))
-            .with_title("cpvpn"),
-        ..Default::default()
-    };
-    eframe::run_native(
-        "cpvpn",
-        options,
-        Box::new(|cc| {
-            setup_theme(&cc.egui_ctx);
-            let mut app = App::default();
-            app.init_tray(cc.egui_ctx.clone());
-            Ok(Box::new(app))
-        }),
-    )
+    let app = adw::Application::builder().application_id(APP_ID).build();
+    app.connect_startup(|_| {
+        install_css();
+        gtk::Window::set_default_icon_name("cpvpn");
+        // Sway doesn't report a system colour-scheme to libadwaita, so it would fall
+        // back to light. Default to dark (the expected look for this utility); users
+        // on a light desktop can still override via the usual GTK settings.
+        adw::StyleManager::default().set_color_scheme(adw::ColorScheme::PreferDark);
+    });
+    app.connect_activate(build_ui);
+    app.run()
 }
