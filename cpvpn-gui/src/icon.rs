@@ -1,29 +1,22 @@
-//! Procedural app icon: a shield with a check mark, rendered to ARGB32 for the
-//! ksni system-tray pixmap (and RGBA via [`app_icon_rgba`] for `--dump-rgba`).
-//! Drawn from scratch so the tray icon shows consistently on every desktop
-//! regardless of the installed icon theme.
+//! Procedural app icon: a rounded badge ("squircle") with a check mark, rendered
+//! to ARGB32 for the ksni system-tray pixmap (and to RGBA via [`app_icon_rgba`] for
+//! `--dump-rgba`). Drawn from scratch so the tray icon shows consistently on every
+//! desktop regardless of the installed icon theme. The badge is filled with a state
+//! colour (green/amber/red/grey); the check mark is always white.
 
-/// Shield silhouette membership in normalized [0,1] coords (x right, y down).
-fn in_shield(x: f32, y: f32) -> bool {
-    if !(0.12..=0.92).contains(&y) {
+/// Rounded-square ("badge") membership in normalized [0,1] coords (x right, y down).
+fn in_badge(x: f32, y: f32) -> bool {
+    let m = 0.10; // margin around the badge
+    let r = 0.30; // corner radius
+    let (x0, x1, y0, y1) = (m, 1.0 - m, m, 1.0 - m);
+    if x < x0 || x > x1 || y < y0 || y > y1 {
         return false;
     }
-    let dx = (x - 0.5).abs();
-    let half = if y <= 0.56 {
-        // straight sides with slightly rounded top corners
-        let top_round = if y < 0.2 {
-            let t = (0.2 - y) / 0.08; // 0..1 near the very top
-            0.34 - 0.10 * t.clamp(0.0, 1.0).powi(2)
-        } else {
-            0.34
-        };
-        top_round
-    } else {
-        // taper to a point at the bottom
-        let t = (y - 0.56) / (0.92 - 0.56);
-        0.34 * (1.0 - t)
-    };
-    dx <= half
+    // Inside iff within `r` of the rectangle shrunk by `r` (rounded-rect SDF).
+    let cx = x.clamp(x0 + r, x1 - r);
+    let cy = y.clamp(y0 + r, y1 - r);
+    let (dx, dy) = (x - cx, y - cy);
+    dx * dx + dy * dy <= r * r
 }
 
 /// Distance from point to segment ab.
@@ -39,13 +32,13 @@ fn seg_dist(px: f32, py: f32, ax: f32, ay: f32, bx: f32, by: f32) -> f32 {
     ((px - cx).powi(2) + (py - cy).powi(2)).sqrt()
 }
 
-/// A check mark stroke inside the shield.
+/// A check mark stroke inside the badge (round caps come from the segment distance).
 fn near_check(x: f32, y: f32) -> bool {
-    let th = 0.052;
-    seg_dist(x, y, 0.34, 0.52, 0.45, 0.63) < th || seg_dist(x, y, 0.45, 0.63, 0.69, 0.37) < th
+    let th = 0.056;
+    seg_dist(x, y, 0.34, 0.53, 0.46, 0.64) < th || seg_dist(x, y, 0.46, 0.64, 0.70, 0.37) < th
 }
 
-/// Render the shield to non-premultiplied RGBA bytes, `color` the shield fill.
+/// Render the badge to non-premultiplied RGBA bytes, `color` the badge fill.
 fn render_rgba(size: u32, color: [u8; 3]) -> Vec<u8> {
     let ss = 4u32; // supersampling for anti-aliasing
     let big = (size * ss) as f32;
@@ -57,7 +50,7 @@ fn render_rgba(size: u32, color: [u8; 3]) -> Vec<u8> {
                 for sx in 0..ss {
                     let fx = (x * ss + sx) as f32 / big;
                     let fy = (y * ss + sy) as f32 / big;
-                    if in_shield(fx, fy) {
+                    if in_badge(fx, fy) {
                         cov += 1;
                         let (r, g, b) = if near_check(fx, fy) {
                             (255u32, 255, 255)
@@ -83,12 +76,12 @@ fn render_rgba(size: u32, color: [u8; 3]) -> Vec<u8> {
     out
 }
 
-/// The app icon as RGBA at an arbitrary size, transparent background.
+/// The app icon as RGBA at an arbitrary size, transparent background (accent blue).
 pub fn app_icon_rgba(size: u32) -> Vec<u8> {
-    render_rgba(size, [46, 120, 230])
+    render_rgba(size, [53, 132, 228])
 }
 
-/// State-colored shield for the system tray (ARGB32, network byte order).
+/// State-colored badge for the system tray (ARGB32, network byte order).
 pub fn tray_pixmap(color: [u8; 3]) -> ksni::Icon {
     let size = 32i32;
     let rgba = render_rgba(size as u32, color);
