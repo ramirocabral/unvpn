@@ -20,6 +20,12 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 pub const RESOLV_CONF: &str = "/etc/resolv.conf";
+/// First line of the resolv.conf we write, used to recognise our own leftover.
+const DNS_MARKER: &str = "# written by cpvpn";
+/// Persistent copy of the pre-VPN resolv.conf, so a later connect can recover the
+/// true original even if a previous session crashed without restoring (in-memory
+/// backup lost). `/run` is tmpfs — fine, resolv.conf is regenerated on boot anyway.
+const DNS_SIDECAR: &str = "/run/cpvpn/resolv.orig";
 
 /// What `/etc/resolv.conf` looked like before we touched it, so disconnect can
 /// put it back exactly — a plain file's contents, or a symlink we replaced with
@@ -33,6 +39,12 @@ pub struct DnsBackup {
 /// distros: if resolv.conf is a symlink (systemd-resolved/resolvconf), replace it
 /// with a static file and restore the symlink on disconnect; glibc reads this file
 /// regardless of the resolver in use. Returns `None` (no-op) when `dns` is empty.
+///
+/// Crash-safe: the true original is also written to a persistent sidecar. If the
+/// current resolv.conf is already *ours* (a prior session crashed/overlapped and
+/// never restored), we must NOT back that up — we'd "restore" the corp DNS and
+/// leave the host unable to resolve. In that case we recover the real original
+/// from the sidecar and leave the sidecar untouched.
 pub fn set_dns(dns: &[Ipv4Addr], domains: &str) -> Option<DnsBackup> {
     if dns.is_empty() {
         return None;
@@ -40,12 +52,24 @@ pub fn set_dns(dns: &[Ipv4Addr], domains: &str) -> Option<DnsBackup> {
     let is_symlink = std::fs::symlink_metadata(RESOLV_CONF)
         .map(|m| m.file_type().is_symlink())
         .unwrap_or(false);
-    let backup = DnsBackup {
-        symlink_target: if is_symlink { std::fs::read_link(RESOLV_CONF).ok() } else { None },
-        content: std::fs::read_to_string(RESOLV_CONF).ok(), // follows the symlink
+    let current = std::fs::read_to_string(RESOLV_CONF).ok(); // follows the symlink
+    let already_ours = current.as_deref().is_some_and(|c| c.starts_with(DNS_MARKER));
+
+    let backup = if already_ours {
+        // Leftover from a crashed/overlapping session — the file no longer holds the
+        // real original. Recover it from the sidecar (the first session saved it).
+        out!("# (resolv.conf was already cpvpn's — recovering the original from {DNS_SIDECAR})");
+        read_dns_sidecar().unwrap_or(DnsBackup { symlink_target: None, content: None })
+    } else {
+        let b = DnsBackup {
+            symlink_target: if is_symlink { std::fs::read_link(RESOLV_CONF).ok() } else { None },
+            content: current,
+        };
+        write_dns_sidecar(&b); // persist the true original for crash recovery
+        b
     };
 
-    let mut content = String::from("# written by cpvpn — restored on disconnect\n");
+    let mut content = format!("{DNS_MARKER} — restored on disconnect\n");
     let search: Vec<&str> = domains.split([',', ';', ' ']).filter(|s| !s.is_empty()).collect();
     if !search.is_empty() {
         content.push_str(&format!("search {}\n", search.join(" ")));
@@ -63,7 +87,7 @@ pub fn set_dns(dns: &[Ipv4Addr], domains: &str) -> Option<DnsBackup> {
     Some(backup)
 }
 
-/// Undo [`set_dns`], restoring the original file or symlink.
+/// Undo [`set_dns`], restoring the original file or symlink and clearing the sidecar.
 pub fn restore_dns(backup: Option<DnsBackup>) {
     let Some(b) = backup else { return };
     if let Some(target) = b.symlink_target {
@@ -72,7 +96,44 @@ pub fn restore_dns(backup: Option<DnsBackup>) {
     } else if let Some(c) = b.content {
         let _ = std::fs::write(RESOLV_CONF, c);
     }
+    let _ = std::fs::remove_file(DNS_SIDECAR);
     out!("# DNS restored");
+}
+
+/// Persist the true original resolv.conf for crash recovery.
+fn write_dns_sidecar(b: &DnsBackup) {
+    let Some(body) = encode_sidecar(b) else { return }; // nothing worth persisting
+    if let Some(dir) = std::path::Path::new(DNS_SIDECAR).parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(DNS_SIDECAR, body);
+}
+
+/// Read the crash-recovery sidecar back into a [`DnsBackup`].
+fn read_dns_sidecar() -> Option<DnsBackup> {
+    decode_sidecar(&std::fs::read_to_string(DNS_SIDECAR).ok()?)
+}
+
+/// Serialise a backup: `SYMLINK <target>` or `FILE\n<original bytes>`. `None` when
+/// there's no original to keep (resolv.conf didn't exist).
+fn encode_sidecar(b: &DnsBackup) -> Option<String> {
+    if let Some(t) = &b.symlink_target {
+        Some(format!("SYMLINK {}\n", t.display()))
+    } else {
+        b.content.as_ref().map(|c| format!("FILE\n{c}"))
+    }
+}
+
+/// Parse what [`encode_sidecar`] wrote.
+fn decode_sidecar(raw: &str) -> Option<DnsBackup> {
+    if let Some(rest) = raw.strip_prefix("SYMLINK ") {
+        let target = rest.lines().next().unwrap_or("").trim();
+        Some(DnsBackup { symlink_target: Some(PathBuf::from(target)), content: None })
+    } else if let Some(rest) = raw.strip_prefix("FILE\n") {
+        Some(DnsBackup { symlink_target: None, content: Some(rest.to_string()) })
+    } else {
+        None
+    }
 }
 
 /// Undoes our DNS change and the routes we added when dropped: on the normal
@@ -266,5 +327,49 @@ impl Drop for EchoOff {
             unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &t) };
             eprintln!(); // the user's Enter wasn't echoed; move to the next line
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sidecar_roundtrip_file() {
+        let b = DnsBackup {
+            symlink_target: None,
+            content: Some("# Generated by NetworkManager\nnameserver 192.168.9.53\n".to_string()),
+        };
+        let enc = encode_sidecar(&b).unwrap();
+        let dec = decode_sidecar(&enc).unwrap();
+        assert!(dec.symlink_target.is_none());
+        assert_eq!(dec.content.as_deref(), Some("# Generated by NetworkManager\nnameserver 192.168.9.53\n"));
+    }
+
+    #[test]
+    fn sidecar_roundtrip_symlink() {
+        let b = DnsBackup {
+            symlink_target: Some(PathBuf::from("/run/systemd/resolve/stub-resolv.conf")),
+            content: Some("ignored when it was a symlink".to_string()),
+        };
+        let enc = encode_sidecar(&b).unwrap();
+        assert!(enc.starts_with("SYMLINK /run/systemd/resolve/stub-resolv.conf"));
+        let dec = decode_sidecar(&enc).unwrap();
+        assert_eq!(dec.symlink_target.as_deref(), Some(std::path::Path::new("/run/systemd/resolve/stub-resolv.conf")));
+        assert!(dec.content.is_none());
+    }
+
+    #[test]
+    fn sidecar_empty_backup_not_persisted() {
+        assert!(encode_sidecar(&DnsBackup { symlink_target: None, content: None }).is_none());
+    }
+
+    #[test]
+    fn our_own_resolv_is_recognised() {
+        // A resolv.conf we wrote must be detected by the marker so set_dns won't
+        // back it up as if it were the user's original.
+        let ours = format!("{DNS_MARKER} — restored on disconnect\nnameserver 10.0.0.1\n");
+        assert!(ours.starts_with(DNS_MARKER));
+        assert!(!"# Generated by NetworkManager\n".starts_with(DNS_MARKER));
     }
 }
