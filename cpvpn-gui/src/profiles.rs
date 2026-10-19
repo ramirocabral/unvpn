@@ -16,6 +16,8 @@ pub enum Backend {
     CheckPoint,
     Forti,
     F5,
+    #[serde(rename = "anyconnect")]
+    AnyConnect,
 }
 
 impl Backend {
@@ -25,15 +27,17 @@ impl Backend {
             Backend::CheckPoint => "Check Point",
             Backend::Forti => "FortiClient",
             Backend::F5 => "F5",
+            Backend::AnyConnect => "AnyConnect (Cisco)",
         }
     }
 
-    /// Position in the backend `ComboRow` (Check Point, FortiClient, F5).
+    /// Position in the backend `ComboRow` (Check Point, FortiClient, F5, AnyConnect).
     pub fn index(self) -> u32 {
         match self {
             Backend::CheckPoint => 0,
             Backend::Forti => 1,
             Backend::F5 => 2,
+            Backend::AnyConnect => 3,
         }
     }
 
@@ -41,6 +45,7 @@ impl Backend {
         match i {
             1 => Backend::Forti,
             2 => Backend::F5,
+            3 => Backend::AnyConnect,
             _ => Backend::CheckPoint,
         }
     }
@@ -58,6 +63,9 @@ pub struct Profile {
     /// Fortinet realm (optional).
     #[serde(default)]
     pub realm: String,
+    /// AnyConnect tunnel group (optional; pre-selects the gateway's group dropdown).
+    #[serde(default)]
+    pub group: String,
     /// Fortinet SSO/SAML instead of password auth.
     #[serde(default)]
     pub forti_saml: bool,
@@ -74,6 +82,9 @@ impl Profile {
             parts.push("SSO".to_string());
         } else if !self.user.is_empty() {
             parts.push(self.user.clone());
+        }
+        if self.backend == Backend::AnyConnect && !self.group.is_empty() {
+            parts.push(self.group.clone());
         }
         if !self.gateway.is_empty() {
             parts.push(self.gateway.clone());

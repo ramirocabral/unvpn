@@ -6,9 +6,9 @@
 
 **A native Linux VPN client — reverse-engineered, no vendor binaries.**
 
-Check Point *Endpoint Connect / Trac* and **Fortinet FortiGate SSL-VPN** today;
-OpenVPN and F5 planned. Pretty GUI, a real system-tray icon, and a self-contained
-engine that runs on any distro.
+Check Point *Endpoint Connect / Trac*, **Fortinet FortiGate**, **F5 BIG-IP APM**
+and **Cisco AnyConnect** SSL-VPNs today; OpenVPN planned. Pretty GUI, a real
+system-tray icon, and a self-contained engine that runs on any distro.
 
 <img src="docs/screenshot.png" width="420" alt="cpvpn GUI"/>
 
@@ -84,6 +84,13 @@ sudo cpvpn ike -g 203.0.113.10 -u <user> --connect
 cpvpn forti -g vpn.example.com:443 --probe                 # non-destructive detection
 sudo cpvpn forti -g vpn.example.com -u <user> --connect    # password (+ OTP) on stdin
 sudo cpvpn forti -g vpn.example.com --saml --connect       # SSO/SAML via the browser
+
+# F5 BIG-IP APM SSL-VPN:
+sudo cpvpn f5 -g vpn.example.com -u <user> --connect       # password (+ OTP) on stdin
+
+# Cisco AnyConnect SSL-VPN (ASA / Secure Firewall):
+cpvpn anyconnect -g https://vpn.example.com/GROUP --probe          # shows form/groups/SSO
+sudo cpvpn anyconnect -g https://vpn.example.com -u <user> --connect   # password (+ 2FA) on stdin
 ```
 Send `disconnect` on stdin (or SIGTERM) for a clean teardown.
 
@@ -127,8 +134,17 @@ for_window [app_id="cpvpn"] floating enable
       in-process **PPP** (LCP/IPCP) data plane, split/full-tunnel routing, DNS, GUI selector.
       *(built + unit-tested; live-gateway verification pending.)* See
       [`docs/forti-protocol-notes.md`](docs/forti-protocol-notes.md).
-- [ ] Fortinet DTLS acceleration (UDP/PSK) and IPsec/IKEv2 mode.
-- [ ] OpenVPN and F5 back-ends.
+- [x] **F5 BIG-IP APM SSL-VPN** — HTML-form login (+ OTP), webtop "Start"
+      (`f5-vpn://`) handoff, in-process **PPP** data plane, split/full routing, DNS,
+      keepalive + transparent reconnection, GUI selector. *(live-validated end-to-end.)*
+      See [`docs/f5-protocol-notes.md`](docs/f5-protocol-notes.md).
+- [x] **Cisco AnyConnect SSL-VPN** — aggregate-auth XML login (groups, challenge/2FA,
+      partial SAML/SSO), **CSTP** data plane (STF framing), split/full routing, DNS,
+      DPD/keepalive + transparent reconnection, GUI selector. *(control plane
+      validated against a real ASA; successful login + data plane pending creds.)*
+      See [`docs/anyconnect-protocol-notes.md`](docs/anyconnect-protocol-notes.md).
+- [ ] Fortinet/AnyConnect DTLS acceleration (UDP) and Fortinet IPsec/IKEv2 mode.
+- [ ] AnyConnect SSO via an embedded webview (token paste for now); OpenVPN back-end.
 
 ## Legal
 

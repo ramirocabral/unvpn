@@ -284,6 +284,7 @@ impl Vpn {
                         || clean.starts_with("IKE failed")
                         || clean.starts_with("forti failed")
                         || clean.starts_with("f5 failed")
+                        || clean.starts_with("anyconnect failed")
                         || clean.contains("login rejected")
                         || clean.contains("Two-factor Authentication failed")
                         || clean.contains("auth not completed")

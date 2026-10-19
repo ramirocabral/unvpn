@@ -177,7 +177,7 @@ impl App {
         // ---- connection form --------------------------------------------------
         let name_row = adw::EntryRow::builder().title("Profile name").build();
 
-        let backend_model = gtk::StringList::new(&["Check Point", "FortiClient", "F5"]);
+        let backend_model = gtk::StringList::new(&["Check Point", "FortiClient", "F5", "AnyConnect (Cisco)"]);
         let backend_row = adw::ComboRow::builder().title("VPN client").model(&backend_model).build();
 
         let gateway_row = adw::EntryRow::builder().title("Gateway").build();
@@ -413,11 +413,14 @@ impl App {
         let b = self.backend();
         let forti = b == Backend::Forti;
         let cp = b == Backend::CheckPoint;
+        let anyconnect = b == Backend::AnyConnect;
         let saml = forti && self.forti_saml();
         let need_creds = !saml;
 
         self.forti_auth_row.set_visible(forti);
-        self.realm_row.set_visible(forti);
+        // The realm row doubles as AnyConnect's optional tunnel-group field.
+        self.realm_row.set_visible(forti || anyconnect);
+        self.realm_row.set_title(if anyconnect { "Group (optional)" } else { "Realm (optional)" });
         self.user_row.set_visible(need_creds);
         self.password_row.set_visible(need_creds);
         self.remember_row.set_visible(need_creds);
@@ -428,6 +431,8 @@ impl App {
             "You'll sign in through your browser."
         } else if cp {
             "SecurID PIN + the one-time token emailed to you."
+        } else if anyconnect {
+            "Full gateway URL incl. any group path. A 2FA code is requested if needed."
         } else {
             "A token / 2FA code is requested if the gateway needs one."
         };
@@ -438,7 +443,7 @@ impl App {
         let gw = !self.gateway_row.text().trim().is_empty();
         match self.backend() {
             Backend::Forti if self.forti_saml() => gw,
-            Backend::Forti | Backend::F5 => {
+            Backend::Forti | Backend::F5 | Backend::AnyConnect => {
                 gw && !self.user_row.text().trim().is_empty()
                     && !self.password_row.text().is_empty()
             }
@@ -512,7 +517,8 @@ impl App {
         self.name_row.set_text(&p.name);
         self.gateway_row.set_text(&p.gateway);
         self.user_row.set_text(&p.user);
-        self.realm_row.set_text(&p.realm);
+        // realm_row doubles as AnyConnect's group field.
+        self.realm_row.set_text(if p.backend == Backend::AnyConnect { &p.group } else { &p.realm });
         self.remember_row.set_active(p.remember_password);
         self.token_row.set_text("");
         let secret = if p.remember_password { profiles::secret_get(&p.name).unwrap_or_default() } else { String::new() };
@@ -531,12 +537,16 @@ impl App {
         // "Remember" only applies when the password field is in play (not Forti SSO).
         let creds_in_play = !(self.backend() == Backend::Forti && self.forti_saml());
         let remember = self.remember_row.is_active() && creds_in_play;
+        let backend = self.backend();
+        let realm_field = self.realm_row.text().trim().to_string();
         let p = Profile {
             name: name.clone(),
-            backend: self.backend(),
+            backend,
             gateway: self.gateway_row.text().trim().to_string(),
             user: self.user_row.text().trim().to_string(),
-            realm: self.realm_row.text().trim().to_string(),
+            // realm_row doubles as AnyConnect's group field.
+            realm: if backend == Backend::AnyConnect { String::new() } else { realm_field.clone() },
+            group: if backend == Backend::AnyConnect { realm_field } else { String::new() },
             forti_saml: self.forti_saml(),
             remember_password: remember,
         };
@@ -663,6 +673,18 @@ impl App {
                 vec![self.password_row.text().to_string()],
                 None,
             ),
+            Backend::AnyConnect => {
+                // realm_row doubles as the optional tunnel group for AnyConnect.
+                let mut args: Vec<String> = vec!["anyconnect".into(), "-g".into(), gw.clone(), "-u".into(), user];
+                if !realm.is_empty() {
+                    args.push("--group".into());
+                    args.push(realm);
+                }
+                args.push("--connect".into());
+                // Password piped up front (like F5); a 2FA code, if any, is collected
+                // interactively via `# AUTH-PROMPT: code:`.
+                (args, vec![self.password_row.text().to_string()], None)
+            }
         };
 
         self.vpn.borrow_mut().connect(args, stdin_lines, label, saml);
