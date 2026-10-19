@@ -140,8 +140,9 @@ for_window [app_id="cpvpn"] floating enable
       See [`docs/f5-protocol-notes.md`](docs/f5-protocol-notes.md).
 - [x] **Cisco AnyConnect SSL-VPN** — aggregate-auth XML login (groups, challenge/2FA,
       partial SAML/SSO), **CSTP** data plane (STF framing), split/full routing, DNS,
-      DPD/keepalive + transparent reconnection, GUI selector. *(control plane
-      validated against a real ASA; successful login + data plane pending creds.)*
+      DPD/keepalive + transparent reconnection, GUI selector. *(live-validated
+      end-to-end against a real Cisco ASA — auth, split-tunnel routing, corp DNS and
+      bidirectional data plane, clean teardown.)*
       See [`docs/anyconnect-protocol-notes.md`](docs/anyconnect-protocol-notes.md).
 - [ ] Fortinet/AnyConnect DTLS acceleration (UDP) and Fortinet IPsec/IKEv2 mode.
 - [ ] AnyConnect SSO via an embedded webview (token paste for now); OpenVPN back-end.

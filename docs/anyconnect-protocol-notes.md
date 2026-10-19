@@ -126,14 +126,18 @@ byte de tipo (mismos códigos) + payload. Ver openconnect `openssl-dtls.c` /
 `dtls.c`. El data-plane actual es CSTP-only (TLS), que todo gateway soporta.
 
 ## Estado
-- **Control plane validado end-to-end contra un ASA real (gw-a):** init → selección
-  de grupo → re-init → form de credenciales → auth-reply → el gateway procesa y
-  responde (rechazo correcto con creds de prueba ficticias; no se tocó la cuenta
-  real). Prueba: XML parse, echo del opaque, dropdown de grupo + NEWGROUP, fill del
-  form, build_reply, POST, detección de rechazo. gw-a y gw-b probados con `curl` a
-  nivel init (gw-a→form, gw-b→sso-v2).
-- **Falta login exitoso** (requiere la password real del usuario) y, con él, el
-  **data-plane CSTP** (nunca ejercido contra un gateway de verdad todavía).
+- **VALIDADO END-TO-END contra un ASA real (gw-a `203.0.113.20`, 19/10/2026)** con
+  credenciales reales (`alice`, grupo `GROUP_A`): auth → selección de grupo →
+  re-init → form → auth-reply → `type=complete` + cookie `webvpn` → `CONNECT
+  /CSCOSSLC/tunnel` → IP **10.20.62.187/25**, DNS 10.20.2.43/.177, **72 rutas
+  split**, MTU 1287 → **data-plane CSTP real bidireccional** (`dig @10.20.2.43
+  www.example.com` → NOERROR con answers vía el resolver corp; `ping 10.20.2.43` 3/3
+  0% loss ~196ms) → **split tunnel correcto** (corp `→ dev cpac0`, `8.8.8.8 →
+  enp10s0`) → stats rx_frames=60 tun_in=59 → **teardown limpio** (BYE + logout +
+  `resolv.conf` y tabla de rutas restaurados **idénticos** byte a byte). El
+  `--no-routes` daba rx=0 sólo porque sin rutas nada llegaba a hosts vivos (los
+  servidores DNS no responden ICMP pero sí queries): es comportamiento esperado, no
+  bug. gw-a y gw-b probados con `curl` a nivel init (gw-a→form, gw-b→sso-v2).
 - Unit tests: XML (parse/span/entidades/tolerancia), auth (gw-a/sso/complete,
   mapeo de reply, grupos/noaaa/challenge), config (full/split/banner/case), CSTP
   (framing STF split/roundtrip/magic, disconnect-reason, clamp de intervalos),
