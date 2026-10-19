@@ -73,18 +73,28 @@ impl Channel {
         sysnet::write_all_polling(&mut self.tls, Some(self.fd), &frame)
     }
 
-    /// Read whatever is available into the rx buffer. Returns false on clean EOF.
+    /// Drain all currently-available ciphertext into the rx buffer. Returns false
+    /// on a clean EOF with nothing read (the peer closed).
+    ///
+    /// Must loop until `WouldBlock`: TLS decrypts a whole record at once, so after
+    /// one `read` OpenSSL can still hold several more frames in its own buffer with
+    /// no new bytes on the socket — and `poll(fd)` would NOT wake us for those,
+    /// stalling the tunnel up to a full poll interval. Reading to exhaustion each
+    /// time keeps latency/throughput up (openconnect reads the same way).
     fn fill(&mut self) -> Result<bool, String> {
-        let mut tmp = [0u8; 4096];
-        match self.tls.read(&mut tmp) {
-            Ok(0) => Ok(false),
-            Ok(n) => {
-                self.rx.extend_from_slice(&tmp[..n]);
-                Ok(true)
+        let mut tmp = [0u8; 16384];
+        let mut got_any = false;
+        loop {
+            match self.tls.read(&mut tmp) {
+                Ok(0) => return Ok(got_any), // EOF: closed unless we just drained data
+                Ok(n) => {
+                    self.rx.extend_from_slice(&tmp[..n]);
+                    got_any = true;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Ok(true),
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(format!("tunnel read: {e}")),
             }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(true),
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => Ok(true),
-            Err(e) => Err(format!("tunnel read: {e}")),
         }
     }
 
@@ -127,9 +137,12 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
     let mtu = if cfg.mtu >= 576 { cfg.mtu } else { 1390 };
     let dns = cfg.dns.clone();
     println!(
-        "# CSTP options: mtu {mtu} routes {} exclude {} default_route {} keepalive {} dpd {} rekey {}",
-        cfg.split_include.len(), cfg.split_exclude.len(), cfg.default_route, cfg.keepalive, cfg.dpd, cfg.rekey
+        "# CSTP options: mtu {mtu} routes {} exclude {} default_route {} keepalive {} dpd {} rekey {} dtls_port {} dtls_cipher {:?}",
+        cfg.split_include.len(), cfg.split_exclude.len(), cfg.default_route, cfg.keepalive, cfg.dpd, cfg.rekey, cfg.dtls_port, cfg.dtls_cipher
     );
+    if cfg.dtls_port != 0 {
+        out!("# note: gateway offers DTLS (UDP {}) — faster data plane; not yet implemented (CSTP/TLS only)", cfg.dtls_port);
+    }
     // This exact "— IP <ip>  DNS [..]" shape is what the GUI's log parser reads.
     println!("# ✅ CSTP up — IP {assigned}  DNS {:?}  (mtu {mtu})", dns);
     if let Some(b) = &cfg.banner {
@@ -252,7 +265,14 @@ fn open_channel(session: &Session, want_addr: Option<Ipv4Addr>) -> Result<(Chann
     if let Some(a) = want_addr {
         req.push_str(&format!("X-CSTP-Address: {a}\r\n"));
     }
-    req.push_str("X-DTLS-Master-Secret: 0000000000000000000000000000000000000000000000000000000000000000\r\n");
+    // DTLS master secret must be 48 real random bytes (not zeros) or the ASA won't
+    // offer DTLS — it echoes nothing and the data plane stays on CSTP/TCP. We send a
+    // genuine secret so the gateway advertises `X-DTLS-Port`/cipher; the DTLS data
+    // plane itself is a follow-up, but eliciting the offer is the prerequisite.
+    let mut secret = [0u8; 48];
+    let _ = openssl::rand::rand_bytes(&mut secret);
+    let secret_hex: String = secret.iter().map(|b| format!("{b:02X}")).collect();
+    req.push_str(&format!("X-DTLS-Master-Secret: {secret_hex}\r\n"));
     req.push_str("X-DTLS-CipherSuite: DHE-RSA-AES256-SHA:AES256-SHA:AES128-SHA\r\n");
     req.push_str("\r\n");
     tls.write_all(req.as_bytes()).map_err(|e| format!("CONNECT write: {e}"))?;
