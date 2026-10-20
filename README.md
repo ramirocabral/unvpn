@@ -7,7 +7,7 @@
 **A native Linux VPN client — reverse-engineered, no vendor binaries.**
 
 Check Point *Endpoint Connect / Trac*, **Fortinet FortiGate**, **F5 BIG-IP APM**
-**Cisco AnyConnect** SSL-VPNs and **OpenVPN** today. Pretty GUI, a real
+**Cisco AnyConnect** SSL-VPNs, **OpenVPN** and **WireGuard** today. Pretty GUI, a real
 system-tray icon, and a self-contained engine that runs on any distro.
 
 <img src="docs/screenshot.png" width="420" alt="unvpn GUI"/>
@@ -21,7 +21,9 @@ system-tray icon, and a self-contained engine that runs on any distro.
 `unvpn` (*one client to un-vendor them all*) speaks each vendor's VPN protocol **natively**,
 implemented from scratch in Rust by reverse-engineering the wire protocols — it does **not** wrap
 or depend on any vendor client (`snx` / Endpoint Connect, FortiClient, F5 VPN, AnyConnect,
-`openvpn`). The whole control and data plane is ours. For Check Point, for example:
+`openvpn`, `wg-quick`). The whole control and data plane is ours (WireGuard is the one
+exception by design: it already lives in the Linux kernel, so unvpn drives the in-kernel
+implementation directly over netlink instead of re-implementing it). For Check Point, for example:
 
 - **CCC** control channel (Check Point S-expressions over TLS).
 - **IKEv1 / IPsec** Main Mode with **hybrid auth** (gateway RSA cert) and
@@ -103,6 +105,12 @@ sudo unvpn anyconnect -g https://vpn.example.com/GROUP --sso --connect # SAML: b
 unvpn openvpn -c profile.ovpn --probe                     # reachability + tls-auth/tls-crypt + server cert
 unvpn openvpn -c profile.ovpn -u <user> --login           # authenticate, print the pushed config
 sudo unvpn openvpn -c profile.ovpn -u <user> --connect    # password / key passphrase / OTP on stdin
+
+# WireGuard (any wg-quick .conf — on the kernel's WireGuard, no `wg`/`wg-quick` needed):
+sudo unvpn wireguard -c wg0.conf --probe                  # handshake check, then remove the interface
+sudo unvpn wireguard -c wg0.conf --connect                # bring up the tunnel
+unvpn wireguard -c wg0.conf --pubkey                      # the public key to register on the server
+unvpn wireguard --genkey                                  # new key pair
 ```
 Send `disconnect` on stdin (or SIGTERM) for a clean teardown.
 
@@ -163,8 +171,16 @@ for_window [app_id="unvpn"] floating enable
       challenge, auth-token, renegotiation, ping-restart + reconnection, GUI profile with
       a .ovpn picker. *(interop-validated against OpenVPN 2.7.8 — and faster than its
       userspace data path.)* See [`docs/openvpn-protocol-notes.md`](docs/openvpn-protocol-notes.md).
+- [x] **WireGuard** — wg-quick `.conf` profiles on the **kernel's WireGuard**, configured
+      over generic netlink (no `wg`/`wg-quick`): keys + preshared key, multiple peers,
+      IPv4 + IPv6, full/split routing with the endpoint pinned outside the tunnel, `Table`,
+      `FwMark`, DNS + search domains, a handshake check before any route goes in, stats, clean
+      teardown; `PostUp`-style hooks are never executed. GUI profile with a .conf picker.
+      *(validated against kernel WireGuard peers: handshake, v4/v6 data plane ~3 Gbit/s,
+      teardown restores routes and DNS exactly.)* See [`docs/wireguard-notes.md`](docs/wireguard-notes.md).
 - [x] DTLS acceleration (UDP) for AnyConnect, Fortinet and F5.
-- [ ] Fortinet IPsec/IKEv2 mode; OpenVPN tls-crypt-v2 / IPv6.
+- [ ] Fortinet IPsec/IKEv2 mode; OpenVPN tls-crypt-v2 / IPv6; WireGuard userspace fallback
+      (hosts without the kernel module).
 
 ## Legal
 

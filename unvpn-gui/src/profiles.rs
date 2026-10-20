@@ -21,6 +21,8 @@ pub enum Backend {
     AnyConnect,
     #[serde(rename = "openvpn")]
     OpenVpn,
+    #[serde(rename = "wireguard")]
+    WireGuard,
 }
 
 impl Backend {
@@ -32,10 +34,11 @@ impl Backend {
             Backend::F5 => "F5",
             Backend::AnyConnect => "AnyConnect (Cisco)",
             Backend::OpenVpn => "OpenVPN",
+            Backend::WireGuard => "WireGuard",
         }
     }
 
-    /// Position in the backend `ComboRow` (Check Point, FortiClient, F5, AnyConnect, OpenVPN).
+    /// Position in the backend `ComboRow` (Check Point, FortiClient, F5, AnyConnect, OpenVPN, WireGuard).
     pub fn index(self) -> u32 {
         match self {
             Backend::CheckPoint => 0,
@@ -43,6 +46,7 @@ impl Backend {
             Backend::F5 => 2,
             Backend::AnyConnect => 3,
             Backend::OpenVpn => 4,
+            Backend::WireGuard => 5,
         }
     }
 
@@ -51,12 +55,18 @@ impl Backend {
         matches!(self, Backend::Forti | Backend::AnyConnect)
     }
 
+    /// Back-ends configured by a profile file (`gateway` holds its path).
+    pub fn uses_profile_file(self) -> bool {
+        matches!(self, Backend::OpenVpn | Backend::WireGuard)
+    }
+
     pub fn from_index(i: u32) -> Backend {
         match i {
             1 => Backend::Forti,
             2 => Backend::F5,
             3 => Backend::AnyConnect,
             4 => Backend::OpenVpn,
+            5 => Backend::WireGuard,
             _ => Backend::CheckPoint,
         }
     }
@@ -101,8 +111,8 @@ impl Profile {
         if self.backend == Backend::AnyConnect && !self.group.is_empty() {
             parts.push(self.group.clone());
         }
-        if self.backend == Backend::OpenVpn {
-            // `gateway` holds the .ovpn path — the file name is what identifies it.
+        if self.backend.uses_profile_file() {
+            // `gateway` holds the .ovpn/.conf path — the file name is what identifies it.
             let file = std::path::Path::new(&self.gateway).file_name().map(|f| f.to_string_lossy().into_owned());
             parts.extend(file);
         } else if !self.gateway.is_empty() {

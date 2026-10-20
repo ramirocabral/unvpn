@@ -2,7 +2,7 @@
 name = "unvpn"
 version = "0.1.0"
 edition = "2021"
-description = "Native Linux multi-vendor VPN client engine (reverse-engineered Check Point / Fortinet / F5 / AnyConnect / OpenVPN)."
+description = "Native Linux multi-vendor VPN client engine (reverse-engineered Check Point / Fortinet / F5 / AnyConnect / OpenVPN, plus kernel WireGuard)."
 
 [dependencies]
 native-tls = "0.2.12"

@@ -339,6 +339,7 @@ impl Vpn {
                         || clean.starts_with("f5 failed")
                         || clean.starts_with("anyconnect failed")
                         || clean.starts_with("openvpn failed")
+                        || clean.starts_with("wireguard failed")
                         || clean.contains("login rejected")
                         || clean.contains("Two-factor Authentication failed")
                         || clean.contains("auth not completed")

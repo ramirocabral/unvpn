@@ -30,6 +30,7 @@ mod ike;
 mod openvpn;
 mod sysnet;
 mod tun;
+mod wireguard;
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -1179,6 +1180,7 @@ fn main() {
         Some("f5") => f5::cmd_f5(&args[1..]),
         Some("anyconnect") => anyconnect::cmd_anyconnect(&args[1..]),
         Some("openvpn") => openvpn::cmd_openvpn(&args[1..]),
+        Some("wireguard") | Some("wg") => wireguard::cmd_wireguard(&args[1..]),
         _ => {
             eprintln!("unvpn — native multi-vendor VPN client\n");
             eprintln!("usage:");
@@ -1191,6 +1193,7 @@ fn main() {
             eprintln!("  unvpn f5 -g <host[:port]> -u <user> [--connect]      # F5 BIG-IP APM SSL-VPN back-end");
             eprintln!("  unvpn anyconnect -g <url> -u <user> [--connect]       # Cisco AnyConnect SSL-VPN back-end");
             eprintln!("  unvpn openvpn -c <profile.ovpn> [-u <user>] [--connect] # OpenVPN back-end");
+            eprintln!("  unvpn wireguard -c <profile.conf> --connect            # WireGuard (kernel) back-end");
             std::process::exit(2);
         }
     }

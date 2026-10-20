@@ -1,6 +1,6 @@
 //! unvpn-gui — a native Linux VPN client with a clean GTK4 / libadwaita UI and a
 //! system-tray icon. Supports Check Point, Fortinet (FortiClient), F5 BIG-IP APM,
-//! Cisco AnyConnect and OpenVPN back-ends, and saved connection **profiles** (switch between gateways
+//! Cisco AnyConnect, OpenVPN and WireGuard back-ends, and saved connection **profiles** (switch between gateways
 //! without retyping). Passwords are kept in the system keyring (Secret Service);
 //! 2FA tokens are single-use and always asked for.
 //!
@@ -193,13 +193,13 @@ impl App {
         // ---- connection form --------------------------------------------------
         let name_row = adw::EntryRow::builder().title("Profile name").build();
 
-        let backend_model = gtk::StringList::new(&["Check Point", "FortiClient", "F5", "AnyConnect (Cisco)", "OpenVPN"]);
+        let backend_model = gtk::StringList::new(&["Check Point", "FortiClient", "F5", "AnyConnect (Cisco)", "OpenVPN", "WireGuard"]);
         let backend_row = adw::ComboRow::builder().title("VPN client").model(&backend_model).build();
 
         let gateway_row = adw::EntryRow::builder().title("Gateway").build();
         let browse_btn = gtk::Button::builder()
             .icon_name("document-open-symbolic")
-            .tooltip_text("Choose the .ovpn profile")
+            .tooltip_text("Choose the profile file")
             .valign(gtk::Align::Center)
             .css_classes(["flat"])
             .build();
@@ -412,7 +412,7 @@ impl App {
             }
             app.sync_ui();
         }));
-        app.browse_btn.connect_clicked(glib::clone!(#[strong] app, move |_| app.pick_ovpn_file()));
+        app.browse_btn.connect_clicked(glib::clone!(#[strong] app, move |_| app.pick_profile_file()));
         app.user_row.connect_changed(glib::clone!(#[strong] app, move |_| app.sync_ui()));
         app.token_row.connect_changed(glib::clone!(#[strong] app, move |_| app.sync_ui()));
         app.password_row.connect_changed(glib::clone!(#[strong] app, move |_| app.sync_ui()));
@@ -460,11 +460,22 @@ impl App {
         let cp = b == Backend::CheckPoint;
         let anyconnect = b == Backend::AnyConnect;
         let openvpn = b == Backend::OpenVpn;
+        let wireguard = b == Backend::WireGuard;
         let saml = self.sso();
-        let need_creds = if openvpn { self.ovpn_needs_userpass() } else { !saml };
+        let need_creds = if openvpn {
+            self.ovpn_needs_userpass()
+        } else {
+            !saml && !wireguard
+        };
 
-        self.browse_btn.set_visible(openvpn);
-        self.gateway_row.set_title(if openvpn { "Profile (.ovpn file)" } else { "Gateway" });
+        self.browse_btn.set_visible(b.uses_profile_file());
+        self.gateway_row.set_title(if openvpn {
+            "Profile (.ovpn file)"
+        } else if wireguard {
+            "Config (.conf file)"
+        } else {
+            "Gateway"
+        });
 
         self.sso_row.set_visible(b.has_sso());
         // The realm row doubles as AnyConnect's optional tunnel-group field.
@@ -489,6 +500,8 @@ impl App {
             "Full gateway URL incl. any group path. A 2FA code is requested if needed."
         } else if openvpn {
             "A client .ovpn profile. Certificates/keys are read from it; a key passphrase (unless saved) or OTP is asked for if needed."
+        } else if wireguard {
+            "A wg-quick .conf profile (keys, Address, DNS, peers). Runs on the kernel's WireGuard; PostUp/PreUp hooks are not executed."
         } else {
             "A token / 2FA code is requested if the gateway needs one."
         };
@@ -512,6 +525,9 @@ impl App {
                 file && (!self.ovpn_needs_userpass()
                     || (!self.user_row.text().trim().is_empty() && !self.password_row.text().is_empty()))
             }
+            // Only the path: a /etc/wireguard profile isn't even stat-able as the
+            // user — the engine reads it as root and reports a bad path itself.
+            Backend::WireGuard => gw,
         }
     }
 
@@ -519,15 +535,22 @@ impl App {
         profiles::ovpn_needs_userpass(self.gateway_row.text().trim())
     }
 
-    /// File chooser for the OpenVPN profile; fills the gateway row with its path.
-    fn pick_ovpn_file(&self) {
+    /// File chooser for the OpenVPN / WireGuard profile; fills the gateway row with its path.
+    fn pick_profile_file(&self) {
         let filter = gtk::FileFilter::new();
-        filter.set_name(Some("OpenVPN profiles"));
-        filter.add_pattern("*.ovpn");
-        filter.add_pattern("*.conf");
+        let title = if self.backend() == Backend::WireGuard {
+            filter.set_name(Some("WireGuard profiles"));
+            filter.add_pattern("*.conf");
+            "Choose a WireGuard profile"
+        } else {
+            filter.set_name(Some("OpenVPN profiles"));
+            filter.add_pattern("*.ovpn");
+            filter.add_pattern("*.conf");
+            "Choose an OpenVPN profile"
+        };
         let filters = gio::ListStore::new::<gtk::FileFilter>();
         filters.append(&filter);
-        let dialog = gtk::FileDialog::builder().title("Choose an OpenVPN profile").modal(true).filters(&filters).build();
+        let dialog = gtk::FileDialog::builder().title(title).modal(true).filters(&filters).build();
         let app = self.rc();
         dialog.open(Some(&self.window), gio::Cancellable::NONE, move |res| {
             if let Some(path) = res.ok().and_then(|f| f.path()) {
@@ -805,6 +828,8 @@ impl App {
                 args.push("--connect".into());
                 (args, lines, None)
             }
+            // Nothing to ask: the keys are in the profile.
+            Backend::WireGuard => (vec!["wireguard".into(), "-c".into(), gw.clone(), "--connect".into()], vec![], None),
             Backend::AnyConnect => {
                 // realm_row doubles as the optional tunnel group for AnyConnect.
                 let mut args: Vec<String> = vec!["anyconnect".into(), "-g".into(), gw.clone()];

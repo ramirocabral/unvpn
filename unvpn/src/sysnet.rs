@@ -11,7 +11,6 @@
 //! These are vendor-neutral; the Check Point (IKE/ESP) and Fortinet (SSL/PPP)
 //! data planes both build on them.
 
-use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
@@ -35,7 +34,7 @@ pub struct DnsBackup {
     content: Option<String>,
 }
 
-/// Point `/etc/resolv.conf` at `dns` + `domains` while connected. Works across
+/// Point `/etc/resolv.conf` at `dns` (IPv4 or IPv6 resolvers) + `domains` while connected. Works across
 /// distros: if resolv.conf is a symlink (systemd-resolved/resolvconf), replace it
 /// with a static file and restore the symlink on disconnect; glibc reads this file
 /// regardless of the resolver in use. Returns `None` (no-op) when `dns` is empty.
@@ -45,7 +44,7 @@ pub struct DnsBackup {
 /// never restored), we must NOT back that up — we'd "restore" the corp DNS and
 /// leave the host unable to resolve. In that case we recover the real original
 /// from the sidecar and leave the sidecar untouched.
-pub fn set_dns(dns: &[Ipv4Addr], domains: &str) -> Option<DnsBackup> {
+pub fn set_dns<A: std::fmt::Display + std::fmt::Debug>(dns: &[A], domains: &str) -> Option<DnsBackup> {
     if dns.is_empty() {
         return None;
     }
