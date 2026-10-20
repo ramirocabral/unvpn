@@ -80,6 +80,17 @@ pub fn saml_entry(gateway: &str) -> String {
     format!("https://{hostport}/remote/saml/start?")
 }
 
+/// AnyConnect's SSO entry point for `gateway` (a URL, maybe with a group path):
+/// the ASA/FTD `sso-v2-login` on the same host — `https://host[:port]/+CSCOE+/saml/`.
+/// The gateway omits the default port, so `:443` is dropped here too.
+pub fn anyconnect_saml_entry(gateway: &str) -> String {
+    let g = gateway.trim();
+    let g = g.strip_prefix("https://").or_else(|| g.strip_prefix("http://")).unwrap_or(g);
+    let hostport = g.split(['/', '?', '#']).next().unwrap_or_default();
+    let hostport = hostport.strip_suffix(":443").unwrap_or(hostport);
+    format!("https://{hostport}/+CSCOE+/saml/")
+}
+
 /// Resolve the engine binary to an absolute path (pkexec requires absolute).
 /// Order: $CPVPN_BIN, the dev build, $PATH, then a sensible default.
 fn cpvpn_bin() -> String {

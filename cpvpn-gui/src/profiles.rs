@@ -41,6 +41,11 @@ impl Backend {
         }
     }
 
+    /// Back-ends with a browser SSO/SAML login mode.
+    pub fn has_sso(self) -> bool {
+        matches!(self, Backend::Forti | Backend::AnyConnect)
+    }
+
     pub fn from_index(i: u32) -> Backend {
         match i {
             1 => Backend::Forti,
@@ -66,9 +71,10 @@ pub struct Profile {
     /// AnyConnect tunnel group (optional; pre-selects the gateway's group dropdown).
     #[serde(default)]
     pub group: String,
-    /// Fortinet SSO/SAML instead of password auth.
-    #[serde(default)]
-    pub forti_saml: bool,
+    /// SSO/SAML (browser) instead of password auth — Fortinet or AnyConnect.
+    /// (Older profiles saved it as `forti_saml`.)
+    #[serde(default, alias = "forti_saml")]
+    pub sso: bool,
     /// Whether a password/PIN is stored for this profile in the keyring.
     #[serde(default)]
     pub remember_password: bool,
@@ -78,7 +84,7 @@ impl Profile {
     /// The one-line subtitle shown under the profile name in the list.
     pub fn subtitle(&self) -> String {
         let mut parts = vec![self.backend.label().to_string()];
-        if self.backend == Backend::Forti && self.forti_saml {
+        if self.backend.has_sso() && self.sso {
             parts.push("SSO".to_string());
         } else if !self.user.is_empty() {
             parts.push(self.user.clone());

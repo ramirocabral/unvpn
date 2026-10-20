@@ -23,7 +23,7 @@ use std::time::Duration;
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 
-use engine::{saml_entry, AuthPrompt, EngineEvent, State, TrayCmd, Tx, UiMsg, Vpn};
+use engine::{anyconnect_saml_entry, saml_entry, AuthPrompt, EngineEvent, State, TrayCmd, Tx, UiMsg, Vpn};
 use profiles::{Backend, Profile};
 
 const APP_ID: &str = "io.github.cpvpn.Client";
@@ -106,7 +106,7 @@ struct App {
     password_row: adw::PasswordEntryRow,
     token_row: adw::EntryRow,
     realm_row: adw::EntryRow,
-    forti_auth_row: adw::ComboRow,
+    sso_row: adw::ComboRow,
     remember_row: adw::SwitchRow,
     save_btn: gtk::Button,
 
@@ -187,7 +187,7 @@ impl App {
         let token_row = adw::EntryRow::builder().title("Token (email)").build();
 
         let auth_model = gtk::StringList::new(&["Password", "SSO / SAML"]);
-        let forti_auth_row = adw::ComboRow::builder().title("Authentication").model(&auth_model).build();
+        let sso_row = adw::ComboRow::builder().title("Authentication").model(&auth_model).build();
         let realm_row = adw::EntryRow::builder().title("Realm (optional)").build();
 
         let remember_row = adw::SwitchRow::builder()
@@ -201,7 +201,7 @@ impl App {
         form_group.set_header_suffix(Some(&save_btn));
         form_group.add(&name_row);
         form_group.add(&backend_row);
-        form_group.add(&forti_auth_row);
+        form_group.add(&sso_row);
         form_group.add(&gateway_row);
         form_group.add(&realm_row);
         form_group.add(&user_row);
@@ -324,7 +324,7 @@ impl App {
             password_row,
             token_row,
             realm_row,
-            forti_auth_row,
+            sso_row,
             remember_row,
             save_btn,
             connect_btn,
@@ -362,7 +362,7 @@ impl App {
             app.update_form_visibility();
             app.sync_ui();
         }));
-        app.forti_auth_row.connect_selected_notify(glib::clone!(#[strong] app, move |_| {
+        app.sso_row.connect_selected_notify(glib::clone!(#[strong] app, move |_| {
             app.update_form_visibility();
             app.sync_ui();
         }));
@@ -404,8 +404,9 @@ impl App {
     fn backend(&self) -> Backend {
         Backend::from_index(self.backend_row.selected())
     }
-    fn forti_saml(&self) -> bool {
-        self.forti_auth_row.selected() == 1
+    /// SSO/SAML (browser) login selected, on a back-end that has one.
+    fn sso(&self) -> bool {
+        self.backend().has_sso() && self.sso_row.selected() == 1
     }
 
     /// Show only the rows relevant to the selected back-end / auth method.
@@ -414,10 +415,10 @@ impl App {
         let forti = b == Backend::Forti;
         let cp = b == Backend::CheckPoint;
         let anyconnect = b == Backend::AnyConnect;
-        let saml = forti && self.forti_saml();
+        let saml = self.sso();
         let need_creds = !saml;
 
-        self.forti_auth_row.set_visible(forti);
+        self.sso_row.set_visible(b.has_sso());
         // The realm row doubles as AnyConnect's optional tunnel-group field.
         self.realm_row.set_visible(forti || anyconnect);
         self.realm_row.set_title(if anyconnect { "Group (optional)" } else { "Realm (optional)" });
@@ -427,7 +428,9 @@ impl App {
         self.token_row.set_visible(cp);
         self.password_row.set_title(if cp { "PIN" } else { "Password" });
 
-        let hint = if saml {
+        let hint = if saml && anyconnect {
+            "You'll sign in through your browser, then paste the SSO token cookie here."
+        } else if saml {
             "You'll sign in through your browser."
         } else if cp {
             "SecurID PIN + the one-time token emailed to you."
@@ -442,7 +445,7 @@ impl App {
     fn form_ready(&self) -> bool {
         let gw = !self.gateway_row.text().trim().is_empty();
         match self.backend() {
-            Backend::Forti if self.forti_saml() => gw,
+            Backend::Forti | Backend::AnyConnect if self.sso() => gw,
             Backend::Forti | Backend::F5 | Backend::AnyConnect => {
                 gw && !self.user_row.text().trim().is_empty()
                     && !self.password_row.text().is_empty()
@@ -513,7 +516,7 @@ impl App {
 
     fn load_profile(&self, p: &Profile) {
         self.backend_row.set_selected(p.backend.index());
-        self.forti_auth_row.set_selected(if p.forti_saml { 1 } else { 0 });
+        self.sso_row.set_selected(if p.sso { 1 } else { 0 });
         self.name_row.set_text(&p.name);
         self.gateway_row.set_text(&p.gateway);
         self.user_row.set_text(&p.user);
@@ -534,8 +537,8 @@ impl App {
             self.name_row.grab_focus();
             return;
         }
-        // "Remember" only applies when the password field is in play (not Forti SSO).
-        let creds_in_play = !(self.backend() == Backend::Forti && self.forti_saml());
+        // "Remember" only applies when the password field is in play (not SSO).
+        let creds_in_play = !self.sso();
         let remember = self.remember_row.is_active() && creds_in_play;
         let backend = self.backend();
         let realm_field = self.realm_row.text().trim().to_string();
@@ -547,7 +550,7 @@ impl App {
             // realm_row doubles as AnyConnect's group field.
             realm: if backend == Backend::AnyConnect { String::new() } else { realm_field.clone() },
             group: if backend == Backend::AnyConnect { realm_field } else { String::new() },
-            forti_saml: self.forti_saml(),
+            sso: self.sso(),
             remember_password: remember,
         };
 
@@ -656,7 +659,7 @@ impl App {
                     args.push("--realm".into());
                     args.push(realm);
                 }
-                if self.forti_saml() {
+                if self.sso() {
                     args.push("--saml".into());
                     args.push("--no-browser".into()); // we open it ourselves, as the user
                     args.push("--connect".into());
@@ -675,15 +678,25 @@ impl App {
             ),
             Backend::AnyConnect => {
                 // realm_row doubles as the optional tunnel group for AnyConnect.
-                let mut args: Vec<String> = vec!["anyconnect".into(), "-g".into(), gw.clone(), "-u".into(), user];
+                let mut args: Vec<String> = vec!["anyconnect".into(), "-g".into(), gw.clone()];
                 if !realm.is_empty() {
                     args.push("--group".into());
                     args.push(realm);
                 }
-                args.push("--connect".into());
-                // Password piped up front (like F5); a 2FA code, if any, is collected
-                // interactively via `# AUTH-PROMPT: code:`.
-                (args, vec![self.password_row.text().to_string()], None)
+                if self.sso() {
+                    // SAML: we open the gateway's login URL in the user's browser; the
+                    // token cookie is pasted into the `# AUTH-PROMPT: sso:` card.
+                    args.push("--sso".into());
+                    args.push("--connect".into());
+                    (args, vec![], Some(anyconnect_saml_entry(&gw)))
+                } else {
+                    args.push("-u".into());
+                    args.push(user);
+                    args.push("--connect".into());
+                    // Password piped up front (like F5); a 2FA code, if any, is collected
+                    // interactively via `# AUTH-PROMPT: code:`.
+                    (args, vec![self.password_row.text().to_string()], None)
+                }
             }
         };
 
@@ -775,6 +788,7 @@ impl App {
             "newpass" => ("Password expired", "New password"),
             "renew" => ("Change your password?", "New password"),
             "answer" => ("Additional verification", "Answer"),
+            "sso" => ("Finish the browser sign-in", "SSO token"),
             "code2" => ("Second code", "Next code"),
             _ => ("Two-factor authentication", "Code"),
         };
@@ -782,7 +796,7 @@ impl App {
         self.prompt_group.set_description((!p.message.is_empty()).then_some(p.message.as_str()));
 
         let new_password = p.kind == "newpass" || p.kind == "renew";
-        let masked = new_password || p.kind == "answer";
+        let masked = new_password || p.kind == "answer" || p.kind == "sso";
 
         // The input row: masked (password/challenge) vs visible (OTP code).
         let entry: gtk::Widget = if masked {
@@ -837,7 +851,11 @@ impl App {
                 return;
             }
             app.vpn.borrow_mut().answer_prompt(&answer);
-            app.append_log(if masked { "→ password sent" } else { "→ answer sent" });
+            app.append_log(match kind.as_str() {
+                "sso" => "→ SSO token sent",
+                _ if masked => "→ password sent",
+                _ => "→ answer sent",
+            });
             app.clear_prompt();
         });
 
@@ -903,7 +921,7 @@ impl App {
 
         match &state {
             State::Disconnected | State::Error(_) => {
-                let label = if self.backend() == Backend::Forti && self.forti_saml() {
+                let label = if self.sso() {
                     "Sign in with browser"
                 } else {
                     "Connect"

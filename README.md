@@ -91,6 +91,7 @@ sudo cpvpn f5 -g vpn.example.com -u <user> --connect       # password (+ OTP) on
 # Cisco AnyConnect SSL-VPN (ASA / Secure Firewall):
 cpvpn anyconnect -g https://vpn.example.com/GROUP --probe          # shows form/groups/SSO
 sudo cpvpn anyconnect -g https://vpn.example.com -u <user> --connect   # password (+ 2FA) on stdin
+sudo cpvpn anyconnect -g https://vpn.example.com/GROUP --sso --connect # SAML: browser + paste token cookie
 ```
 Send `disconnect` on stdin (or SIGTERM) for a clean teardown.
 
@@ -139,7 +140,7 @@ for_window [app_id="cpvpn"] floating enable
       keepalive + transparent reconnection, GUI selector. *(live-validated end-to-end.)*
       See [`docs/f5-protocol-notes.md`](docs/f5-protocol-notes.md).
 - [x] **Cisco AnyConnect SSL-VPN** — aggregate-auth XML login (groups, challenge/2FA,
-      partial SAML/SSO), **CSTP** data plane (STF framing), split/full routing, DNS,
+      SAML/SSO via browser + token paste), **CSTP** data plane (STF framing), split/full routing, DNS,
       DPD/keepalive + transparent reconnection, GUI selector. *(live-validated
       end-to-end against a real Cisco ASA — auth, split-tunnel routing, corp DNS and
       bidirectional data plane, clean teardown.)*

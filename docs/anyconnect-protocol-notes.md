@@ -70,9 +70,14 @@ Gateways tipo gw-b responden con `<auth>` que trae `<sso-v2-login>` (URL del
 IdP), `<sso-v2-login-final>`, `<sso-v2-token-cookie-name>` (ej. `acSamlv2Token`) y
 un `<input type="sso">`. El cliente oficial abre un webview, el usuario se
 autentica y lee la cookie del token al llegar a `login-final`. **Acá, sin
-webview**: emito `# SAML-URL: <login>` (el GUI/usuario abre el browser) + `#
-AUTH-PROMPT: answer:` para **pegar el valor de la cookie del token** (obtenible por
-DevTools). Vía CLI: `--sso-token <valor>`. _Follow-up: automatizar la captura con
+webview**: `cpvpn anyconnect -g <url> --sso --connect` (sin `-u`) emite `#
+SAML-URL: <login>` y `# AUTH-PROMPT: sso:` para **pegar el valor de la cookie del
+token** (DevTools → Application/Storage → Cookies del host del gateway). Se acepta
+el valor pelado o `acSamlv2Token=…` / un header `Cookie:` entero. Si con `--sso` el
+gateway pide password, corta con error (no se cuelga leyendo stdin). Vía CLI
+también `--sso-token <valor>`. En la GUI: AnyConnect → Authentication "SSO /
+SAML"; abre con `xdg-open` solo URLs `https://<host del gateway>/+CSCOE+/saml/…`
+y muestra la tarjeta "Finish the browser sign-in" para pegar el token. _Follow-up: automatizar la captura con
 un webview (webkit2gtk-4.1 está instalado) o el loopback-listener
 `single-sign-on-external-browser` + HPKE (ECDH P-256 / HKDF-SHA256 / AES-256-GCM,
 ver openconnect `hpke.c`) — gw-b ofrece `sso-v2`, no external-browser._
