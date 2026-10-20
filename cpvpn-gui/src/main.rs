@@ -1,6 +1,6 @@
 //! cpvpn-gui — a native Linux VPN client with a clean GTK4 / libadwaita UI and a
-//! system-tray icon. Supports Check Point, Fortinet (FortiClient) and F5 BIG-IP
-//! APM back-ends, and saved connection **profiles** (switch between gateways
+//! system-tray icon. Supports Check Point, Fortinet (FortiClient), F5 BIG-IP APM,
+//! Cisco AnyConnect and OpenVPN back-ends, and saved connection **profiles** (switch between gateways
 //! without retyping). Passwords are kept in the system keyring (Secret Service);
 //! 2FA tokens are single-use and always asked for.
 //!
@@ -104,6 +104,8 @@ struct App {
     name_row: adw::EntryRow,
     backend_row: adw::ComboRow,
     gateway_row: adw::EntryRow,
+    /// "Browse…" suffix of the gateway row — picks the .ovpn file (OpenVPN).
+    browse_btn: gtk::Button,
     user_row: adw::EntryRow,
     password_row: adw::PasswordEntryRow,
     token_row: adw::EntryRow,
@@ -182,10 +184,17 @@ impl App {
         // ---- connection form --------------------------------------------------
         let name_row = adw::EntryRow::builder().title("Profile name").build();
 
-        let backend_model = gtk::StringList::new(&["Check Point", "FortiClient", "F5", "AnyConnect (Cisco)"]);
+        let backend_model = gtk::StringList::new(&["Check Point", "FortiClient", "F5", "AnyConnect (Cisco)", "OpenVPN"]);
         let backend_row = adw::ComboRow::builder().title("VPN client").model(&backend_model).build();
 
         let gateway_row = adw::EntryRow::builder().title("Gateway").build();
+        let browse_btn = gtk::Button::builder()
+            .icon_name("document-open-symbolic")
+            .tooltip_text("Choose the .ovpn profile")
+            .valign(gtk::Align::Center)
+            .css_classes(["flat"])
+            .build();
+        gateway_row.add_suffix(&browse_btn);
         let user_row = adw::EntryRow::builder().title("User").build();
         let password_row = adw::PasswordEntryRow::builder().title("Password").build();
 
@@ -325,6 +334,7 @@ impl App {
             name_row,
             backend_row,
             gateway_row,
+            browse_btn,
             user_row,
             password_row,
             token_row,
@@ -375,7 +385,13 @@ impl App {
         }));
 
         // Re-evaluate the Connect button's "ready" state as the user types.
-        app.gateway_row.connect_changed(glib::clone!(#[strong] app, move |_| app.sync_ui()));
+        app.gateway_row.connect_changed(glib::clone!(#[strong] app, move |_| {
+            if app.backend() == Backend::OpenVpn {
+                app.update_form_visibility(); // auth-user-pass decides the credential rows
+            }
+            app.sync_ui();
+        }));
+        app.browse_btn.connect_clicked(glib::clone!(#[strong] app, move |_| app.pick_ovpn_file()));
         app.user_row.connect_changed(glib::clone!(#[strong] app, move |_| app.sync_ui()));
         app.token_row.connect_changed(glib::clone!(#[strong] app, move |_| app.sync_ui()));
         app.password_row.connect_changed(glib::clone!(#[strong] app, move |_| app.sync_ui()));
@@ -422,8 +438,12 @@ impl App {
         let forti = b == Backend::Forti;
         let cp = b == Backend::CheckPoint;
         let anyconnect = b == Backend::AnyConnect;
+        let openvpn = b == Backend::OpenVpn;
         let saml = self.sso();
-        let need_creds = !saml;
+        let need_creds = if openvpn { self.ovpn_needs_userpass() } else { !saml };
+
+        self.browse_btn.set_visible(openvpn);
+        self.gateway_row.set_title(if openvpn { "Profile (.ovpn file)" } else { "Gateway" });
 
         self.sso_row.set_visible(b.has_sso());
         // The realm row doubles as AnyConnect's optional tunnel-group field.
@@ -443,6 +463,8 @@ impl App {
             "SecurID PIN + the one-time token emailed to you."
         } else if anyconnect {
             "Full gateway URL incl. any group path. A 2FA code is requested if needed."
+        } else if openvpn {
+            "A client .ovpn profile. Certificates/keys are read from it; a key passphrase or OTP is asked for if needed."
         } else {
             "A token / 2FA code is requested if the gateway needs one."
         };
@@ -461,7 +483,38 @@ impl App {
                 gw && !self.user_row.text().trim().is_empty()
                     && !self.token_row.text().trim().is_empty()
             }
+            Backend::OpenVpn => {
+                let file = std::path::Path::new(self.gateway_row.text().trim()).is_file();
+                file && (!self.ovpn_needs_userpass()
+                    || (!self.user_row.text().trim().is_empty() && !self.password_row.text().is_empty()))
+            }
         }
+    }
+
+    fn ovpn_needs_userpass(&self) -> bool {
+        profiles::ovpn_needs_userpass(self.gateway_row.text().trim())
+    }
+
+    /// File chooser for the OpenVPN profile; fills the gateway row with its path.
+    fn pick_ovpn_file(&self) {
+        let filter = gtk::FileFilter::new();
+        filter.set_name(Some("OpenVPN profiles"));
+        filter.add_pattern("*.ovpn");
+        filter.add_pattern("*.conf");
+        let filters = gio::ListStore::new::<gtk::FileFilter>();
+        filters.append(&filter);
+        let dialog = gtk::FileDialog::builder().title("Choose an OpenVPN profile").modal(true).filters(&filters).build();
+        let app = self.rc();
+        dialog.open(Some(&self.window), gio::Cancellable::NONE, move |res| {
+            if let Some(path) = res.ok().and_then(|f| f.path()) {
+                app.gateway_row.set_text(&path.to_string_lossy());
+                if app.name_row.text().trim().is_empty() {
+                    if let Some(stem) = path.file_stem() {
+                        app.name_row.set_text(&stem.to_string_lossy());
+                    }
+                }
+            }
+        });
     }
 
     // ── profiles ───────────────────────────────────────────────────────────
@@ -683,6 +736,19 @@ impl App {
                 vec![self.password_row.text().to_string()],
                 None,
             ),
+            Backend::OpenVpn => {
+                let mut args: Vec<String> = vec!["openvpn".into(), "-c".into(), gw.clone()];
+                // Pipe the password only when the engine will read one: an unexpected
+                // line would otherwise answer its next question (e.g. a key passphrase).
+                let mut lines = Vec::new();
+                if self.ovpn_needs_userpass() {
+                    args.push("-u".into());
+                    args.push(user);
+                    lines.push(self.password_row.text().to_string());
+                }
+                args.push("--connect".into());
+                (args, lines, None)
+            }
             Backend::AnyConnect => {
                 // realm_row doubles as the optional tunnel group for AnyConnect.
                 let mut args: Vec<String> = vec!["anyconnect".into(), "-g".into(), gw.clone()];

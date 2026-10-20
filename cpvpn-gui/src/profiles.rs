@@ -18,6 +18,8 @@ pub enum Backend {
     F5,
     #[serde(rename = "anyconnect")]
     AnyConnect,
+    #[serde(rename = "openvpn")]
+    OpenVpn,
 }
 
 impl Backend {
@@ -28,16 +30,18 @@ impl Backend {
             Backend::Forti => "FortiClient",
             Backend::F5 => "F5",
             Backend::AnyConnect => "AnyConnect (Cisco)",
+            Backend::OpenVpn => "OpenVPN",
         }
     }
 
-    /// Position in the backend `ComboRow` (Check Point, FortiClient, F5, AnyConnect).
+    /// Position in the backend `ComboRow` (Check Point, FortiClient, F5, AnyConnect, OpenVPN).
     pub fn index(self) -> u32 {
         match self {
             Backend::CheckPoint => 0,
             Backend::Forti => 1,
             Backend::F5 => 2,
             Backend::AnyConnect => 3,
+            Backend::OpenVpn => 4,
         }
     }
 
@@ -51,6 +55,7 @@ impl Backend {
             1 => Backend::Forti,
             2 => Backend::F5,
             3 => Backend::AnyConnect,
+            4 => Backend::OpenVpn,
             _ => Backend::CheckPoint,
         }
     }
@@ -92,11 +97,35 @@ impl Profile {
         if self.backend == Backend::AnyConnect && !self.group.is_empty() {
             parts.push(self.group.clone());
         }
-        if !self.gateway.is_empty() {
+        if self.backend == Backend::OpenVpn {
+            // `gateway` holds the .ovpn path — the file name is what identifies it.
+            let file = std::path::Path::new(&self.gateway).file_name().map(|f| f.to_string_lossy().into_owned());
+            parts.extend(file);
+        } else if !self.gateway.is_empty() {
             parts.push(self.gateway.clone());
         }
         parts.join("  ·  ")
     }
+}
+
+/// Whether an OpenVPN profile authenticates with a username/password
+/// (`auth-user-pass` without an inline/file credential), i.e. the GUI must ask.
+/// Unreadable file → false (the engine reports the real error).
+pub fn ovpn_needs_userpass(path: &str) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else { return false };
+    let mut needs = false;
+    for l in text.lines().map(str::trim) {
+        if l.starts_with("<auth-user-pass>") {
+            return false; // credentials inline
+        }
+        let mut w = l.split_whitespace();
+        if w.next() == Some("auth-user-pass") {
+            // `auth-user-pass <file>` with an existing file supplies them itself.
+            let dir = std::path::Path::new(path).parent().unwrap_or(std::path::Path::new("."));
+            needs = !w.next().is_some_and(|f| dir.join(f).is_file());
+        }
+    }
+    needs
 }
 
 #[derive(Default, Serialize, Deserialize)]

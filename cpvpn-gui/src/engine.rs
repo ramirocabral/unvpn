@@ -329,6 +329,7 @@ impl Vpn {
                         || clean.starts_with("forti failed")
                         || clean.starts_with("f5 failed")
                         || clean.starts_with("anyconnect failed")
+                        || clean.starts_with("openvpn failed")
                         || clean.contains("login rejected")
                         || clean.contains("Two-factor Authentication failed")
                         || clean.contains("auth not completed")

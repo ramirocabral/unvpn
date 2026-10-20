@@ -7,7 +7,7 @@
 **A native Linux VPN client — reverse-engineered, no vendor binaries.**
 
 Check Point *Endpoint Connect / Trac*, **Fortinet FortiGate**, **F5 BIG-IP APM**
-and **Cisco AnyConnect** SSL-VPNs today; OpenVPN planned. Pretty GUI, a real
+**Cisco AnyConnect** SSL-VPNs and **OpenVPN** today. Pretty GUI, a real
 system-tray icon, and a self-contained engine that runs on any distro.
 
 <img src="docs/screenshot.png" width="420" alt="cpvpn GUI"/>
@@ -97,6 +97,11 @@ cpvpn anyconnect -g https://vpn.example.com/GROUP --probe          # shows form/
 sudo cpvpn anyconnect -g https://vpn.example.com -u <user> --connect   # password (+ 2FA) on stdin
 sudo cpvpn anyconnect -g https://vpn.example.com/GROUP --sso --connect # SAML: browser + paste token cookie
                                                      # (the GUI does SSO in its own window — no pasting)
+
+# OpenVPN (any client .ovpn profile — no `openvpn` binary needed):
+cpvpn openvpn -c profile.ovpn --probe                     # reachability + tls-auth/tls-crypt + server cert
+cpvpn openvpn -c profile.ovpn -u <user> --login           # authenticate, print the pushed config
+sudo cpvpn openvpn -c profile.ovpn -u <user> --connect    # password / key passphrase / OTP on stdin
 ```
 Send `disconnect` on stdin (or SIGTERM) for a clean teardown.
 
@@ -150,8 +155,15 @@ for_window [app_id="cpvpn"] floating enable
       end-to-end against a real Cisco ASA — auth, split-tunnel routing, corp DNS and
       bidirectional data plane, clean teardown.)*
       See [`docs/anyconnect-protocol-notes.md`](docs/anyconnect-protocol-notes.md).
-- [ ] Fortinet/AnyConnect DTLS acceleration (UDP) and Fortinet IPsec/IKEv2 mode.
-- [ ] OpenVPN back-end.
+- [x] **OpenVPN** (2.x protocol, from scratch — no `openvpn` binary) — `.ovpn` profiles
+      (inline/files, PKCS#12, encrypted keys), UDP/TCP, **tls-auth / tls-crypt**, TLS 1.2/1.3
+      with OpenVPN-style server verification, AES-GCM / ChaCha20-Poly1305 (`P_DATA_V2`) and
+      legacy AES-CBC+HMAC, TLS-EKM or TLS1.0-PRF keys, user/pass + static/dynamic
+      challenge, auth-token, renegotiation, ping-restart + reconnection, GUI profile with
+      a .ovpn picker. *(interop-validated against OpenVPN 2.7.8 — and faster than its
+      userspace data path.)* See [`docs/openvpn-protocol-notes.md`](docs/openvpn-protocol-notes.md).
+- [x] DTLS acceleration (UDP) for AnyConnect, Fortinet and F5.
+- [ ] Fortinet IPsec/IKEv2 mode; OpenVPN tls-crypt-v2 / IPv6.
 
 ## Legal
 
