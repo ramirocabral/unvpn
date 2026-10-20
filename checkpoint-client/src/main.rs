@@ -27,6 +27,7 @@ mod forti;
 mod gnutls;
 mod f5;
 mod ike;
+mod openvpn;
 mod sysnet;
 mod tun;
 
@@ -1173,6 +1174,7 @@ fn main() {
         Some("forti") => forti::cmd_forti(&args[1..]),
         Some("f5") => f5::cmd_f5(&args[1..]),
         Some("anyconnect") => anyconnect::cmd_anyconnect(&args[1..]),
+        Some("openvpn") => openvpn::cmd_openvpn(&args[1..]),
         _ => {
             eprintln!("cpvpn — Check Point VPN client (M1/M2/M3)\n");
             eprintln!("usage:");
@@ -1184,6 +1186,7 @@ fn main() {
             eprintln!("  cpvpn forti -g <host[:port]> -u <user> [--connect]   # Fortinet SSL-VPN back-end");
             eprintln!("  cpvpn f5 -g <host[:port]> -u <user> [--connect]      # F5 BIG-IP APM SSL-VPN back-end");
             eprintln!("  cpvpn anyconnect -g <url> -u <user> [--connect]       # Cisco AnyConnect SSL-VPN back-end");
+            eprintln!("  cpvpn openvpn -c <profile.ovpn> [-u <user>] [--connect] # OpenVPN back-end");
             std::process::exit(2);
         }
     }
