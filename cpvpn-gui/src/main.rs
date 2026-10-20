@@ -108,6 +108,8 @@ struct App {
     browse_btn: gtk::Button,
     user_row: adw::EntryRow,
     password_row: adw::PasswordEntryRow,
+    /// OpenVPN: optional private-key passphrase (stored in the keyring on Save).
+    key_pass_row: adw::PasswordEntryRow,
     token_row: adw::EntryRow,
     realm_row: adw::EntryRow,
     sso_row: adw::ComboRow,
@@ -144,6 +146,12 @@ struct App {
     tray: RefCell<Option<ksni::Handle<tray::VpnTray>>>,
     tx: Tx,
     last_state: RefCell<Option<State>>,
+    /// OpenVPN: passphrase to answer the engine's `keypass` prompt with, unasked
+    /// (taken once per connection, so a wrong one falls back to the prompt card).
+    pending_key_pass: RefCell<Option<String>>,
+    /// OpenVPN: (profile, passphrase) typed in the prompt card with "Remember" on —
+    /// written to the keyring once the tunnel is up, i.e. once it proved right.
+    key_pass_to_store: RefCell<Option<(String, String)>>,
     /// Name of the profile used for the current connection — shown on hover (header
     /// status pill + tray tooltip). Shared with the tray thread.
     active_profile: Arc<Mutex<String>>,
@@ -197,6 +205,7 @@ impl App {
         gateway_row.add_suffix(&browse_btn);
         let user_row = adw::EntryRow::builder().title("User").build();
         let password_row = adw::PasswordEntryRow::builder().title("Password").build();
+        let key_pass_row = adw::PasswordEntryRow::builder().title("Key passphrase (optional)").build();
 
         let token_row = adw::EntryRow::builder().title("Token (email)").build();
 
@@ -220,6 +229,7 @@ impl App {
         form_group.add(&realm_row);
         form_group.add(&user_row);
         form_group.add(&password_row);
+        form_group.add(&key_pass_row);
         form_group.add(&token_row);
         form_group.add(&remember_row);
 
@@ -337,6 +347,7 @@ impl App {
             browse_btn,
             user_row,
             password_row,
+            key_pass_row,
             token_row,
             realm_row,
             sso_row,
@@ -360,6 +371,8 @@ impl App {
             tray: RefCell::new(None),
             tx,
             last_state: RefCell::new(None),
+            pending_key_pass: RefCell::new(None),
+            key_pass_to_store: RefCell::new(None),
             active_profile: Arc::new(Mutex::new(String::new())),
             quitting: Cell::new(false),
             me: RefCell::new(Weak::new()),
@@ -452,6 +465,7 @@ impl App {
         self.user_row.set_visible(need_creds);
         self.password_row.set_visible(need_creds);
         self.remember_row.set_visible(need_creds);
+        self.key_pass_row.set_visible(openvpn && profiles::ovpn_key_may_need_pass(self.gateway_row.text().trim()));
         self.token_row.set_visible(cp);
         self.password_row.set_title(if cp { "PIN" } else { "Password" });
 
@@ -464,7 +478,7 @@ impl App {
         } else if anyconnect {
             "Full gateway URL incl. any group path. A 2FA code is requested if needed."
         } else if openvpn {
-            "A client .ovpn profile. Certificates/keys are read from it; a key passphrase or OTP is asked for if needed."
+            "A client .ovpn profile. Certificates/keys are read from it; a key passphrase (unless saved) or OTP is asked for if needed."
         } else {
             "A token / 2FA code is requested if the gateway needs one."
         };
@@ -586,6 +600,12 @@ impl App {
         self.token_row.set_text("");
         let secret = if p.remember_password { profiles::secret_get(&p.name).unwrap_or_default() } else { String::new() };
         self.password_row.set_text(&secret);
+        let key_pass = if p.remember_key_pass {
+            profiles::secret_get(&profiles::keypass_account(&p.name)).unwrap_or_default()
+        } else {
+            String::new()
+        };
+        self.key_pass_row.set_text(&key_pass);
         self.update_form_visibility();
         self.sync_ui();
     }
@@ -602,6 +622,16 @@ impl App {
         let remember = self.remember_row.is_active() && creds_in_play;
         let backend = self.backend();
         let realm_field = self.realm_row.text().trim().to_string();
+        // OpenVPN key passphrase: optional — saved when filled, else asked on connect.
+        let key_pass = if self.key_pass_row.is_visible() { self.key_pass_row.text().to_string() } else { String::new() };
+        let key_account = profiles::keypass_account(&name);
+        let remember_key_pass = !key_pass.is_empty() && profiles::secret_set(&key_account, &key_pass);
+        if !remember_key_pass {
+            if !key_pass.is_empty() {
+                self.toast("Couldn't save the key passphrase to the keyring");
+            }
+            profiles::secret_delete(&key_account);
+        }
         let p = Profile {
             name: name.clone(),
             backend,
@@ -612,6 +642,7 @@ impl App {
             group: if backend == Backend::AnyConnect { realm_field } else { String::new() },
             sso: self.sso(),
             remember_password: remember,
+            remember_key_pass,
         };
 
         // Keyring: store the password/PIN only if "remember" is on and non-empty.
@@ -643,6 +674,7 @@ impl App {
 
     fn delete_profile(&self, name: &str) {
         profiles::secret_delete(name);
+        profiles::secret_delete(&profiles::keypass_account(name));
         {
             let mut profs = self.profiles.borrow_mut();
             profs.retain(|e| e.name != name);
@@ -657,6 +689,7 @@ impl App {
         self.gateway_row.set_text("");
         self.user_row.set_text("");
         self.password_row.set_text("");
+        self.key_pass_row.set_text("");
         self.realm_row.set_text("");
         self.token_row.set_text("");
         self.remember_row.set_active(false);
@@ -690,6 +723,12 @@ impl App {
         self.dns_row.set_subtitle("");
         self.status_group.set_visible(false);
         self.clear_prompt();
+        self.key_pass_to_store.replace(None);
+        self.pending_key_pass.replace(
+            (self.backend() == Backend::OpenVpn && self.key_pass_row.is_visible())
+                .then(|| self.key_pass_row.text().to_string())
+                .filter(|k| !k.is_empty()),
+        );
 
         let gw = self.gateway_row.text().trim().to_string();
         let user = self.user_row.text().trim().to_string();
@@ -907,6 +946,16 @@ impl App {
     fn show_prompt(&self, p: AuthPrompt) {
         self.clear_prompt();
 
+        // OpenVPN key passphrase saved in the profile: answer without asking (once —
+        // if it's wrong, the engine asks again and the card below shows).
+        if p.kind == "keypass" {
+            if let Some(k) = self.pending_key_pass.take() {
+                self.vpn.borrow_mut().answer_prompt(&k);
+                self.append_log("→ saved key passphrase sent");
+                return;
+            }
+        }
+
         let (title, hint) = match p.kind.as_str() {
             "push" => ("Approve the sign-in", "…or type the code"),
             "newpass" => ("Password expired", "New password"),
@@ -914,6 +963,7 @@ impl App {
             "answer" => ("Additional verification", "Answer"),
             "sso" => ("Finish the browser sign-in", "SSO token"),
             "code2" => ("Second code", "Next code"),
+            "keypass" => ("Private key passphrase", "Passphrase"),
             _ => ("Two-factor authentication", "Code"),
         };
         self.prompt_group.set_title(title);
@@ -921,13 +971,15 @@ impl App {
             "Sign in in the window that opened — the VPN connects on its own. \
              (Or paste the acSamlv2Token cookie here.)"
                 .to_string()
+        } else if p.kind == "keypass" && !p.message.starts_with("Wrong") {
+            "The profile's private key is encrypted.".to_string()
         } else {
             p.message.clone()
         };
         self.prompt_group.set_description((!message.is_empty()).then_some(message.as_str()));
 
         let new_password = p.kind == "newpass" || p.kind == "renew";
-        let masked = new_password || p.kind == "answer" || p.kind == "sso";
+        let masked = new_password || matches!(p.kind.as_str(), "answer" | "sso" | "keypass");
 
         // The input row: masked (password/challenge) vs visible (OTP code).
         let entry: gtk::Widget = if masked {
@@ -942,6 +994,21 @@ impl App {
         if let Some(c) = &confirm {
             self.prompt_group.add(c);
             self.prompt_rows.borrow_mut().push(c.clone().upcast());
+        }
+        // Key passphrase of a saved profile: offer to remember it (stored once the
+        // tunnel is up, so a mistyped one isn't kept).
+        let profile = self.name_row.text().trim().to_string();
+        let saved = self.profiles.borrow().iter().find(|e| e.name == profile).map(|e| e.remember_key_pass);
+        let remember = (p.kind == "keypass" && saved.is_some()).then(|| {
+            adw::SwitchRow::builder()
+                .title("Remember passphrase")
+                .subtitle("Store in the system keyring")
+                .active(saved == Some(true))
+                .build()
+        });
+        if let Some(r) = &remember {
+            self.prompt_group.add(r);
+            self.prompt_rows.borrow_mut().push(r.clone().upcast());
         }
 
         // Buttons row (Send + optional Skip for a renewable password).
@@ -982,8 +1049,12 @@ impl App {
                 return;
             }
             app.vpn.borrow_mut().answer_prompt(&answer);
+            if remember.as_ref().is_some_and(|r| r.is_active()) {
+                app.key_pass_to_store.replace(Some((profile.clone(), answer.clone())));
+            }
             app.append_log(match kind.as_str() {
                 "sso" => "→ SSO token sent",
+                "keypass" => "→ key passphrase sent",
                 _ if masked => "→ password sent",
                 _ => "→ answer sent",
             });
@@ -1007,6 +1078,31 @@ impl App {
             let d = do_send.clone();
             er.connect_entry_activated(move |_| d());
         }
+    }
+
+    /// Persist a key passphrase the user asked to remember in the prompt card (the
+    /// tunnel came up, so it was right): keyring + the profile's flag + the form row.
+    fn store_key_pass(&self) {
+        let Some((name, pass)) = self.key_pass_to_store.take() else { return };
+        if !profiles::secret_set(&profiles::keypass_account(&name), &pass) {
+            self.toast("Couldn't save the key passphrase to the keyring");
+            return;
+        }
+        {
+            let mut profs = self.profiles.borrow_mut();
+            let Some(slot) = profs.iter_mut().find(|e| e.name == name) else { return };
+            slot.remember_key_pass = true;
+            if let Err(e) = profiles::save(&profs) {
+                drop(profs);
+                self.toast(&format!("Couldn't save: {e}"));
+                return;
+            }
+        }
+        if self.name_row.text().trim() == name {
+            self.key_pass_row.set_text(&pass);
+        }
+        self.refresh_profiles_list();
+        self.toast(&format!("Saved the key passphrase for “{name}”"));
     }
 
     fn clear_prompt(&self) {
@@ -1037,6 +1133,10 @@ impl App {
         };
         self.status_pill.set_text(&format!("● {txt}"));
         self.status_pill.set_css_classes(&["statuspill", cls]);
+
+        if state == State::Connected {
+            self.store_key_pass();
+        }
 
         // Hovering the status pill shows the active profile name while connected.
         if matches!(state, State::Connected) {

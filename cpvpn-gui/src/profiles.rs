@@ -2,8 +2,9 @@
 //!
 //! Non-secret fields live in `~/.config/cpvpn/profiles.toml`. The password (or
 //! SecurID PIN) is never written there — it goes to the system keyring (Secret
-//! Service / libsecret) under service `cpvpn`, keyed by the profile name. A 2FA
-//! token is single-use and never stored.
+//! Service / libsecret) under service `cpvpn`, keyed by the profile name; an
+//! OpenVPN private-key passphrase likewise, under `<name>#keypass`. A 2FA token is
+//! single-use and never stored.
 
 use serde::{Deserialize, Serialize};
 
@@ -83,6 +84,9 @@ pub struct Profile {
     /// Whether a password/PIN is stored for this profile in the keyring.
     #[serde(default)]
     pub remember_password: bool,
+    /// Whether an OpenVPN private-key passphrase is stored in the keyring.
+    #[serde(default)]
+    pub remember_key_pass: bool,
 }
 
 impl Profile {
@@ -126,6 +130,40 @@ pub fn ovpn_needs_userpass(path: &str) -> bool {
         }
     }
     needs
+}
+
+/// Whether an OpenVPN profile's client key may need a passphrase: an encrypted PEM
+/// `<key>` (inline or file) or a PKCS#12 bundle (may or may not be protected).
+/// Unreadable file → false.
+pub fn ovpn_key_may_need_pass(path: &str) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else { return false };
+    let dir = std::path::Path::new(path).parent().unwrap_or(std::path::Path::new("."));
+    let mut in_key = false;
+    for l in text.lines().map(str::trim) {
+        match l {
+            "<key>" => in_key = true,
+            "</key>" => in_key = false,
+            "<pkcs12>" => return true,
+            _ if in_key => {
+                if l.contains("ENCRYPTED") {
+                    return true;
+                }
+            }
+            _ => {
+                let mut w = l.split_whitespace();
+                match (w.next(), w.next()) {
+                    (Some("pkcs12"), Some(_)) => return true,
+                    (Some("key"), Some(f)) => {
+                        if std::fs::read_to_string(dir.join(f)).is_ok_and(|k| k.contains("ENCRYPTED")) {
+                            return true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    false
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -192,4 +230,9 @@ pub fn secret_delete(name: &str) {
     if let Some(e) = entry(name) {
         let _ = e.delete_credential();
     }
+}
+
+/// Keyring account holding a profile's OpenVPN private-key passphrase.
+pub fn keypass_account(name: &str) -> String {
+    format!("{name}#keypass")
 }

@@ -114,16 +114,22 @@ fn run(a: &Args) -> Result<(), String> {
     };
 
     // Client key: ask for the passphrase only when it's actually needed.
+    // `keypass` prompts (the GUI may answer them from the keyring); a wrong one is
+    // asked again, a few times, before giving up.
     let mut key_pass = a.key_pass.clone();
     if key_pass.is_none() && tls::key_is_encrypted(&cfg) {
-        key_pass = Some(prompter.ask("answer", "Private key passphrase", false)?);
+        key_pass = Some(prompter.ask("keypass", "Private key passphrase", false)?);
     }
-    let prepared = match tunnel::prepare(cfg.clone(), creds.clone(), key_pass.as_deref()) {
-        Err(e) if e == tls::NEEDS_PASS && key_pass.is_none() => {
-            let kp = prompter.ask("answer", "PKCS#12 / private key passphrase", false)?;
-            tunnel::prepare(cfg, creds, Some(&kp))?
+    let mut retries = 0;
+    let prepared = loop {
+        match tunnel::prepare(cfg.clone(), creds.clone(), key_pass.as_deref()) {
+            Err(e) if (e == tls::NEEDS_PASS || e == tls::WRONG_PASS) && retries < 3 => {
+                retries += 1;
+                let msg = if key_pass.is_some() { "Wrong passphrase, try again" } else { "PKCS#12 / private key passphrase" };
+                key_pass = Some(prompter.ask("keypass", msg, false).map_err(|_| e.clone())?);
+            }
+            r => break r?,
         }
-        r => r?,
     };
 
     match a.action {

@@ -192,7 +192,7 @@ user/pass por script.
 | TCP + tls-auth (`key-direction 1`) + AES-256-CBC/HMAC-SHA256 + **PRF** + comp-lzo + net30 | ✅ pings de 1300 B, 0% pérdida |
 | renegociación iniciada por el cliente (`reneg-sec 15`) | ✅ |
 | password incorrecta | ✅ `AUTH FAILED: credentials rejected` |
-| key PKCS#8 cifrada | ✅ pide passphrase (`AUTH-PROMPT: answer`) |
+| key PKCS#8 cifrada | ✅ pide passphrase (`AUTH-PROMPT: keypass`, reintenta si es incorrecta); la GUI la guarda opcionalmente en el keyring |
 | teardown | ✅ tun/rutas borradas, server ve el exit-notify |
 | throughput (iperf3, release) | **1.06 / 1.23 Gbit/s** vs 0.70 / 0.77 del `openvpn` 2.7.8 oficial (sin DCO) |
 

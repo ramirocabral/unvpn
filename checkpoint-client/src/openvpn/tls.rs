@@ -93,7 +93,7 @@ pub fn load_client_id(cfg: &Config, key_pass: Option<&str>) -> Result<ClientId, 
         id.key = Some(if encrypted {
             let pw = key_pass.ok_or_else(|| NEEDS_PASS.to_string())?;
             PKey::private_key_from_pem_passphrase(pem.as_bytes(), pw.as_bytes())
-                .map_err(|_| "private key: wrong passphrase".to_string())?
+                .map_err(|_| WRONG_PASS.to_string())?
         } else {
             PKey::private_key_from_pem(pem.as_bytes()).map_err(|e| format!("private key: {e}"))?
         });
@@ -103,6 +103,8 @@ pub fn load_client_id(cfg: &Config, key_pass: Option<&str>) -> Result<ClientId, 
 
 /// Sentinel error: the key / PKCS#12 needs a passphrase we don't have yet.
 pub const NEEDS_PASS: &str = "private key is encrypted — passphrase required";
+/// Sentinel error: the passphrase given doesn't decrypt the PEM key.
+pub const WRONG_PASS: &str = "private key: wrong passphrase";
 
 pub fn key_is_encrypted(cfg: &Config) -> bool {
     cfg.key.as_deref().is_some_and(|k| k.contains("ENCRYPTED"))
