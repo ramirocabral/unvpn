@@ -32,12 +32,12 @@ impl ksni::Tray for VpnTray {
     }
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
         let color = match &*self.state.lock().unwrap() {
-            State::Connected => [60, 200, 110],
-            State::Connecting | State::Disconnecting => [230, 170, 50],
-            State::Error(_) => [230, 80, 80],
-            State::Disconnected => [150, 156, 168],
+            State::Connected => [46, 194, 126],
+            State::Connecting | State::Disconnecting => [245, 194, 17],
+            State::Error(_) => [224, 27, 36],
+            State::Disconnected => [154, 153, 150],
         };
-        vec![icon::tray_pixmap(color)]
+        icon::tray_pixmaps(color)
     }
     fn tool_tip(&self) -> ksni::ToolTip {
         // While connected, show the active profile name; otherwise the status.
