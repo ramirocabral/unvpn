@@ -110,6 +110,7 @@ struct App {
     password_row: adw::PasswordEntryRow,
     /// OpenVPN: optional private-key passphrase (stored in the keyring on Save).
     key_pass_row: adw::PasswordEntryRow,
+    remember_key_pass_row: adw::SwitchRow,
     token_row: adw::EntryRow,
     realm_row: adw::EntryRow,
     sso_row: adw::ComboRow,
@@ -206,6 +207,11 @@ impl App {
         let user_row = adw::EntryRow::builder().title("User").build();
         let password_row = adw::PasswordEntryRow::builder().title("Password").build();
         let key_pass_row = adw::PasswordEntryRow::builder().title("Key passphrase (optional)").build();
+        let remember_key_pass_row = adw::SwitchRow::builder()
+            .title("Remember passphrase")
+            .subtitle("Store in the system keyring")
+            .subtitle_lines(0)
+            .build();
 
         let token_row = adw::EntryRow::builder().title("Token (email)").build();
 
@@ -230,6 +236,7 @@ impl App {
         form_group.add(&user_row);
         form_group.add(&password_row);
         form_group.add(&key_pass_row);
+        form_group.add(&remember_key_pass_row);
         form_group.add(&token_row);
         form_group.add(&remember_row);
 
@@ -348,6 +355,7 @@ impl App {
             user_row,
             password_row,
             key_pass_row,
+            remember_key_pass_row,
             token_row,
             realm_row,
             sso_row,
@@ -465,7 +473,9 @@ impl App {
         self.user_row.set_visible(need_creds);
         self.password_row.set_visible(need_creds);
         self.remember_row.set_visible(need_creds);
-        self.key_pass_row.set_visible(openvpn && profiles::ovpn_key_may_need_pass(self.gateway_row.text().trim()));
+        let key_pass = openvpn && profiles::ovpn_key_may_need_pass(self.gateway_row.text().trim());
+        self.key_pass_row.set_visible(key_pass);
+        self.remember_key_pass_row.set_visible(key_pass);
         self.token_row.set_visible(cp);
         self.password_row.set_title(if cp { "PIN" } else { "Password" });
 
@@ -606,6 +616,7 @@ impl App {
             String::new()
         };
         self.key_pass_row.set_text(&key_pass);
+        self.remember_key_pass_row.set_active(p.remember_key_pass);
         self.update_form_visibility();
         self.sync_ui();
     }
@@ -622,8 +633,13 @@ impl App {
         let remember = self.remember_row.is_active() && creds_in_play;
         let backend = self.backend();
         let realm_field = self.realm_row.text().trim().to_string();
-        // OpenVPN key passphrase: optional — saved when filled, else asked on connect.
-        let key_pass = if self.key_pass_row.is_visible() { self.key_pass_row.text().to_string() } else { String::new() };
+        // OpenVPN key passphrase: optional — stored only if "remember" is on and it's
+        // filled; otherwise it's used for this session or asked on connect.
+        let key_pass = if self.key_pass_row.is_visible() && self.remember_key_pass_row.is_active() {
+            self.key_pass_row.text().to_string()
+        } else {
+            String::new()
+        };
         let key_account = profiles::keypass_account(&name);
         let remember_key_pass = !key_pass.is_empty() && profiles::secret_set(&key_account, &key_pass);
         if !remember_key_pass {
@@ -690,6 +706,7 @@ impl App {
         self.user_row.set_text("");
         self.password_row.set_text("");
         self.key_pass_row.set_text("");
+        self.remember_key_pass_row.set_active(false);
         self.realm_row.set_text("");
         self.token_row.set_text("");
         self.remember_row.set_active(false);
@@ -1100,6 +1117,7 @@ impl App {
         }
         if self.name_row.text().trim() == name {
             self.key_pass_row.set_text(&pass);
+            self.remember_key_pass_row.set_active(true);
         }
         self.refresh_profiles_list();
         self.toast(&format!("Saved the key passphrase for “{name}”"));
