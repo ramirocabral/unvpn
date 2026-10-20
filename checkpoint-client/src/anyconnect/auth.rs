@@ -99,8 +99,10 @@ pub struct Form {
     pub message: Option<String>,
     pub banner: Option<String>,
     pub error: Option<String>,
-    /// Where to POST the reply (form `action`, default `/`).
-    pub action: String,
+    /// Where to POST the reply (form `action`). `None`: the form didn't say, so
+    /// reuse the current URL — the group path (`/SSOGROUP`) matters there: a
+    /// SAML token posted to `/` instead is rejected ("Authentication failed").
+    pub action: Option<String>,
     pub fields: Vec<Field>,
     pub selects: Vec<Select>,
     pub sso: Option<Sso>,
@@ -132,6 +134,8 @@ pub struct Reply {
     pub host_scan: bool,
     /// Top-level `<error>` (outside `<auth>`).
     pub error: Option<String>,
+    /// Value-free structure of the document, for diagnostics.
+    pub outline: String,
 }
 
 /// Parse a `<config-auth>` document.
@@ -140,7 +144,7 @@ pub fn parse_reply(doc: &str) -> Result<Reply, String> {
     if root.name != "config-auth" {
         return Err(format!("unexpected XML root <{}> (not an AnyConnect gateway?)", root.name));
     }
-    let mut r = Reply { kind: root.attr("type").unwrap_or("").to_string(), ..Default::default() };
+    let mut r = Reply { kind: root.attr("type").unwrap_or("").to_string(), outline: root.outline(), ..Default::default() };
     for c in &root.children {
         match c.name.as_str() {
             "opaque" => r.opaque = Some(doc[c.span.0..c.span.1].to_string()),
@@ -177,7 +181,7 @@ fn msg_text(e: &Element) -> Option<String> {
 }
 
 fn parse_auth(a: &Element) -> Form {
-    let mut f = Form { auth_id: a.attr("id").unwrap_or("").to_string(), action: "/".into(), ..Default::default() };
+    let mut f = Form { auth_id: a.attr("id").unwrap_or("").to_string(), ..Default::default() };
     let mut sso = Sso::default();
     for c in &a.children {
         match c.name.as_str() {
@@ -193,7 +197,7 @@ fn parse_auth(a: &Element) -> Form {
             "authentication-complete" => f.complete_marker = true,
             "form" => {
                 if let Some(act) = c.attr("action").filter(|s| !s.is_empty()) {
-                    f.action = act.to_string();
+                    f.action = Some(act.to_string());
                 }
                 parse_form(c, &mut f);
             }
@@ -411,6 +415,7 @@ impl Session {
         let mut group_chosen = false;
         let mut cert_fail_sent = false;
         let mut password_sent = false;
+        let mut sso_sent = false;
         let mut chosen_group: Option<String> = creds.group.clone();
 
         for _round in 0..12 {
@@ -423,7 +428,18 @@ impl Session {
             let form_id = reply.form.as_ref().map(|f| f.auth_id.as_str()).unwrap_or("");
             let token = reply.session_token.clone().or_else(|| self.cookies.get("webvpn").map(str::to_string));
             if reply.kind == "complete" || form_id == "success" {
-                let token = token.ok_or("login completed but the gateway sent no session token")?;
+                let Some(token) = token else {
+                    // `complete` + `<error>` = rejected (e.g. a bad/expired SSO token).
+                    if let Some(e) = reply.error.as_deref().or(reply.form.as_ref().and_then(|f| f.error.as_deref())) {
+                        return Err(format!("login failed: {}", one_line(e)));
+                    }
+                    let jar: Vec<&str> = self.cookies.0.keys().map(String::as_str).collect();
+                    return Err(format!(
+                        "login completed but the gateway sent no session token (reply: {}; cookies: [{}])",
+                        reply.outline,
+                        jar.join(", ")
+                    ));
+                };
                 if let Some(b) = reply.form.as_ref().and_then(|f| f.banner.clone()) {
                     p.info(&format!("banner: {}", one_line(&b)));
                 }
@@ -459,6 +475,11 @@ impl Session {
             // The gateway re-showing the first form with an error after we sent the
             // password means the credentials were rejected. Don't loop on them.
             if let Some(e) = form.error.as_deref().or(reply.error.as_deref()) {
+                // A rejected SSO token comes back as a fresh SSO form + error: stop
+                // (a new browser login is a new connection attempt, not a loop).
+                if sso_sent && form.sso.is_some() {
+                    return Err(format!("SSO login rejected: {}", one_line(e)));
+                }
                 if password_sent && form.has("password") && !matches!(form.auth_id.as_str(), "challenge") {
                     return Err(format!("login rejected: {}", one_line(e)));
                 }
@@ -468,8 +489,11 @@ impl Session {
                 }
             }
 
-            // Next POSTs go to the form action.
-            path = form.action.clone();
+            // Next POSTs go to the form action, else stay on the current URL
+            // (openconnect: an unset action reuses it).
+            if let Some(a) = &form.action {
+                path = a.clone();
+            }
 
             // Group dropdown: (re)start the dialogue once with the chosen group, so
             // the gateway serves that group's own form (it may ask for different
@@ -497,6 +521,7 @@ impl Session {
             }
 
             let answers = fill_form(&form, choice.as_ref(), creds, &mut password_sent, p)?;
+            sso_sent |= form.fields.iter().any(|f| f.kind == Kind::Sso);
             if form.fields.is_empty() && !form.complete_marker {
                 let e = form.error.or(form.message).unwrap_or_else(|| "gateway sent an empty form".into());
                 return Err(format!("login failed: {}", one_line(&e)));
@@ -630,7 +655,7 @@ mod tests {
         assert_eq!(r.kind, "auth-request");
         let f = r.form.unwrap();
         assert_eq!(f.auth_id, "main");
-        assert_eq!(f.action, "/");
+        assert_eq!(f.action, None); // no action → POST again to the current URL
         assert_eq!(f.fields.len(), 2);
         assert_eq!(f.fields[0].kind, Kind::Text);
         assert_eq!(f.fields[1].kind, Kind::Password);

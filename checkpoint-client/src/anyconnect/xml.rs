@@ -43,6 +43,31 @@ impl Element {
     }
 
     /// All text in this element and its descendants (libxml2's `xmlNodeGetContent`).
+    /// One-line structure for diagnostics — element names, `id`/`type`/`name`
+    /// attributes and the length of any text, but no values (they may be secrets),
+    /// except human-facing `message`/`error`/`title`/`banner` text.
+    pub fn outline(&self) -> String {
+        let mut s = self.name.clone();
+        for (k, v) in &self.attrs {
+            if matches!(k.as_str(), "id" | "type" | "name") {
+                s.push_str(&format!("[{k}={v}]"));
+            }
+        }
+        let t = self.text.trim();
+        if !t.is_empty() {
+            if matches!(self.name.as_str(), "message" | "error" | "title" | "banner") {
+                s.push_str(&format!("={t:?}"));
+            } else {
+                s.push_str(&format!("(text:{})", t.len()));
+            }
+        }
+        if !self.children.is_empty() {
+            let kids: Vec<String> = self.children.iter().map(Element::outline).collect();
+            s.push_str(&format!("{{{}}}", kids.join(" ")));
+        }
+        s
+    }
+
     pub fn deep_text(&self) -> String {
         let mut out = self.text.clone();
         for c in &self.children {
@@ -346,5 +371,16 @@ mod tests {
     fn escape_roundtrip() {
         let s = r#"p&ss<w>"rd'"#;
         assert_eq!(decode_entities(&escape(s)), s);
+    }
+
+    #[test]
+    fn outline_hides_values_but_keeps_messages() {
+        let root = parse(
+            r#"<config-auth type="complete"><session-token>SECRET123</session-token><auth id="success"><message>Welcome</message></auth></config-auth>"#,
+        )
+        .unwrap();
+        let o = root.outline();
+        assert_eq!(o, r#"config-auth[type=complete]{session-token(text:9) auth[id=success]{message="Welcome"}}"#);
+        assert!(!o.contains("SECRET"));
     }
 }
