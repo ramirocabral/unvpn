@@ -1,6 +1,6 @@
 # FortiClient SSL-VPN — spec de protocolo (reverse engineering)
 
-> Segundo back-end del cliente nativo (`cpvpn`): interoperar con un FortiGate
+> Segundo back-end del cliente nativo (`unvpn`): interoperar con un FortiGate
 > SSL-VPN autorizado desde Linux, sin binarios de Fortinet.
 > Target: FortiClient VPN **7.4.3.5411** para Linux (`/opt/forticlient/`).
 > Evidencia: strings/decompilado de los binarios nativos (REA) + prior-art
@@ -111,7 +111,7 @@ HTML legado password nueva (0xbf9258): magic=&username=&reqid=&grpid=&credential
   `message`); RSA → `FCT_VPN_XAUTH_RSA`, password → `FCT_VPN_XAUTH_NEW_PWD`; el botón "FTM Push" de la
   GUI está muerto en este build (`old_token` siempre ""); el secreto viaja por keyring, no por el socket.
 
-**cpvpn** (`forti/auth.rs` + `forti/mod.rs::do_login`): loop de hasta 8 rondas; cada pregunta se
+**unvpn** (`forti/auth.rs` + `forti/mod.rs::do_login`): loop de hasta 8 rondas; cada pregunta se
 anuncia en stdout como `# AUTH-PROMPT: <kind>: <mensaje>` (kinds `code`, `code2`, `answer`, `newpass`,
 `renew` (vacío = Skip), `push`) y se contesta con una línea de stdin (la GUI muestra una tarjeta; en
 TTY se pregunta en stderr, con eco apagado para secretos). `disconnect`/EOF cancela sin mandar nada.
@@ -152,7 +152,7 @@ canje final (`/remote/saml/auth_id?id=`, `/remote/saml/login`, "samldata").
   implementamos (no tenemos webview); el modo externo cubre los GW con `sso_port`.
 - `/remote/login` muestra el botón "SSO Login" si `<input name=saml_login value="1">`
   (portal: `launchSamlLogin()` → `/remote/saml/start?realm=`).
-- **cpvpn** (`forti/saml.rs`): lee `/remote/info` (puerto + timeout), escucha en `127.0.0.1` y
+- **unvpn** (`forti/saml.rs`): lee `/remote/info` (puerto + timeout), escucha en `127.0.0.1` y
   `[::1]` (best-effort), imprime `# SAML-URL: <url>` (la GUI lo abre como el usuario y pasa
   `--no-browser`); por CLI abre el navegador **como el usuario real** aunque corra con sudo/pkexec
   (`runuser -u $SUDO_USER -- env -i HOME… XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS WAYLAND_DISPLAY
@@ -248,11 +248,11 @@ El SVPNCOOKIE NO es el secreto DTLS: va *dentro* del hello de aplicación.
 ---
 
 ## Plan de construcción (Rust, nativo Linux) — back-end `forti`
-Un subcomando nuevo `cpvpn forti …` en el mismo binario; reusa `tun.rs`, `sysnet` (DNS),
+Un subcomando nuevo `unvpn forti …` en el mismo binario; reusa `tun.rs`, `sysnet` (DNS),
 y el modelo de hilos del data-plane. Módulos: `forti/{http,auth,saml,config,ppp,tunnel}.rs`.
 
 - **F1** 🔧 Control HTTPS + auth password → `SVPNCOOKIE`.
-  `cpvpn forti -g <gw> -u <user> [--realm r] [--password p|stdin] [--probe]`.
+  `unvpn forti -g <gw> -u <user> [--realm r] [--password p|stdin] [--probe]`.
   `--probe` valida formato sin consumir OTP.
 - **F2** ⏳ 2FA: challenge `ret=2` → OTP (`code`) / FTM push (`ftmpush=1`).
 - **F3** ⏳ SAML/SSO: GET `/remote/saml/login` → browser (xdg-open) + listener local →
@@ -266,7 +266,7 @@ y el modelo de hilos del data-plane. Módulos: `forti/{http,auth,saml,config,ppp
 
 ## Validación en vivo — gateway real `gw-forti` (203.0.113.40, openconnect+fortinet)
 FortiGate SSL-VPN real, **password-only** (sin SAML), autorizado por el usuario para testear.
-- `cpvpn forti -g 203.0.113.40 --probe` ✅: `GET /remote/info` → **HTTP 200**; SAML
+- `unvpn forti -g 203.0.113.40 --probe` ✅: `GET /remote/info` → **HTTP 200**; SAML
   (`/remote/saml/start`) → **HTTP 400** ⇒ detecta bien que es password-path (sin SSO).
 - `GET /remote/login?lang=en` + `POST /remote/logincheck` ✅ el gateway procesa el POST
   (1er intento: página de login HTML con `fgt_lang`). ⇒ **este GW usa el flavor HTML**
@@ -292,7 +292,7 @@ FortiGate con "SSO para túnel VPN" + "navegador externo para SAML" (IdP Authent
 - `--probe` ✅ → `remote info: sso_port=8020 remoteauthtimeout=240s`, `SAML/SSO is ENABLED →
   IdP 203.0.113.31:19000`, `external-browser SSO ✓` (antes del fix el probe lo daba como
   password-path porque el GW responde 200+JS, no 302).
-- `sudo cpvpn forti -g 203.0.113.30:10443 --saml --connect --no-routes` ✅✅ (18/10/2026):
+- `sudo unvpn forti -g 203.0.113.30:10443 --saml --connect --no-routes` ✅✅ (18/10/2026):
   navegador abierto como el usuario (Brave/Sway) → login IdP + MFA → redirect a
   `127.0.0.1:8020/?id=<35 chars>` → `auth_id` → **SVPNCOOKIE 1936 B** → `fortisslvpn_xml`
   (`dtls='1'`, `tunnel-method ppp/tun/websocket`, `auth-ses check-src-ip='1'`, 4 rutas split /32
@@ -301,7 +301,7 @@ FortiGate con "SSO para túnel VPN" + "navegador externo para SAML" (IdP Authent
   (.230 devuelve ICMP error = host caído del otro lado). Teardown limpio (`cpfg0` borrado,
   resolv.conf intacto, exit 0).
 - ✅ **E2E desde la GUI (19/10/2026)**, ya con los arreglos de la revisión: FortiClient → SSO/SAML →
-  "Sign in with browser" → login IdP + MFA → **Connected**. Engine `sudo -n cpvpn forti … --saml
+  "Sign in with browser" → login IdP + MFA → **Connected**. Engine `sudo -n unvpn forti … --saml
   --no-browser --connect`; `cpfg0` 10.30.8.73/32 **sin link-local IPv6** (`disable_ipv6=1`); rutas
   instaladas (4 split /32 vía `cpfg0` + pin del gateway `203.0.113.30 via 192.168.9.1 dev enp10s0`, la IP
   del socket real); `ping` a 10.30.51.231-.233 **por las rutas** (sin `-I`) ~65 ms; internet sigue por
@@ -366,7 +366,7 @@ tests (83 unit + 24 escenarios contra el FortiGate simulado + 4 SAML):
   **F4 túnel PPP (LCP/IPCP) + tun + rutas + DNS, data-plane TLS ✅** — compilado + unit
   tests (framing PPP, parser XML). Falta el **test en vivo contra un FortiGate real**.
 - **F6 GUI ✅**: selector FortiClient; form por método (password+OTP / SSO-SAML); lanza
-  `cpvpn forti … --connect` por pkexec; stdin para password/OTP; abre el browser con el
+  `unvpn forti … --connect` por pkexec; stdin para password/OTP; abre el browser con el
   marker `# SAML-URL:`. Parser de stdout compartido (IP / DNS / TUNNEL UP / fallos).
 - Pendiente: **live test** (probe + connect), **F5 DTLS** (aceleración UDP/PSK; TLS-only
   anda), **F7 IPsec/IKEv2** Fortinet (reusar `ike`), pinning de cert (`--trusted-cert`),

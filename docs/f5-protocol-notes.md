@@ -1,6 +1,6 @@
 # F5 BIG-IP APM SSL-VPN — spec de protocolo (reverse engineering)
 
-> Tercer back-end del cliente nativo (`cpvpn f5 …`): interoperar con un F5 BIG-IP
+> Tercer back-end del cliente nativo (`unvpn f5 …`): interoperar con un F5 BIG-IP
 > **APM** (Access Policy Manager) "Network Access" SSL-VPN autorizado, desde Linux,
 > sin binarios de F5.
 > Evidencia: **prior-art open-source interoperable** (openconnect `f5.c` + `ppp.c`,
@@ -148,11 +148,11 @@ posterior (igual que CP/Forti).
 ---
 
 ## Plan de construcción (Rust, nativo Linux) — back-end `f5`
-Subcomando `cpvpn f5 …` en el mismo binario; reusa `tun.rs`, `sysnet` (DNS/stop-flag)
+Subcomando `unvpn f5 …` en el mismo binario; reusa `tun.rs`, `sysnet` (DNS/stop-flag)
 y el modelo de hilos del data-plane. Módulos: `src/f5/{mod,http,auth,config,ppp,tunnel}.rs`.
 
 - **1** ✅ Control HTTPS + auth form (password → `MRHSession`+`F5_ST`).
-  `cpvpn f5 -g <gw> -u <user> [--password p] [--code otp] [--probe|--login|--connect]`.
+  `unvpn f5 -g <gw> -u <user> [--password p] [--code otp] [--probe|--login|--connect]`.
 - **2** ✅ 2FA/OTP: el loop de forms pide el código en el 2º form (campo password extra).
 - **3** ✅ Perfil + opciones (`index.php3` / `connect.php3`) → `F5Options`.
 - **4** ✅ Túnel: `GET /myvpn` → PPP (LCP/IPCP, framing F5 **y** F5-HDLC) → `tun f5vpn0`

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=unvpn
+GenericName=VPN Client
+Comment=Native Check Point / FortiGate / F5 BIG-IP / AnyConnect / OpenVPN client with a system-tray icon
+Exec=unvpn-gui
+Icon=unvpn
+Terminal=false
+Categories=Network;Security;
+Keywords=VPN;CheckPoint;FortiClient;FortiGate;Fortinet;F5;BIG-IP;SAML;SSO;IPSec;IKE;SecurID;AnyConnect;Cisco;OpenVPN;
+StartupNotify=true
+StartupWMClass=io.github.unvpn.Client

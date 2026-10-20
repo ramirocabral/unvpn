@@ -84,9 +84,9 @@ DownloadClSetting → Scv → Firewall → (CONNECTED / Office Mode IP set).
   `<PIN>` + el código del mail. Mandar SOLO el tokencode ⇒ `error_code 101` /
   `CPSC_SECURID_USER_DENIED` "Access denied". El código es de un solo uso; cada intento
   necesita uno NUEVO. Request del código: self-service `OnDemandOTTLogin.do` pide User ID +
-  PIN (`<PIN>`) → lo manda al mail. Flujo: pedir código → leer mail → `cpvpn login` passcode=PIN+code.
-- `cpvpn deob <hex>...` desofusca strings del server (prompt/error_*) para debug.
-- bin: `cpvpn login --gateway <h> [--user u-123456] [--realm vpn] [--probe|--passcode <p>] [--verbose]`.
+  PIN (`<PIN>`) → lo manda al mail. Flujo: pedir código → leer mail → `unvpn login` passcode=PIN+code.
+- `unvpn deob <hex>...` desofusca strings del server (prompt/error_*) para debug.
+- bin: `unvpn login --gateway <h> [--user u-123456] [--realm vpn] [--probe|--passcode <p>] [--verbose]`.
 
 ## Plano de datos — IPsec/IKEv1 (confirmado)
 - `conn_type = "IPSec"` ; IKEv1 Main Mode + Quick Mode (IkeV1Tunnel).
@@ -105,11 +105,11 @@ DownloadClSetting → Scv → Firewall → (CONNECTED / Office Mode IP set).
 
 ## Plan de construcción (Rust, nativo Linux)
 - M1: ✅ crate `ccc` — serializer S-expr (multilínea/tab) + ClientHello + parser
-      login_options. VERIFICADO contra el GW (600 + login_options). bin `cpvpn hello`.
+      login_options. VERIFICADO contra el GW (600 + login_options). bin `unvpn hello`.
 - M2: ✅ auth por CCC: `UserPass` (`selectedLoginOption vpn`, user `u-123456`) → challenge
       `PASSCODE:` → `MultiChallange` con passcode=PIN+ondemand-tokencode ofuscado → `done`
-      + `active_key` (clave de sesión, 9h). VERIFICADO en vivo. bin `cpvpn login`.
-- M3: 🔧 IKEv1/IPSec nativo (crate `cpvpn::ike`: model/wire/crypto/session/service/transport).
+      + `active_key` (clave de sesión, 9h). VERIFICADO en vivo. bin `unvpn login`.
+- M3: 🔧 IKEv1/IPSec nativo (crate `unvpn::ike`: model/wire/crypto/session/service/transport).
       ✅ Phase 1 (Main Mode) + hybrid auth VERIFICADO en vivo sobre **UDP 500** (no hace falta
       Visitor Mode — UDP abierto). Falta: responder passcode SecurID → Quick Mode → Office
       Mode → ESP → tun/rutas.
@@ -141,7 +141,7 @@ DownloadClSetting → Scv → Firewall → (CONNECTED / Office Mode IP set).
   - ✅✅✅ **HANDSHAKE COMPLETO verificado en vivo**. SA ESP elegida por el GW: **3DES-CBC +
     HMAC-SHA1-96**, encap **UDP_TUNNEL** (ESP sobre UDP 4500 / NAT-T). KEYMAT 44B (24 cifrado +
     20 auth) por SA. SPIs: propio=inbound, del GW=outbound. QM3 ack HASH(3). IP interna asignada.
-  - bin: `cpvpn ike --gateway <h> [--passcode <PIN+tokencode>]`.
+  - bin: `unvpn ike --gateway <h> [--passcode <PIN+tokencode>]`.
 
 ## Plano de datos — ESP (M4, en construcción)
 - Encap `UDP_TUNNEL`: paquete ESP crudo sobre UDP **4500** (sin non-ESP marker; el SPI != 0 lo
@@ -156,23 +156,23 @@ DownloadClSetting → Scv → Firewall → (CONNECTED / Office Mode IP set).
 - ✅✅✅ **TÚNEL VERIFICADO END-TO-END** (18/10/2026): `ping` y `ssh` (TCP 22) a un host interno
   (10.50.3.37) funcionan a través del túnel nativo; ESP bidireccional (udp_in>0, dec_err=0).
   Los DNS internos filtran ICMP (por eso fallaba el ping a 10.40.9.171) — no era bug del cliente.
-  bins: `cpvpn ike -g <h> --passcode <PIN+code> --connect` (handshake+túnel en 4500, sudo);
-  `cpvpn ike ... --save-session <f>` + `cpvpn tunnel-up --session <f>` (datos sin re-auth, mismo host).
+  bins: `unvpn ike -g <h> --passcode <PIN+code> --connect` (handshake+túnel en 4500, sudo);
+  `unvpn ike ... --save-session <f>` + `unvpn tunnel-up --session <f>` (datos sin re-auth, mismo host).
 
 ## Estado del proyecto
 - M1 CCC ✅ · M2 auth SecurID ✅ · M3 IKEv1+hybrid+OfficeMode+QuickMode ✅ · M4 ESP/tun ✅ (túnel real andando).
 - M4.5 pulido motor ✅: DNS (resolv.conf, symlink-aware systemd-resolved), teardown limpio
   (SIGTERM + `disconnect` por stdin, restaura DNS), passcode por stdin, sesión guarda DNS/dominios.
-- M5 GUI + tray ✅: `cpvpn-gui` (egui, columna centrada, tema oscuro, ícono shield propio),
+- M5 GUI + tray ✅: `unvpn-gui` (egui, columna centrada, tema oscuro, ícono shield propio),
   tray StatusNotifierItem (ksni, pixmap por estado, detección de host de bandeja vía DBus),
   selector de cliente (CheckPoint activo; OpenVPN/F5 "soon"), passcode por stdin. Escalada de privilegios
   **autodetectada**: `sudo -n` si hay sudo sin password (WM mínimos sin agente polkit, p.ej. Sway), si no `pkexec`
-  (override `CPVPN_PRIV`). Cerrar la ventana = desconectar limpio + salir (antes hide-to-tray, confundía).
+  (override `UNVPN_PRIV`). Cerrar la ventana = desconectar limpio + salir (antes hide-to-tray, confundía).
   Verificado: conecta end-to-end por la GUI en Sway/Wayland (handshake + tráfico real).
 - Portabilidad ✅: OpenSSL **vendored/estático** (feature `vendored`; motor solo depende de glibc),
   `install.sh` (+`.desktop`, iconos hicolor, regla polkit opcional), README. Opción musl documentada.
 - Rekey de ESP ✅ (validado live): hilo de control IKE renegocia la SA con un Quick Mode nuevo bajo
-  la misma IKE SA (sin re-auth) antes del lifetime (3600s; `CPVPN_REKEY_SECS` para test). Hot-swap de la
+  la misma IKE SA (sin re-auth) antes del lifetime (3600s; `UNVPN_REKEY_SECS` para test). Hot-swap de la
   SA (`RwLock<Arc<EspSa>>`) bajo los threads vivos; demux IKE/ESP en el socket 4500 compartido;
   retransmite QM1 si no llega QM2. Test: ping 3/3 antes y después de cada rekey, `dec_err=0`, y fallo
   de rekey degrada con gracia (mantiene SA vieja). **DPD: NO hace falta** — la impl de referencia (cliente

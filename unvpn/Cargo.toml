@@ -1,0 +1,22 @@
+[package]
+name = "unvpn"
+version = "0.1.0"
+edition = "2021"
+description = "Native Linux multi-vendor VPN client engine (reverse-engineered Check Point / Fortinet / F5 / AnyConnect / OpenVPN)."
+
+[dependencies]
+native-tls = "0.2.12"
+openssl = "0.10"
+libc = "0.2"
+
+[features]
+# Statically link OpenSSL (built from source) for a distro-agnostic binary.
+# Dev builds stay fast on the system OpenSSL; release/packaging uses this.
+# The AnyConnect DTLS fast-path uses libgnutls, but loads it at RUNTIME via dlopen
+# (see anyconnect/dtls.rs) — no link-time dependency — so a single binary still runs
+# on any distro: DTLS where libgnutls is present, CSTP everywhere else.
+vendored = ["openssl/vendored", "native-tls/vendored"]
+
+[[bin]]
+name = "unvpn"
+path = "src/main.rs"

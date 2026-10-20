@@ -1,6 +1,6 @@
 # Cisco AnyConnect SSL-VPN — spec de protocolo (reverse engineering)
 
-> Cuarto back-end del cliente nativo (`cpvpn anyconnect …`): interoperar con un
+> Cuarto back-end del cliente nativo (`unvpn anyconnect …`): interoperar con un
 > Cisco ASA / Secure Firewall que habla **AnyConnect / Cisco Secure Client**
 > (protocolo "aggregate auth" + CSTP), desde Linux, sin binarios de Cisco.
 > Evidencia: **prior-art open-source interoperable** (openconnect, backend
@@ -74,7 +74,7 @@ autentica y lee la cookie del token al llegar a `login-final`; el token va en
 `single-sign-on-external-browser` (no manda `sso-v2-browser-mode`), así que no hay
 loopback-listener posible: hace falta el webview.
 
-- **Engine** (`cpvpn anyconnect -g <url> --sso --connect`, sin `-u`): emite
+- **Engine** (`unvpn anyconnect -g <url> --sso --connect`, sin `-u`): emite
   `# SAML-FINAL: <login-final>`, `# SAML-COOKIE: <nombre>`, `# SAML-URL: <login>` y
   después `# AUTH-PROMPT: sso:`, y lee el token de stdin. Acepta el valor pelado o
   `acSamlv2Token=…` / un header `Cookie:` entero. Con `--sso`, si el gateway pide
@@ -86,7 +86,7 @@ loopback-listener posible: hace falta el webview.
   HttpOnly) y la manda al engine. Si aparece `acSamlv2Error`, o se cierra la
   ventana, queda la tarjeta para pegar el token a mano.
   - Una sola `NetworkSession` por proceso (thread_local) con cookies persistentes
-    en `$XDG_DATA_HOME/cpvpn/webview/cookies.sqlite`, para que el IdP recuerde la
+    en `$XDG_DATA_HOME/unvpn/webview/cookies.sqlite`, para que el IdP recuerde la
     cuenta. Liberarla junto con la vista hacía crashear WebKit (SIGSEGV en un timer
     de JSC) al cerrar la ventana; la ventana además se cierra en un idle, no dentro
     del callback de cookies.
@@ -129,7 +129,7 @@ Teardown: frame `5` (BYE, `0xb0`) + `POST /+webvpn+/webvpn_logout.html`, y
 `sysnet::NetRestore` (Drop) restaura DNS y borra sólo las rutas que agregamos.
 
 ### tun / rutas / DNS
-Device **`cpac0`** (distinto de `cpvpn0`/`cpfg0`/`f5vpn0` → los 4 back-ends
+Device **`cpac0`** (distinto de `unvpn0`/`cpfg0`/`f5vpn0` → los 4 back-ends
 coexisten; `open_tun` cae a `<base>%d` en EBUSY). Pin del gateway a su ruta
 pre-VPN, excludes en esa ruta, includes/default por el tun — todo en un
 `ip -batch`; en teardown se borra sólo lo que agregamos (`ip_batch_failed`).

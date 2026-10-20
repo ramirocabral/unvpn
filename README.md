@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="packaging/icons/cpvpn-128.png" width="96" alt="cpvpn"/>
+<img src="packaging/icons/unvpn-128.png" width="96" alt="unvpn"/>
 
-# cpvpn
+# unvpn
 
 **A native Linux VPN client — reverse-engineered, no vendor binaries.**
 
@@ -10,7 +10,7 @@ Check Point *Endpoint Connect / Trac*, **Fortinet FortiGate**, **F5 BIG-IP APM**
 **Cisco AnyConnect** SSL-VPNs and **OpenVPN** today. Pretty GUI, a real
 system-tray icon, and a self-contained engine that runs on any distro.
 
-<img src="docs/screenshot.png" width="420" alt="cpvpn GUI"/>
+<img src="docs/screenshot.png" width="420" alt="unvpn GUI"/>
 
 </div>
 
@@ -18,9 +18,10 @@ system-tray icon, and a self-contained engine that runs on any distro.
 
 ## What this is
 
-`cpvpn` speaks the Check Point VPN protocol **natively**, implemented from scratch in
-Rust by reverse-engineering the wire protocol — it does **not** wrap or depend on the
-proprietary `snx` / Endpoint Connect binaries. The whole control and data plane is ours:
+`unvpn` (*one client to un-vendor them all*) speaks each vendor's VPN protocol **natively**,
+implemented from scratch in Rust by reverse-engineering the wire protocols — it does **not** wrap
+or depend on any vendor client (`snx` / Endpoint Connect, FortiClient, F5 VPN, AnyConnect,
+`openvpn`). The whole control and data plane is ours. For Check Point, for example:
 
 - **CCC** control channel (Check Point S-expressions over TLS).
 - **IKEv1 / IPsec** Main Mode with **hybrid auth** (gateway RSA cert) and
@@ -44,7 +45,7 @@ at all.
   connected and restores it on disconnect (handles `systemd-resolved` symlinks).
 - 📦 **Distro-agnostic** — the engine links OpenSSL **statically** (only needs glibc);
   routing uses `iproute2`, present everywhere.
-- 🧰 **CLI too** — the `cpvpn` engine is a full command-line client on its own.
+- 🧰 **CLI too** — the `unvpn` engine is a full command-line client on its own.
 
 ## Install
 
@@ -54,7 +55,7 @@ PREFIX=~/.local ./install.sh   # user-local, no root
 ./install.sh --uninstall
 ```
 
-The installer builds the engine with static OpenSSL, installs `cpvpn` + `cpvpn-gui`, the
+The installer builds the engine with static OpenSSL, installs `unvpn` + `unvpn-gui`, the
 icons, a `.desktop` entry, and (optionally) a polkit rule so connecting prompts for the
 admin password once and then caches it.
 
@@ -68,40 +69,40 @@ pasted by hand.
 ### Manual build
 
 ```sh
-cargo build --release --features vendored --manifest-path checkpoint-client/Cargo.toml
-cargo build --release --manifest-path cpvpn-gui/Cargo.toml
+cargo build --release --features vendored --manifest-path unvpn/Cargo.toml
+cargo build --release --manifest-path unvpn-gui/Cargo.toml
 ```
 
 ## Usage
 
 ### GUI
-Launch **cpvpn** from your app menu (or `cpvpn-gui`). Pick the VPN, confirm gateway/user,
+Launch **unvpn** from your app menu (or `unvpn-gui`). Pick the VPN, confirm gateway/user,
 hit **Get code ↗** to request your SecurID tokencode by email, enter **PIN + tokencode**,
 and **Connect**. Closing the window keeps it running in the tray.
 
 ### CLI
 ```sh
 # Check Point (prompts for the passcode on stdin, or pass --passcode):
-sudo cpvpn ike -g 203.0.113.10 -u <user> --connect
+sudo unvpn ike -g 203.0.113.10 -u <user> --connect
 
 # Fortinet FortiGate SSL-VPN:
-cpvpn forti -g vpn.example.com:443 --probe                 # non-destructive detection
-sudo cpvpn forti -g vpn.example.com -u <user> --connect    # password (+ OTP) on stdin
-sudo cpvpn forti -g vpn.example.com --saml --connect       # SSO/SAML via the browser
+unvpn forti -g vpn.example.com:443 --probe                 # non-destructive detection
+sudo unvpn forti -g vpn.example.com -u <user> --connect    # password (+ OTP) on stdin
+sudo unvpn forti -g vpn.example.com --saml --connect       # SSO/SAML via the browser
 
 # F5 BIG-IP APM SSL-VPN:
-sudo cpvpn f5 -g vpn.example.com -u <user> --connect       # password (+ OTP) on stdin
+sudo unvpn f5 -g vpn.example.com -u <user> --connect       # password (+ OTP) on stdin
 
 # Cisco AnyConnect SSL-VPN (ASA / Secure Firewall):
-cpvpn anyconnect -g https://vpn.example.com/GROUP --probe          # shows form/groups/SSO
-sudo cpvpn anyconnect -g https://vpn.example.com -u <user> --connect   # password (+ 2FA) on stdin
-sudo cpvpn anyconnect -g https://vpn.example.com/GROUP --sso --connect # SAML: browser + paste token cookie
+unvpn anyconnect -g https://vpn.example.com/GROUP --probe          # shows form/groups/SSO
+sudo unvpn anyconnect -g https://vpn.example.com -u <user> --connect   # password (+ 2FA) on stdin
+sudo unvpn anyconnect -g https://vpn.example.com/GROUP --sso --connect # SAML: browser + paste token cookie
                                                      # (the GUI does SSO in its own window — no pasting)
 
 # OpenVPN (any client .ovpn profile — no `openvpn` binary needed):
-cpvpn openvpn -c profile.ovpn --probe                     # reachability + tls-auth/tls-crypt + server cert
-cpvpn openvpn -c profile.ovpn -u <user> --login           # authenticate, print the pushed config
-sudo cpvpn openvpn -c profile.ovpn -u <user> --connect    # password / key passphrase / OTP on stdin
+unvpn openvpn -c profile.ovpn --probe                     # reachability + tls-auth/tls-crypt + server cert
+unvpn openvpn -c profile.ovpn -u <user> --login           # authenticate, print the pushed config
+sudo unvpn openvpn -c profile.ovpn -u <user> --connect    # password / key passphrase / OTP on stdin
 ```
 Send `disconnect` on stdin (or SIGTERM) for a clean teardown.
 
@@ -109,14 +110,14 @@ Send `disconnect` on stdin (or SIGTERM) for a clean teardown.
 
 ```
 ┌──────────────┐   pkexec (stdin: passcode / "disconnect")   ┌─────────────────────┐
-│  cpvpn-gui   │ ─────────────────────────────────────────▶ │  cpvpn (root)       │
+│  unvpn-gui   │ ─────────────────────────────────────────▶ │  unvpn (root)       │
 │  user · tray │ ◀───────────────  stdout: status  ───────── │  engine             │
 └──────────────┘                                             │  IKE+ESP · tun · DNS│
                                                              └─────────────────────┘
 ```
 
-- **`checkpoint-client/`** — the engine + CLI (protocol, crypto, tun, data plane).
-- **`cpvpn-gui/`** — the GUI + tray (drives the engine as a subprocess).
+- **`unvpn/`** — the engine + CLI (protocol, crypto, tun, data plane).
+- **`unvpn-gui/`** — the GUI + tray (drives the engine as a subprocess).
 - **`docs/protocol-notes.md`** — the reverse-engineering ledger.
 
 ### Maximum portability (optional)
@@ -125,14 +126,14 @@ for musl:
 ```sh
 rustup target add x86_64-unknown-linux-musl
 cargo build --release --features vendored --target x86_64-unknown-linux-musl \
-    --manifest-path checkpoint-client/Cargo.toml
+    --manifest-path unvpn/Cargo.toml
 ```
 
 ### Tiling WMs
 On tiling compositors (Sway, Hyprland, i3…) the window fills its tile; the form stays a
 neat centered column. To float it, e.g. on Sway:
 ```
-for_window [app_id="cpvpn"] floating enable
+for_window [app_id="unvpn"] floating enable
 ```
 
 ## Status & roadmap
@@ -167,7 +168,7 @@ for_window [app_id="cpvpn"] floating enable
 
 ## Legal
 
-For authorized use only. Use `cpvpn` solely to connect to VPNs you are permitted to access.
+For authorized use only. Use `unvpn` solely to connect to VPNs you are permitted to access.
 Interoperability through protocol reverse-engineering, done for compatibility, is broadly
 protected — but you are responsible for complying with your organization's policies and
 applicable law.

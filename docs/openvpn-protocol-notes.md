@@ -1,9 +1,9 @@
 # OpenVPN 2.x — spec de protocolo (cliente nativo)
 
-> Quinto back-end del cliente nativo (`cpvpn openvpn -c perfil.ovpn …`): habla el
+> Quinto back-end del cliente nativo (`unvpn openvpn -c perfil.ovpn …`): habla el
 > protocolo OpenVPN 2.x contra un servidor `openvpn` (2.4 / 2.5 / 2.6 / 2.7) o un
 > Access Server, desde Linux, **sin** el binario `openvpn` ni plugins de
-> NetworkManager. Todo en Rust: `checkpoint-client/src/openvpn/`.
+> NetworkManager. Todo en Rust: `unvpn/src/openvpn/`.
 >
 > A diferencia de los otros back-ends no hubo que reversear un binario cerrado:
 > OpenVPN es open-source y el protocolo está "documentado" por el código. La
@@ -88,7 +88,7 @@ IV_VER=2.6.14  IV_PLAT=linux  IV_TCPNL=1  IV_MTU=1600  IV_NCP=2
 IV_CIPHERS=AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305[:cipher del perfil]
 IV_PROTO=478   (DATA_V2|REQUEST_PUSH|TLS_KEY_EXPORT|AUTH_PENDING_KW|DNS_OPTION|CC_EXIT_NOTIFY|AUTH_FAIL_TEMP)
 IV_LZO_STUB=1 IV_COMP_STUB=1 IV_COMP_STUBv2=1   (sabemos el framing, no comprimimos)
-IV_SSO=openurl,webauth,crtext  IV_GUI_VER=cpvpn <ver>
+IV_SSO=openurl,webauth,crtext  IV_GUI_VER=unvpn <ver>
 ```
 
 **No** anunciamos `DYN_TLS_CRYPT` (bit 9). El options string es sólo
@@ -105,7 +105,7 @@ decrypt key[1]**. Dos métodos:
 - **PRF TLS1.0** (servers viejos): `master = PRF(pre_master, "OpenVPN master
   secret" | c.r1 | s.r1, 48)`; `key2 = PRF(master, "OpenVPN key expansion" |
   c.r2 | s.r2 | client_sid | server_sid, 256)`. PRF = P_MD5(S1) ⊕ P_SHA1(S2).
-  Test knob: `CPVPN_OVPN_NO_EKM=1` deja de anunciar EKM y fuerza este camino.
+  Test knob: `UNVPN_OVPN_NO_EKM=1` deja de anunciar EKM y fuerza este camino.
 
 El método y el cipher se fijan con el **primer PUSH_REPLY**; recién ahí se
 derivan las claves de key_id 0. Las renegociaciones derivan apenas termina su

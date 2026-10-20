@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# cpvpn installer — builds the engine (static OpenSSL) and the GUI, then installs
+# unvpn installer — builds the engine (static OpenSSL) and the GUI, then installs
 # both, the icons, the .desktop entry, and (optionally) a polkit rule.
 #
 #   ./install.sh              build + install under /usr/local
@@ -16,13 +16,13 @@ sudo_if_needed() {
 
 uninstall() {
     local S; S="$(sudo_if_needed "$PREFIX/bin")"
-    echo "Removing cpvpn from $PREFIX …"
-    $S rm -f "$PREFIX/bin/cpvpn" "$PREFIX/bin/cpvpn-gui"
-    $S rm -f "$PREFIX/share/applications/cpvpn.desktop"
+    echo "Removing unvpn from $PREFIX …"
+    $S rm -f "$PREFIX/bin/unvpn" "$PREFIX/bin/unvpn-gui"
+    $S rm -f "$PREFIX/share/applications/unvpn.desktop"
     for sz in 32 48 64 128 256; do
-        $S rm -f "$PREFIX/share/icons/hicolor/${sz}x${sz}/apps/cpvpn.png"
+        $S rm -f "$PREFIX/share/icons/hicolor/${sz}x${sz}/apps/unvpn.png"
     done
-    [ -f /etc/polkit-1/rules.d/49-cpvpn.rules ] && sudo rm -f /etc/polkit-1/rules.d/49-cpvpn.rules || true
+    [ -f /etc/polkit-1/rules.d/49-unvpn.rules ] && sudo rm -f /etc/polkit-1/rules.d/49-unvpn.rules || true
     echo "Done."
 }
 
@@ -31,26 +31,26 @@ uninstall() {
 command -v cargo >/dev/null || { echo "Need Rust/cargo — see https://rustup.rs"; exit 1; }
 
 echo "==> Building engine (static OpenSSL, portable)…"
-cargo build --release --features vendored --manifest-path "$REPO/checkpoint-client/Cargo.toml"
+cargo build --release --features vendored --manifest-path "$REPO/unvpn/Cargo.toml"
 echo "==> Building GUI…"
-cargo build --release --manifest-path "$REPO/cpvpn-gui/Cargo.toml"
+cargo build --release --manifest-path "$REPO/unvpn-gui/Cargo.toml"
 
 S="$(sudo_if_needed "$PREFIX/bin")"
 [ -n "$S" ] && echo "==> Installing to $PREFIX (sudo)…" || echo "==> Installing to $PREFIX …"
-$S install -Dm755 "$REPO/checkpoint-client/target/release/cpvpn"    "$PREFIX/bin/cpvpn"
-$S install -Dm755 "$REPO/cpvpn-gui/target/release/cpvpn-gui"        "$PREFIX/bin/cpvpn-gui"
+$S install -Dm755 "$REPO/unvpn/target/release/unvpn"    "$PREFIX/bin/unvpn"
+$S install -Dm755 "$REPO/unvpn-gui/target/release/unvpn-gui"        "$PREFIX/bin/unvpn-gui"
 for sz in 32 48 64 128 256; do
-    $S install -Dm644 "$REPO/packaging/icons/cpvpn-$sz.png" \
-        "$PREFIX/share/icons/hicolor/${sz}x${sz}/apps/cpvpn.png"
+    $S install -Dm644 "$REPO/packaging/icons/unvpn-$sz.png" \
+        "$PREFIX/share/icons/hicolor/${sz}x${sz}/apps/unvpn.png"
 done
-$S install -Dm644 "$REPO/packaging/cpvpn.desktop" "$PREFIX/share/applications/cpvpn.desktop"
+$S install -Dm644 "$REPO/packaging/unvpn.desktop" "$PREFIX/share/applications/unvpn.desktop"
 
 printf "Install polkit rule (connect prompts for admin once, then caches)? [y/N] "
 read -r ans
 if [ "$ans" = y ] || [ "$ans" = Y ]; then
     tmp="$(mktemp)"
-    sed "s#/usr/local/bin/cpvpn#$PREFIX/bin/cpvpn#" "$REPO/packaging/49-cpvpn.rules" > "$tmp"
-    sudo install -Dm644 "$tmp" /etc/polkit-1/rules.d/49-cpvpn.rules
+    sed "s#/usr/local/bin/unvpn#$PREFIX/bin/unvpn#" "$REPO/packaging/49-unvpn.rules" > "$tmp"
+    sudo install -Dm644 "$tmp" /etc/polkit-1/rules.d/49-unvpn.rules
     rm -f "$tmp"
 fi
 
@@ -58,5 +58,5 @@ command -v gtk-update-icon-cache >/dev/null && $S gtk-update-icon-cache -qtf "$P
 command -v update-desktop-database >/dev/null && $S update-desktop-database -q "$PREFIX/share/applications" 2>/dev/null || true
 
 echo
-echo "✓ Installed. Launch 'cpvpn-gui', or find 'cpvpn' in your application menu."
-echo "  CLI engine: 'cpvpn' (see 'cpvpn --help')."
+echo "✓ Installed. Launch 'unvpn-gui', or find 'unvpn' in your application menu."
+echo "  CLI engine: 'unvpn' (see 'unvpn --help')."

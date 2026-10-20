@@ -1,0 +1,26 @@
+[package]
+name = "unvpn-gui"
+version = "0.2.0"
+edition = "2021"
+description = "Native Linux VPN client GUI (Check Point / Fortinet / F5 / AnyConnect / OpenVPN) — GTK4 + libadwaita, with connection profiles."
+
+[dependencies]
+gtk = { package = "gtk4", version = "0.11", features = ["v4_12"] }
+adw = { package = "libadwaita", version = "0.9", features = ["v1_5"] }
+async-channel = "2"
+ksni = "0.2"
+dbus = "0.9"
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
+# Embedded browser for AnyConnect SAML (needs webkitgtk-6.0). Without it the SSO
+# login opens in the default browser and the token cookie is pasted by hand.
+webkit6 = { version = "0.6", optional = true }
+
+[features]
+default = ["webview"]
+webview = ["dep:webkit6"]
+
+[[bin]]
+name = "unvpn-gui"
+path = "src/main.rs"
