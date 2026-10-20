@@ -96,6 +96,9 @@ Live, against a real WireGuard server on a remote VPS (full tunnel IPv4, PSK,
 `PersistentKeepalive`): handshake in ~200–300 ms, the public IP becomes the VPS's, ping and
 DNS through the tunnel, endpoint pinned to the LAN gateway; on teardown the route tables and
 resolv.conf were identical byte-for-byte to before.
+A/B against `wg-quick` on the same profile, back to back: same throughput (~155 Mbit/s
+down / ~30 up both, limited by the path to the server) — expected, the data plane is the
+kernel's either way. `wg show` on our interface lists exactly what the profile says.
 
 ## Not done
 
