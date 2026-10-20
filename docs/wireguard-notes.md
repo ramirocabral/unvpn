@@ -92,6 +92,11 @@ All runs used a preshared key.
 - Wrong peer public key: clean failure after 30 s with the diagnostic, nothing left behind.
 - `disconnect` during the handshake wait: cancelled at once, cleaned up.
 
+Live, against a real WireGuard server on a remote VPS (full tunnel IPv4, PSK,
+`PersistentKeepalive`): handshake in ~200–300 ms, the public IP becomes the VPS's, ping and
+DNS through the tunnel, endpoint pinned to the LAN gateway; on teardown the route tables and
+resolv.conf were identical byte-for-byte to before.
+
 ## Not done
 
 - A userspace fallback (an own Noise IKpsk2 + tun data plane) for hosts without the

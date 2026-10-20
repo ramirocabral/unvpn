@@ -176,8 +176,8 @@ for_window [app_id="unvpn"] floating enable
       IPv4 + IPv6, full/split routing with the endpoint pinned outside the tunnel, `Table`,
       `FwMark`, DNS + search domains, a handshake check before any route goes in, stats, clean
       teardown; `PostUp`-style hooks are never executed. GUI profile with a .conf picker.
-      *(validated against kernel WireGuard peers: handshake, v4/v6 data plane ~3 Gbit/s,
-      teardown restores routes and DNS exactly.)* See [`docs/wireguard-notes.md`](docs/wireguard-notes.md).
+      *(validated against kernel WireGuard peers — handshake, v4/v6 data plane ~3 Gbit/s —
+      and live against a real WireGuard server; teardown restores routes and DNS exactly.)* See [`docs/wireguard-notes.md`](docs/wireguard-notes.md).
 - [x] DTLS acceleration (UDP) for AnyConnect, Fortinet and F5.
 - [ ] Fortinet IPsec/IKEv2 mode; OpenVPN tls-crypt-v2 / IPv6; WireGuard userspace fallback
       (hosts without the kernel module).

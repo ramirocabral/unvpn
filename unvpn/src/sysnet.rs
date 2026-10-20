@@ -80,6 +80,7 @@ pub fn set_dns<A: std::fmt::Display + std::fmt::Debug>(dns: &[A], domains: &str)
         let _ = std::fs::remove_file(RESOLV_CONF); // replace the symlink with our file
     }
     match std::fs::write(RESOLV_CONF, content) {
+        Ok(_) if search.is_empty() => out!("# DNS → {dns:?}"),
         Ok(_) => out!("# DNS → {dns:?} (search {})", search.join(" ")),
         Err(e) => out!("# (could not set DNS: {e})"),
     }
