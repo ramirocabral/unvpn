@@ -148,8 +148,10 @@ poll). Tabla cipher→(prio,version,kx,cipher,mac) espejo de openconnect `gnutls
 `X-DTLS12-CipherSuite: ECDHE-RSA-AES256-GCM-SHA384:…` (ECDHE primero, nombres estilo
 GnuTLS) y el ASA elige/eco `ECDHE-RSA-AES256-GCM-SHA384`. **Medido vs CSTP: 100 dig
 paralelos 287ms (DTLS) vs 2087ms (CSTP) — 7× más rápido, empata openconnect (294ms);
-ping 0% loss, estable, sin fallback.** libgnutls se linkea dinámico (dev ok);
-follow-up: feature-gate para el build estático/musl (CSTP anda sin gnutls).
+ping 0% loss, estable, sin fallback.** **libgnutls se carga en RUNTIME con `dlopen`** (no link-time): el binario no tiene
+dependencia dura, arranca en cualquier distro, usa DTLS donde libgnutls está
+(casi todas) y cae a CSTP donde no. `load_gnutls()` prueba `libgnutls.so.30` y
+`libgnutls.so`, resuelve los símbolos con `dlsym`; si falta, DTLS off → CSTP.
 
 Lo que sigue abajo es el **registro del diagnóstico** que llevó a GnuTLS (por qué
 OpenSSL no alcanza), se deja por valor de RE:

@@ -15,14 +15,21 @@
 //! Each datagram is `[type byte][payload]` (0 DATA, 3/4 DPD, 7 keepalive,
 //! 5 disconnect) — the CSTP type codes with a 1-byte header instead of the STF one.
 //! Best-effort: if the handshake doesn't complete, the caller stays on CSTP.
+//!
+//! **libgnutls is loaded at runtime with `dlopen`, never link-time.** That keeps the
+//! engine a single distro-agnostic binary: it starts everywhere with no hard
+//! dependency, uses the DTLS fast path where libgnutls is present (nearly all
+//! distros), and silently stays on CSTP where it isn't. (A link-time dependency
+//! would stop the binary even *starting* on a host without libgnutls.)
 
 use std::ffi::{c_int, c_uint, c_void, CString};
 use std::net::{Ipv4Addr, UdpSocket};
 use std::os::raw::c_char;
 use std::os::unix::io::AsRawFd;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-// ───────────────────────────── GnuTLS FFI ──────────────────────────────────
+// ───────────────────────── GnuTLS: runtime-loaded FFI ───────────────────────
 
 type GnutlsSession = *mut c_void;
 
@@ -32,34 +39,82 @@ struct GnutlsDatum {
     size: c_uint,
 }
 
-#[link(name = "gnutls")]
-extern "C" {
-    fn gnutls_global_init() -> c_int;
-    fn gnutls_init(session: *mut GnutlsSession, flags: c_uint) -> c_int;
-    fn gnutls_deinit(session: GnutlsSession);
-    fn gnutls_priority_set_direct(session: GnutlsSession, prio: *const c_char, err_pos: *mut *const c_char) -> c_int;
-    fn gnutls_record_disable_padding(session: GnutlsSession);
-    #[allow(clippy::too_many_arguments)]
-    fn gnutls_session_set_premaster(
-        session: GnutlsSession,
-        entity: c_uint,
-        version: c_int,
-        kx: c_int,
-        cipher: c_int,
-        mac: c_int,
-        comp: c_int,
-        master: *const GnutlsDatum,
-        session_id: *const GnutlsDatum,
-    ) -> c_int;
-    fn gnutls_transport_set_int2(session: GnutlsSession, r: c_int, s: c_int);
-    fn gnutls_dtls_set_mtu(session: GnutlsSession, mtu: c_uint);
-    fn gnutls_handshake(session: GnutlsSession) -> c_int;
-    fn gnutls_record_get_direction(session: GnutlsSession) -> c_int;
-    fn gnutls_record_recv(session: GnutlsSession, data: *mut c_void, len: usize) -> isize;
-    fn gnutls_record_send(session: GnutlsSession, data: *const c_void, len: usize) -> isize;
-    fn gnutls_bye(session: GnutlsSession, how: c_int) -> c_int;
-    fn gnutls_error_is_fatal(err: c_int) -> c_int;
-    fn gnutls_strerror(err: c_int) -> *const c_char;
+/// The gnutls entry points we use, resolved from the shared object at runtime.
+#[allow(clippy::type_complexity)]
+struct Gnutls {
+    global_init: unsafe extern "C" fn() -> c_int,
+    init: unsafe extern "C" fn(*mut GnutlsSession, c_uint) -> c_int,
+    deinit: unsafe extern "C" fn(GnutlsSession),
+    priority_set_direct: unsafe extern "C" fn(GnutlsSession, *const c_char, *mut *const c_char) -> c_int,
+    record_disable_padding: unsafe extern "C" fn(GnutlsSession),
+    session_set_premaster: unsafe extern "C" fn(
+        GnutlsSession, c_uint, c_int, c_int, c_int, c_int, c_int, *const GnutlsDatum, *const GnutlsDatum,
+    ) -> c_int,
+    transport_set_int2: unsafe extern "C" fn(GnutlsSession, c_int, c_int),
+    dtls_set_mtu: unsafe extern "C" fn(GnutlsSession, c_uint),
+    handshake: unsafe extern "C" fn(GnutlsSession) -> c_int,
+    record_get_direction: unsafe extern "C" fn(GnutlsSession) -> c_int,
+    record_recv: unsafe extern "C" fn(GnutlsSession, *mut c_void, usize) -> isize,
+    record_send: unsafe extern "C" fn(GnutlsSession, *const c_void, usize) -> isize,
+    bye: unsafe extern "C" fn(GnutlsSession, c_int) -> c_int,
+    error_is_fatal: unsafe extern "C" fn(c_int) -> c_int,
+    strerror: unsafe extern "C" fn(c_int) -> *const c_char,
+}
+
+// Only ever read (immutable fn pointers into a library we never unload).
+unsafe impl Send for Gnutls {}
+unsafe impl Sync for Gnutls {}
+
+static GNUTLS: OnceLock<Option<Gnutls>> = OnceLock::new();
+
+/// The loaded gnutls, or `None` if libgnutls isn't installed / is too old.
+fn gnutls() -> Option<&'static Gnutls> {
+    GNUTLS.get_or_init(load_gnutls).as_ref()
+}
+
+/// `dlopen` libgnutls and resolve the symbols. Returns `None` (not an error) when the
+/// library is absent — the caller then stays on CSTP.
+fn load_gnutls() -> Option<Gnutls> {
+    unsafe {
+        // The current soname first, then the dev symlink as a fallback.
+        let handle = ["libgnutls.so.30\0", "libgnutls.so\0"].iter().find_map(|name| {
+            let h = libc::dlopen(name.as_ptr() as *const c_char, libc::RTLD_NOW | libc::RTLD_GLOBAL);
+            if h.is_null() {
+                None
+            } else {
+                Some(h)
+            }
+        })?;
+
+        // Resolve a symbol or bail (whole feature off) if any is missing. The handle
+        // is intentionally never dlclose'd — gnutls stays mapped for the process.
+        macro_rules! sym {
+            ($name:literal) => {{
+                let p = libc::dlsym(handle, concat!($name, "\0").as_ptr() as *const c_char);
+                if p.is_null() {
+                    return None;
+                }
+                std::mem::transmute(p)
+            }};
+        }
+        Some(Gnutls {
+            global_init: sym!("gnutls_global_init"),
+            init: sym!("gnutls_init"),
+            deinit: sym!("gnutls_deinit"),
+            priority_set_direct: sym!("gnutls_priority_set_direct"),
+            record_disable_padding: sym!("gnutls_record_disable_padding"),
+            session_set_premaster: sym!("gnutls_session_set_premaster"),
+            transport_set_int2: sym!("gnutls_transport_set_int2"),
+            dtls_set_mtu: sym!("gnutls_dtls_set_mtu"),
+            handshake: sym!("gnutls_handshake"),
+            record_get_direction: sym!("gnutls_record_get_direction"),
+            record_recv: sym!("gnutls_record_recv"),
+            record_send: sym!("gnutls_record_send"),
+            bye: sym!("gnutls_bye"),
+            error_is_fatal: sym!("gnutls_error_is_fatal"),
+            strerror: sym!("gnutls_strerror"),
+        })
+    }
 }
 
 // gnutls_init flags.
@@ -138,6 +193,7 @@ fn resolve(name: &str, dtls12: bool) -> Option<Params> {
 /// the GnuTLS session, freed on drop.
 pub struct Dtls {
     session: GnutlsSession,
+    g: &'static Gnutls,
     _sock: UdpSocket,
     fd: c_int,
 }
@@ -155,7 +211,7 @@ impl Dtls {
         let mut pkt = Vec::with_capacity(1 + payload.len());
         pkt.push(ty);
         pkt.extend_from_slice(payload);
-        let n = unsafe { gnutls_record_send(self.session, pkt.as_ptr() as *const c_void, pkt.len()) };
+        let n = unsafe { (self.g.record_send)(self.session, pkt.as_ptr() as *const c_void, pkt.len()) };
         if n >= 0 {
             return Ok(());
         }
@@ -163,14 +219,14 @@ impl Dtls {
         if e == GNUTLS_E_AGAIN || e == GNUTLS_E_INTERRUPTED {
             Ok(()) // drop, it's UDP
         } else {
-            Err(format!("DTLS send: {}", gnutls_err(e)))
+            Err(format!("DTLS send: {}", gnutls_err(self.g, e)))
         }
     }
 
     /// Receive one datagram as `(type, payload)`. `Ok(None)` when nothing is ready.
     pub fn recv(&self) -> Result<Option<(u8, Vec<u8>)>, String> {
         let mut buf = [0u8; 2048];
-        let n = unsafe { gnutls_record_recv(self.session, buf.as_mut_ptr() as *mut c_void, buf.len()) };
+        let n = unsafe { (self.g.record_recv)(self.session, buf.as_mut_ptr() as *mut c_void, buf.len()) };
         if n > 0 {
             let n = n as usize;
             return Ok(Some((buf[0], buf[1..n].to_vec())));
@@ -181,10 +237,10 @@ impl Dtls {
         let e = n as c_int;
         if e == GNUTLS_E_AGAIN || e == GNUTLS_E_INTERRUPTED || e == GNUTLS_E_REHANDSHAKE {
             Ok(None)
-        } else if unsafe { gnutls_error_is_fatal(e) } == 0 {
+        } else if unsafe { (self.g.error_is_fatal)(e) } == 0 {
             Ok(None) // a non-fatal warning (e.g. a benign alert) — keep going
         } else {
-            Err(format!("DTLS recv: {}", gnutls_err(e)))
+            Err(format!("DTLS recv: {}", gnutls_err(self.g, e)))
         }
     }
 }
@@ -193,8 +249,8 @@ impl Drop for Dtls {
     fn drop(&mut self) {
         unsafe {
             if !self.session.is_null() {
-                let _ = gnutls_bye(self.session, GNUTLS_SHUT_WR);
-                gnutls_deinit(self.session);
+                let _ = (self.g.bye)(self.session, GNUTLS_SHUT_WR);
+                (self.g.deinit)(self.session);
             }
         }
     }
@@ -216,6 +272,7 @@ pub fn connect(
     if session_id.is_empty() || master_secret.len() != 48 {
         return Err("missing DTLS session id / master secret".into());
     }
+    let g = gnutls().ok_or("libgnutls not available on this host (DTLS off; using CSTP)")?;
 
     let sock = UdpSocket::bind(("0.0.0.0", 0)).map_err(|e| format!("DTLS udp bind: {e}"))?;
     sock.connect((gw, port)).map_err(|e| format!("DTLS udp connect {gw}:{port}: {e}"))?;
@@ -223,51 +280,51 @@ pub fn connect(
     let fd = sock.as_raw_fd();
 
     unsafe {
-        gnutls_global_init(); // idempotent on modern GnuTLS
+        (g.global_init)(); // idempotent on modern GnuTLS
 
         let mut session: GnutlsSession = std::ptr::null_mut();
         let flags = GNUTLS_CLIENT | GNUTLS_DATAGRAM | GNUTLS_NONBLOCK | GNUTLS_NO_DEFAULT_EXTENSIONS;
-        let rc = gnutls_init(&mut session, flags);
+        let rc = (g.init)(&mut session, flags);
         if rc != 0 || session.is_null() {
-            return Err(format!("gnutls_init: {}", gnutls_err(rc)));
+            return Err(format!("gnutls_init: {}", gnutls_err(g, rc)));
         }
-        let guard = SessionGuard(session);
+        let guard = SessionGuard(session, g);
 
-        gnutls_transport_set_int2(session, fd, fd);
-        gnutls_dtls_set_mtu(session, 1500);
+        (g.transport_set_int2)(session, fd, fd);
+        (g.dtls_set_mtu)(session, 1500);
 
         let prio = CString::new(params.prio).unwrap();
-        let rc = gnutls_priority_set_direct(session, prio.as_ptr(), std::ptr::null_mut());
+        let rc = (g.priority_set_direct)(session, prio.as_ptr(), std::ptr::null_mut());
         if rc != 0 {
-            return Err(format!("DTLS priority {:?}: {}", params.prio, gnutls_err(rc)));
+            return Err(format!("DTLS priority {:?}: {}", params.prio, gnutls_err(g, rc)));
         }
-        gnutls_record_disable_padding(session);
+        (g.record_disable_padding)(session);
 
         let master = GnutlsDatum { data: master_secret.as_ptr(), size: master_secret.len() as c_uint };
         let sid = GnutlsDatum { data: session_id.as_ptr(), size: session_id.len() as c_uint };
-        let rc = gnutls_session_set_premaster(
+        let rc = (g.session_set_premaster)(
             session, GNUTLS_CLIENT, params.version, params.kx, params.cipher, params.mac, GNUTLS_COMP_NULL,
             &master, &sid,
         );
         if rc != 0 {
-            return Err(format!("gnutls_session_set_premaster: {}", gnutls_err(rc)));
+            return Err(format!("gnutls_session_set_premaster: {}", gnutls_err(g, rc)));
         }
 
         // Handshake (abbreviated/resumed). Non-blocking: poll the fd between tries.
         let deadline = Instant::now() + timeout;
         loop {
-            let rc = gnutls_handshake(session);
+            let rc = (g.handshake)(session);
             if rc == 0 {
                 break;
             }
             if rc != GNUTLS_E_AGAIN && rc != GNUTLS_E_INTERRUPTED {
-                return Err(format!("DTLS handshake: {}", gnutls_err(rc)));
+                return Err(format!("DTLS handshake: {}", gnutls_err(g, rc)));
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return Err("DTLS handshake timed out".into());
             }
-            let want_send = gnutls_record_get_direction(session) == 1;
+            let want_send = (g.record_get_direction)(session) == 1;
             let mut p = libc::pollfd {
                 fd,
                 events: if want_send { libc::POLLOUT } else { libc::POLLIN },
@@ -278,13 +335,13 @@ pub fn connect(
         }
 
         guard.disarm();
-        Ok(Dtls { session, _sock: sock, fd })
+        Ok(Dtls { session, g, _sock: sock, fd })
     }
 }
 
-fn gnutls_err(e: c_int) -> String {
+fn gnutls_err(g: &Gnutls, e: c_int) -> String {
     unsafe {
-        let p = gnutls_strerror(e);
+        let p = (g.strerror)(e);
         if p.is_null() {
             format!("gnutls error {e}")
         } else {
@@ -294,7 +351,7 @@ fn gnutls_err(e: c_int) -> String {
 }
 
 /// Frees the GnuTLS session on an early error return; `disarm` once it's handed off.
-struct SessionGuard(GnutlsSession);
+struct SessionGuard(GnutlsSession, &'static Gnutls);
 impl SessionGuard {
     fn disarm(mut self) {
         self.0 = std::ptr::null_mut();
@@ -303,7 +360,7 @@ impl SessionGuard {
 impl Drop for SessionGuard {
     fn drop(&mut self) {
         if !self.0.is_null() {
-            unsafe { gnutls_deinit(self.0) };
+            unsafe { (self.1.deinit)(self.0) };
         }
     }
 }
