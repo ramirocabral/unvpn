@@ -102,14 +102,14 @@ fn sso_origin(url: &str) -> Option<&str> {
 }
 
 /// Resolve the engine binary to an absolute path (pkexec requires absolute).
-/// Order: $CPVPN_BIN, the dev build, $PATH, then a sensible default.
+/// Order: $CPVPN_BIN, the engine built in the same source tree as this GUI
+/// (running from `cpvpn-gui/target/<profile>/`), $PATH, then a sensible default.
 fn cpvpn_bin() -> String {
     if let Ok(p) = std::env::var("CPVPN_BIN") {
         return p;
     }
-    let dev = "/home/user/projects/re/checkpoint-client/target/release/cpvpn";
-    if std::path::Path::new(dev).exists() {
-        return dev.to_string();
+    if let Some(dev) = dev_engine() {
+        return dev.to_string_lossy().into_owned();
     }
     if let Ok(path) = std::env::var("PATH") {
         for dir in path.split(':').filter(|d| !d.is_empty()) {
@@ -120,6 +120,15 @@ fn cpvpn_bin() -> String {
         }
     }
     "/usr/local/bin/cpvpn".to_string()
+}
+
+/// `<repo>/checkpoint-client/target/release/cpvpn`, when this GUI runs from
+/// `<repo>/cpvpn-gui/target/<profile>/cpvpn-gui` (a development checkout).
+fn dev_engine() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let repo = exe.parent()?.parent()?.parent()?.parent()?; // <profile> → target → cpvpn-gui → repo
+    let cand = repo.join("checkpoint-client/target/release/cpvpn");
+    cand.is_file().then_some(cand)
 }
 
 /// How to run the engine as root. `pkexec` needs a PolicyKit agent (GNOME/KDE

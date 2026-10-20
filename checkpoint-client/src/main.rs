@@ -813,7 +813,7 @@ fn cmd_tunnel_up(args: &[String]) {
 /// no passcode — and tells us whether UDP is open or Visitor Mode is required.
 fn cmd_ike(args: &[String]) {
     let mut gateway: Option<String> = None;
-    let mut user = "u-123456".to_string();
+    let mut user = String::new();
     let mut realm = "vpn".to_string();
     let mut passcode: Option<String> = None;
     let mut connect = false;
@@ -839,6 +839,10 @@ fn cmd_ike(args: &[String]) {
         eprintln!("ike requires --gateway <host>");
         std::process::exit(2);
     });
+    if user.is_empty() {
+        eprintln!("ike requires --user <user>");
+        std::process::exit(2);
+    }
 
     let gw_ip: std::net::Ipv4Addr = match host.parse() {
         Ok(ip) => ip,
@@ -1257,7 +1261,7 @@ fn cmd_hello(args: &[String]) {
 /// the full raw HTTP response at each step.
 fn cmd_login(args: &[String]) {
     let mut gateway: Option<String> = None;
-    let mut user = "u-123456".to_string();
+    let mut user = String::new();
     let mut realm = "vpn".to_string();
     let mut passcode: Option<String> = None;
     let mut probe = false;
@@ -1284,6 +1288,10 @@ fn cmd_login(args: &[String]) {
             std::process::exit(2);
         }
     };
+    if user.is_empty() {
+        eprintln!("login requires --user <user>");
+        std::process::exit(2);
+    }
 
     // Step 1 — UserPass: username + empty password + selected realm.
     let req = ccc::auth_userpass(new_request_id(), &user, &realm);
