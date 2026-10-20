@@ -198,9 +198,13 @@ user/pass por script.
 
 Gateways reales (sólo `--probe`, sin credenciales):
 - `vpn3.example.org:1196` (gw-ovpn2, tls-crypt) → TLS 1.3 OK, cert `CN=example.org`.
-- `vpn1.example.org` / `vpn2.example.org` → la CA de los
-  perfiles **venció (13/09/2026)** o fue renovada; el `openvpn` oficial falla
-  exactamente igual → hay que pedir perfiles nuevos.
+- `vpn1.example.org` con el perfil nuevo (`~/Downloads/corp_vpn_1.ovpn`)
+  → **conexión real desde la GUI OK** (20/10): user/pass, IP 10.70.1.9/24, split
+  routes 10.72/16 + 10.70.20/24 + 192.168.200/24, DNS 10.70.1.1 + search
+  `internal.example.org`, tráfico TCP/443 y DNS bidireccionales por el túnel. ICMP y
+  DNS directo a 10.72.3.4 no responden (ACL del server, no del cliente).
+- Los perfiles viejos de `~/corp/vpn/corp_vpn*` traen una CA **vencida
+  (13/09/2026)** o reemplazada; el `openvpn` oficial falla exactamente igual.
 
 ## Pendiente
 - tls-crypt-v2; `auth-user-pass` + WEB_AUTH abierto desde la GUI;
