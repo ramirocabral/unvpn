@@ -152,6 +152,7 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
 
     // 2) tun device (distinct name so every back-end's tunnel coexists).
     let (mut tun_file, tun_name) = tun::open_tun(TUN_NAME)?;
+    tun::set_nonblocking(&tun_file);
     tun::ip(&["addr", "add", &format!("{assigned}/{}", cfg.prefix()), "dev", &tun_name])?;
     tun::ip(&["link", "set", "dev", &tun_name, "up", "mtu", &mtu.to_string()])?;
     println!("# tun {tun_name} up — {assigned}/{}, mtu {mtu}", cfg.prefix());
@@ -392,30 +393,34 @@ fn data_loop(
         }
 
         // tun → tunnel: prefer DTLS; on a DTLS send error, drop to CSTP for good.
+        // Drain everything queued per wakeup (bounded), not one packet per poll.
         if fds[0].revents & libc::POLLIN != 0 {
-            match tun_file.read(&mut buf) {
-                Ok(0) => return Err("tun closed".into()),
-                Ok(m) if tun::is_ipv4(&buf[..m]) => {
-                    let sent_dtls = match dtls.as_ref() {
-                        Some(d) => match d.send(AC_DATA, &buf[..m]) {
-                            Ok(()) => true,
-                            Err(e) => {
-                                out!("# DTLS send failed ({e}) — falling back to CSTP");
-                                *dtls = None;
-                                false
-                            }
-                        },
-                        None => false,
-                    };
-                    if !sent_dtls {
-                        chan.send(AC_DATA, &buf[..m])?;
+            for _ in 0..64 {
+                match tun_file.read(&mut buf) {
+                    Ok(0) => return Err("tun closed".into()),
+                    Ok(m) if tun::is_ipv4(&buf[..m]) => {
+                        let sent_dtls = match dtls.as_ref() {
+                            Some(d) => match d.send(AC_DATA, &buf[..m]) {
+                                Ok(()) => true,
+                                Err(e) => {
+                                    out!("# DTLS send failed ({e}) — falling back to CSTP");
+                                    *dtls = None;
+                                    false
+                                }
+                            },
+                            None => false,
+                        };
+                        if !sent_dtls {
+                            chan.send(AC_DATA, &buf[..m])?;
+                        }
+                        tout += 1;
+                        last_tx = Instant::now();
                     }
-                    tout += 1;
-                    last_tx = Instant::now();
+                    Ok(_) => {} // non-IPv4 dropped (tunnel is IPv4-only)
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(e) => return Err(format!("tun read: {e}")),
                 }
-                Ok(_) => {} // non-IPv4 dropped (tunnel is IPv4-only)
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                Err(e) => return Err(format!("tun read: {e}")),
             }
         }
 

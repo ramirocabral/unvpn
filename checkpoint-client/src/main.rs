@@ -24,6 +24,7 @@ macro_rules! out {
 mod anyconnect;
 mod ccc;
 mod forti;
+mod gnutls;
 mod f5;
 mod ike;
 mod sysnet;

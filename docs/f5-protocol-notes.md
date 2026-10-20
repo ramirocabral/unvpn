@@ -127,12 +127,23 @@ posterior (igual que CP/Forti).
 12. **MTU**: overhead F5 no-HDLC = 8B (4 encap + FF03 + proto). MTU ~1400.
 13. **Keepalive**: LCP Echo-Request periódico (derivado de `idle_session_timeout`).
 
-## Aceleración — DTLS (UDP)   ⏳ (pendiente; TLS-only primero)
-- Si `tunnel_dtls` && `tunnel_port_dtls` && **no** HDLC → DTLS cert-based (DTLS 1.2)
-  al `tunnel_port_dtls`; el **mismo** `GET /myvpn?…` se manda como primer datagrama de
-  aplicación sobre DTLS ("HTTP over DTLS"), y la respuesta `HTTP/.. 200` + headers
-  `X-VPN-client-IP` se parsea igual (openconnect `f5_dtls_catch_probe`). NO es PSK — es
-  DTLS con cert como el lado TLS. Necesita el crate `openssl` directo (ya en deps).
+## Aceleración — DTLS (UDP)   ✅ IMPLEMENTADO (20/10/2026; NO live-tested aún)
+- Si `tunnel_dtls` && `tunnel_port_dtls` && **no** HDLC → DTLS cert-based al
+  `tunnel_port_dtls` (DTLS 1.2 si `dtls_v1_2_supported`, si no DTLS 1.0 — los BIG-IP
+  viejos crashean si se les ofrece 1.2). El **mismo** `GET /myvpn?…` (sin cookies) se
+  manda como primer datagrama de aplicación sobre DTLS ("HTTP over DTLS"), reenviado
+  cada 1s hasta la respuesta `HTTP/.. 200` + `X-VPN-client-IP`, que se parsea igual
+  (openconnect `f5_dtls_catch_probe`). Luego PPP (framing F5), **un frame por record**.
+- NO es PSK — handshake DTLS con cert como el lado TLS (server cert no verificado, igual
+  que el TLS). Vía `crate::gnutls` (dlopen de libgnutls en runtime, módulo compartido con
+  AnyConnect/Forti; `DtlsSession::connect_cert`). `--no-dtls` fuerza TLS.
+- **Opportunistic + fallback**: igual que Forti — si el handshake/`/myvpn` falla o el data
+  loop no recibe IP en `DTLS_TRIAL`=5s (`tin==0` con `tout≥8`), cae a TLS transparente y
+  reconecta reusando sess/Z + cookies sin re-auth.
+- **PENDIENTE: validación en vivo** (no hay gateway F5 con DTLS a mano ahora). El handshake
+  cert quedó verificado contra un `gnutls-serv --udp` local; la ruta `/myvpn`-over-DTLS y el
+  framing F5 por UDP faltan probar contra un BIG-IP real. OJO: a diferencia de Fortinet, F5
+  **no** intercala records de control `GF` en el stream PPP (ese demux es sólo de Forti).
 
 ---
 
@@ -146,7 +157,7 @@ y el modelo de hilos del data-plane. Módulos: `src/f5/{mod,http,auth,config,ppp
 - **3** ✅ Perfil + opciones (`index.php3` / `connect.php3`) → `F5Options`.
 - **4** ✅ Túnel: `GET /myvpn` → PPP (LCP/IPCP, framing F5 **y** F5-HDLC) → `tun f5vpn0`
   + rutas (default/split + exclude) + DNS. Data-plane TLS. `--connect` (sudo).
-- **5** ⏳ DTLS (cert-based) como aceleración (`--no-dtls` para forzar TLS).
+- **5** ✅ DTLS (cert-based) como aceleración (`--no-dtls` fuerza TLS). Implementado, no live.
 - **6** ⏳ GUI: selector de cliente F5 (user/pass + OTP), lanzar engine por pkexec.
 - **7** ⏳ SAML/SSO (IdP externo, redirect cross-host) + selección de grupo (`<select>`).
 

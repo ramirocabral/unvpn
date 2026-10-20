@@ -216,3 +216,27 @@ mod tests {
         assert!(sa.decode(&esp).is_err());
     }
 }
+
+#[cfg(test)]
+mod bench {
+    use super::*;
+
+    /// Per-packet crypto cost: `cargo test --release esp_throughput -- --ignored --nocapture`.
+    /// (≈1.2 Gbit/s per direction at 1400 B on one core — not the bottleneck.)
+    #[test]
+    #[ignore]
+    fn esp_throughput() {
+        let km = vec![9u8; 64];
+        let sa = EspSa::new(u8::from(TransformId::EspAesCbc), ESP_AUTH_HMAC_SHA256, 256, 1, &km, 1, &km).unwrap();
+        let pkt = vec![0x45u8; 1400];
+        let n = 100_000;
+        let t = std::time::Instant::now();
+        for _ in 0..n {
+            let e = sa.encode(&pkt).unwrap();
+            let _ = sa.decode(&e).unwrap();
+        }
+        let el = t.elapsed();
+        let mbit = (n as f64 * 1400.0 * 8.0) / el.as_secs_f64() / 1e6;
+        eprintln!("{n}× enc+dec 1400 B: {el:?} → {:.2} µs/round-trip, {mbit:.0} Mbit/s", el.as_secs_f64() * 1e6 / n as f64);
+    }
+}

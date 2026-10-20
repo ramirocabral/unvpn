@@ -44,6 +44,11 @@ struct Args {
     no_browser: bool,
     /// Tunnel up but no routes/DNS (safe data-plane test).
     no_routes: bool,
+    /// Reuse the SVPNCOOKIE stored in this file instead of authenticating
+    /// (like `openconnect --cookie`; a file, not argv, so `ps` can't see it).
+    cookie_file: Option<String>,
+    /// After authenticating, store the SVPNCOOKIE in this file (mode 0600).
+    save_cookie: Option<String>,
 }
 
 #[derive(PartialEq)]
@@ -87,6 +92,8 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
     let mut saml_port = None;
     let mut no_browser = false;
     let mut no_routes = false;
+    let mut cookie_file = None;
+    let mut save_cookie = None;
 
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -119,11 +126,16 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
             "--no-dtls" => no_dtls = true,
             "--no-browser" => no_browser = true,
             "--no-routes" => no_routes = true,
+            "--cookie-file" => cookie_file = Some(it.next().cloned().ok_or("--cookie-file needs a path")?),
+            "--save-cookie" => save_cookie = Some(it.next().cloned().ok_or("--save-cookie needs a path")?),
             other => return Err(format!("unknown argument: {other}")),
         }
     }
     let host = host.ok_or("forti requires --gateway <host[:port]>")?;
-    Ok(Args { host, port, user, realm, password, code, action, no_push, no_dtls, saml, saml_port, no_browser, no_routes })
+    Ok(Args {
+        host, port, user, realm, password, code, action, no_push, no_dtls, saml, saml_port, no_browser, no_routes,
+        cookie_file, save_cookie,
+    })
 }
 
 fn usage() {
@@ -134,6 +146,8 @@ fn usage() {
     eprintln!("  cpvpn forti -g <host[:port]> [--saml] --connect            # SSO/SAML via browser");
     eprintln!("      [--realm r] [--saml-port n] [--no-browser]  (SAML is auto-detected without -u)");
     eprintln!("      [--no-routes]  tunnel up but install no routes/DNS (safe data-plane test)");
+    eprintln!("      [--no-dtls]    stay on TLS even if the gateway offers DTLS (UDP)");
+    eprintln!("      [--save-cookie f] store the SVPNCOOKIE (0600)   [--cookie-file f] reuse it, no login");
 }
 
 fn timeout() -> Duration {
@@ -444,6 +458,31 @@ fn push_or_code(s: &mut Session, ch: &Challenge, msg: &str) -> Result<PushEnd, S
 /// Authenticate by the selected method (SAML/SSO or password+2FA). Without
 /// `--user` or `--saml`, ask the gateway: SSO if it redirects to an IdP.
 fn authenticate(a: &Args) -> Result<Session, String> {
+    if let Some(path) = &a.cookie_file {
+        let v = std::fs::read_to_string(path).map_err(|e| format!("--cookie-file {path}: {e}"))?;
+        let v = v.trim().trim_start_matches("SVPNCOOKIE=");
+        if v.is_empty() {
+            return Err(format!("--cookie-file {path} is empty"));
+        }
+        let mut s = Session::new(a.host.clone(), a.port, a.realm.clone(), a.user.clone(), timeout());
+        s.cookies.0.insert("SVPNCOOKIE".into(), v.to_string());
+        println!("# reusing SVPNCOOKIE from {path} ({} bytes) — no login", v.len());
+        return Ok(s);
+    }
+    let s = authenticate_fresh(a)?;
+    if let (Some(path), Some(c)) = (&a.save_cookie, s.svpncookie()) {
+        use std::os::unix::fs::OpenOptionsExt;
+        let w = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path)
+            .and_then(|mut f| std::io::Write::write_all(&mut f, c.as_bytes()));
+        match w {
+            Ok(()) => println!("# SVPNCOOKIE saved to {path}"),
+            Err(e) => println!("# could not save SVPNCOOKIE to {path}: {e}"),
+        }
+    }
+    Ok(s)
+}
+
+fn authenticate_fresh(a: &Args) -> Result<Session, String> {
     let use_saml = a.saml
         || (a.user.is_empty() && {
             match saml_idp(a) {

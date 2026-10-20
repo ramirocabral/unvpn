@@ -27,6 +27,13 @@ pub const PPP_IPCP: u16 = 0x8021;
 pub const PPP_IPV4: u16 = 0x0021;
 
 const FRAME_MAGIC: u16 = 0x5050;
+/// The gateway interleaves Fortinet control records — `[be16 len]"GF"type\0…` (the
+/// `svrhello-tun`/heartbeat messages, "GF" = 0x4746) — with PPP frames, especially
+/// over DTLS. They are not PPP, so `take_frame` surfaces them under this pseudo-proto
+/// for the data loop to ignore (while still counting as inbound liveness). Not a real
+/// PPP protocol number, so it can't collide with LCP/IPCP/IPv4.
+pub const FORTI_CTRL: u16 = 0xffff;
+const GF_MAGIC: u16 = 0x4746;
 
 // PPP control codes (RFC 1661 §5).
 const CONF_REQ: u8 = 1;
@@ -55,7 +62,14 @@ const DEFAULT_MRU: u16 = 1354;
 pub struct IpConfig {
     pub addr: Ipv4Addr,
     pub dns: Vec<Ipv4Addr>,
+    /// The MRU the gateway asked for in its LCP Configure-Request: the largest PPP
+    /// payload it accepts, so our tun MTU must not exceed it.
+    pub peer_mru: Option<u16>,
 }
+
+/// Any byte transport a PPP link can run over (TLS stream, DTLS records).
+pub trait Transport: Read + Write {}
+impl<T: Read + Write> Transport for T {}
 
 // ───────────────────────── buffered connection ──────────────────────────────
 
@@ -64,8 +78,14 @@ pub struct IpConfig {
 pub struct PppConn<S> {
     stream: S,
     rbuf: Vec<u8>,
-    /// Socket fd to wait on when a non-blocking write would block.
+    /// Socket fd to wait on when a non-blocking write would block. Set once the link
+    /// is in the (non-blocking) data phase; then `fill` also drains to `WouldBlock`.
     poll_fd: Option<i32>,
+    /// Data frames queued by [`PppConn::queue`], written in one go by `flush_tx`.
+    txbuf: Vec<u8>,
+    /// Whether several frames may share one write (true for a byte stream like TLS;
+    /// false for DTLS, where each record must carry exactly one frame).
+    coalesce: bool,
 }
 
 /// A read returned no data (timeout in blocking mode, or WouldBlock in
@@ -74,7 +94,30 @@ pub const WOULDBLOCK: &str = "__wouldblock__";
 
 impl<S: Read + Write> PppConn<S> {
     pub fn new(stream: S) -> Self {
-        PppConn { stream, rbuf: Vec::with_capacity(4096), poll_fd: None }
+        PppConn { stream, rbuf: Vec::with_capacity(4096), poll_fd: None, txbuf: Vec::new(), coalesce: true }
+    }
+
+    /// One frame per write (record-oriented transports such as DTLS).
+    pub fn set_record_mode(&mut self) {
+        self.coalesce = false;
+    }
+
+    pub fn get_mut(&mut self) -> &mut S {
+        &mut self.stream
+    }
+
+    /// Erase the transport type, keeping any buffered input.
+    pub fn boxed(self) -> PppConn<Box<dyn Transport>>
+    where
+        S: 'static,
+    {
+        PppConn {
+            stream: Box::new(self.stream),
+            rbuf: self.rbuf,
+            poll_fd: self.poll_fd,
+            txbuf: self.txbuf,
+            coalesce: self.coalesce,
+        }
     }
 
     /// The stream is now non-blocking: make `send` wait for `fd` to be writable
@@ -87,19 +130,43 @@ impl<S: Read + Write> PppConn<S> {
         &self.stream
     }
 
-    /// Send a PPP frame (protocol + payload) wrapped in the 6-byte header.
+    /// Send a PPP frame (protocol + payload) wrapped in the 6-byte header, after any
+    /// queued data frames (so ordering is preserved).
     pub fn send(&mut self, proto: u16, payload: &[u8]) -> Result<(), String> {
-        let frame_len = 4 + payload.len();
-        let total = frame_len + 6;
-        let mut out = Vec::with_capacity(total);
-        out.extend_from_slice(&(total as u16).to_be_bytes());
-        out.extend_from_slice(&FRAME_MAGIC.to_be_bytes());
-        out.extend_from_slice(&(frame_len as u16).to_be_bytes());
-        out.push(0xff);
-        out.push(0x03);
-        out.extend_from_slice(&proto.to_be_bytes());
-        out.extend_from_slice(payload);
-        crate::sysnet::write_all_polling(&mut self.stream, self.poll_fd, &out).map_err(|e| format!("ppp {e}"))?;
+        self.flush_tx()?;
+        let mut out = Vec::with_capacity(10 + payload.len());
+        encode_frame(proto, payload, &mut out);
+        self.write_out(&out)
+    }
+
+    /// Queue a data frame; `flush_tx` writes the batch. On a byte stream a burst of
+    /// packets then costs one TLS record + one syscall instead of one per packet.
+    /// In record mode it is just `send`.
+    pub fn queue(&mut self, proto: u16, payload: &[u8]) -> Result<(), String> {
+        if !self.coalesce {
+            return self.send(proto, payload);
+        }
+        encode_frame(proto, payload, &mut self.txbuf);
+        if self.txbuf.len() >= 16 * 1024 {
+            self.flush_tx()?;
+        }
+        Ok(())
+    }
+
+    /// Write out the frames queued by `queue`.
+    pub fn flush_tx(&mut self) -> Result<(), String> {
+        if self.txbuf.is_empty() {
+            return Ok(());
+        }
+        let out = std::mem::take(&mut self.txbuf);
+        let r = self.write_out(&out);
+        self.txbuf = out;
+        self.txbuf.clear();
+        r
+    }
+
+    fn write_out(&mut self, out: &[u8]) -> Result<(), String> {
+        crate::sysnet::write_all_polling(&mut self.stream, self.poll_fd, out).map_err(|e| format!("ppp {e}"))?;
         self.stream.flush().ok();
         Ok(())
     }
@@ -127,6 +194,18 @@ impl<S: Read + Write> PppConn<S> {
         }
         let total = u16::from_be_bytes([self.rbuf[0], self.rbuf[1]]) as usize;
         let magic = u16::from_be_bytes([self.rbuf[2], self.rbuf[3]]);
+        // A Fortinet control record (`[be16 len]"GF"…`): drain its `len` bytes and
+        // report it as control, so a heartbeat can't desync the PPP byte stream.
+        if magic == GF_MAGIC {
+            if total < 4 {
+                return Err(format!("bad Fortinet control record (len={total})"));
+            }
+            if self.rbuf.len() < total {
+                return Ok(None); // wait for the whole control record
+            }
+            let rec: Vec<u8> = self.rbuf.drain(..total).skip(2).collect();
+            return Ok(Some((FORTI_CTRL, rec)));
+        }
         let frame_len = u16::from_be_bytes([self.rbuf[4], self.rbuf[5]]) as usize;
         if magic != FRAME_MAGIC || total != frame_len + 6 {
             return Err(format!(
@@ -148,19 +227,31 @@ impl<S: Read + Write> PppConn<S> {
         Ok(Some((proto, frame[off + 2..].to_vec())))
     }
 
-    /// Do one `read` into the buffer. Maps timeout/WouldBlock to `Ok(0)`.
+    /// Read into the buffer. Maps timeout/WouldBlock to `Ok(0)`. During negotiation
+    /// (blocking reads with a timeout) this is one `read`; in the non-blocking data
+    /// phase it drains until `WouldBlock`: TLS decrypts whole records into its own
+    /// buffer, so data can sit there while `poll(fd)` reports nothing — a single
+    /// read per wakeup would leave packets stranded until the next one.
     pub fn fill(&mut self) -> Result<usize, String> {
         let mut tmp = [0u8; 16384];
-        match self.stream.read(&mut tmp) {
-            Ok(0) => Err("tunnel closed by peer".into()),
-            Ok(n) => {
-                self.rbuf.extend_from_slice(&tmp[..n]);
-                Ok(n)
+        let mut total = 0;
+        loop {
+            match self.stream.read(&mut tmp) {
+                Ok(0) if total > 0 => return Ok(total),
+                Ok(0) => return Err("tunnel closed by peer".into()),
+                Ok(n) => {
+                    self.rbuf.extend_from_slice(&tmp[..n]);
+                    total += n;
+                    if self.poll_fd.is_none() || total >= 256 * 1024 {
+                        return Ok(total);
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {
+                    return Ok(total)
+                }
+                Err(e) => return Err(format!("tunnel read: {e}")),
             }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {
-                Ok(0)
-            }
-            Err(e) => Err(format!("tunnel read: {e}")),
         }
     }
 
@@ -177,6 +268,18 @@ impl<S: Read + Write> PppConn<S> {
             }
         }
     }
+}
+
+/// Append one framed PPP packet (6-byte header + `FF 03` + protocol + payload).
+fn encode_frame(proto: u16, payload: &[u8], out: &mut Vec<u8>) {
+    let frame_len = 4 + payload.len();
+    out.extend_from_slice(&((frame_len + 6) as u16).to_be_bytes());
+    out.extend_from_slice(&FRAME_MAGIC.to_be_bytes());
+    out.extend_from_slice(&(frame_len as u16).to_be_bytes());
+    out.push(0xff);
+    out.push(0x03);
+    out.extend_from_slice(&proto.to_be_bytes());
+    out.extend_from_slice(payload);
 }
 
 // ───────────────────────── control packet build ─────────────────────────────
@@ -234,11 +337,19 @@ fn iter_opts(body: &[u8]) -> Vec<(u8, Vec<u8>)> {
 /// Run LCP then IPCP to completion. The socket must have a read timeout set.
 pub fn negotiate<S: Read + Write>(conn: &mut PppConn<S>) -> Result<IpConfig, String> {
     let magic: [u8; 4] = crate::ike::crypto::random(4).try_into().unwrap_or([1, 2, 3, 4]);
-    lcp_phase(conn, &magic)?;
-    ipcp_phase(conn)
+    let peer_mru = lcp_phase(conn, &magic)?;
+    let mut ipc = ipcp_phase(conn)?;
+    ipc.peer_mru = peer_mru;
+    Ok(ipc)
 }
 
-fn lcp_phase<S: Read + Write>(conn: &mut PppConn<S>, magic: &[u8; 4]) -> Result<(), String> {
+/// The MRU option in a peer's LCP Configure-Request body, if any.
+fn mru_option(body: &[u8]) -> Option<u16> {
+    iter_opts(body).into_iter().find(|(t, v)| *t == LCP_OPT_MRU && v.len() == 2).map(|(_, v)| u16::from_be_bytes([v[0], v[1]]))
+}
+
+/// LCP to completion. Returns the gateway's MRU (from its Configure-Request).
+fn lcp_phase<S: Read + Write>(conn: &mut PppConn<S>, magic: &[u8; 4]) -> Result<Option<u16>, String> {
     let mut our_opts = Vec::new();
     our_opts.extend_from_slice(&opt(LCP_OPT_MRU, &DEFAULT_MRU.to_be_bytes()));
     our_opts.extend_from_slice(&opt(LCP_OPT_MAGIC, magic));
@@ -246,6 +357,7 @@ fn lcp_phase<S: Read + Write>(conn: &mut PppConn<S>, magic: &[u8; 4]) -> Result<
     let mut id = 1u8;
     let mut our_acked = false;
     let mut peer_acked = false;
+    let mut peer_mru = None;
     conn.send(PPP_LCP, &ctrl(CONF_REQ, id, &our_opts))?;
 
     let mut tries = 0;
@@ -255,6 +367,7 @@ fn lcp_phase<S: Read + Write>(conn: &mut PppConn<S>, magic: &[u8; 4]) -> Result<
                 let Some(c) = parse_ctrl(&payload) else { continue };
                 match c.code {
                     CONF_REQ => {
+                        peer_mru = mru_option(&c.body).or(peer_mru);
                         conn.send(PPP_LCP, &ctrl(CONF_ACK, c.id, &c.body))?;
                         peer_acked = true;
                     }
@@ -285,7 +398,7 @@ fn lcp_phase<S: Read + Write>(conn: &mut PppConn<S>, magic: &[u8; 4]) -> Result<
             Err(e) => return Err(e),
         }
     }
-    Ok(())
+    Ok(peer_mru)
 }
 
 fn ipcp_phase<S: Read + Write>(conn: &mut PppConn<S>) -> Result<IpConfig, String> {
@@ -379,7 +492,7 @@ fn ipcp_phase<S: Read + Write>(conn: &mut PppConn<S>) -> Result<IpConfig, String
     if !dns2.is_unspecified() {
         dns.push(dns2);
     }
-    Ok(IpConfig { addr: want_ip, dns })
+    Ok(IpConfig { addr: want_ip, dns, peer_mru: None })
 }
 
 /// Build an LCP Echo-Request body (magic 0 + no data) for keepalive.
@@ -453,6 +566,50 @@ mod tests {
         assert_eq!(proto, PPP_IPV4);
         assert_eq!(payload, b"\x45\x00ping");
         // buffer fully consumed
+        assert!(r.take_frame().unwrap().is_none());
+    }
+
+    #[test]
+    fn queued_frames_coalesce_into_one_write_and_parse_back() {
+        let mut c = PppConn::new(Cursor::new(Vec::<u8>::new()));
+        c.queue(PPP_IPV4, b"\x45one").unwrap();
+        c.queue(PPP_IPV4, b"\x45two").unwrap();
+        assert!(c.get_ref().get_ref().is_empty(), "queued, not yet written");
+        c.send(PPP_LCP, b"\x09\x01\x00\x08\x00\x00\x00\x00").unwrap(); // flushes the queue first
+        let wire = c.get_ref().get_ref().clone();
+        let mut r = PppConn::new(Cursor::new(Vec::<u8>::new()));
+        r.rbuf.extend_from_slice(&wire);
+        assert_eq!(r.take_frame().unwrap().unwrap(), (PPP_IPV4, b"\x45one".to_vec()));
+        assert_eq!(r.take_frame().unwrap().unwrap(), (PPP_IPV4, b"\x45two".to_vec()));
+        assert_eq!(r.take_frame().unwrap().unwrap().0, PPP_LCP);
+        assert!(r.take_frame().unwrap().is_none());
+    }
+
+    #[test]
+    fn peer_mru_option_is_read() {
+        let body = [&opt(LCP_OPT_MAGIC, &[1, 2, 3, 4])[..], &opt(LCP_OPT_MRU, &1354u16.to_be_bytes())[..]].concat();
+        assert_eq!(mru_option(&body), Some(1354));
+        assert_eq!(mru_option(&opt(LCP_OPT_MAGIC, &[1, 2, 3, 4])), None);
+    }
+
+    #[test]
+    fn fortinet_control_record_is_demuxed_not_a_framing_error() {
+        let mut r = PppConn::new(Cursor::new(Vec::<u8>::new()));
+        // A heartbeat control record: [00 13]"GFtype\0svrhello-tun" (len 19) …
+        let mut rec = vec![0x00u8, 0x00];
+        rec.extend_from_slice(b"GFtype\0svrhello-tun");
+        let n = rec.len() as u16;
+        rec[..2].copy_from_slice(&n.to_be_bytes());
+        // … immediately followed by a normal PPP IPv4 frame.
+        let mut c = PppConn::new(Cursor::new(Vec::<u8>::new()));
+        c.send(PPP_IPV4, b"\x45data").unwrap();
+        let ppp_frame = c.get_ref().get_ref().clone();
+        r.rbuf.extend_from_slice(&rec);
+        r.rbuf.extend_from_slice(&ppp_frame);
+        // The control record comes out as FORTI_CTRL (ignored), not an error …
+        assert_eq!(r.take_frame().unwrap().unwrap().0, FORTI_CTRL);
+        // … and the stream stays in sync: the PPP frame parses right after it.
+        assert_eq!(r.take_frame().unwrap().unwrap(), (PPP_IPV4, b"\x45data".to_vec()));
         assert!(r.take_frame().unwrap().is_none());
     }
 

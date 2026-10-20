@@ -43,6 +43,18 @@ pub fn open_tun(name: &str) -> Result<(File, String), String> {
     Ok((file, actual))
 }
 
+/// Make tun reads non-blocking, so a data loop can drain every queued packet per
+/// wakeup (and send them as one batch) instead of one packet per `poll`.
+pub fn set_nonblocking(f: &File) {
+    unsafe {
+        let fd = f.as_raw_fd();
+        let fl = libc::fcntl(fd, libc::F_GETFL);
+        if fl >= 0 {
+            libc::fcntl(fd, libc::F_SETFL, fl | libc::O_NONBLOCK);
+        }
+    }
+}
+
 /// True for an IPv4 packet (version nibble 4). The data loops only forward these:
 /// every tunnel we speak (PPP IPCP, ESP next-header 4) carries IPv4 only.
 pub fn is_ipv4(pkt: &[u8]) -> bool {

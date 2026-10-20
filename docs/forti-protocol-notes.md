@@ -199,23 +199,51 @@ XML root `<sslvpn-tunnel>`; parsear:
 - `<ipv6>`: análogo (`assigned-addr ipv6 prefix-len`, `dns ipv6`). (Fase 2.)
 - Atributo root `dtls="1"` → DTLS habilitado (`dtls12=1`).
 
-## Aceleración — DTLS (UDP)   ⏳ F5 (opcional; TLS-only primero)
-- `dtls="1"` en el XML → intentar DTLS en el **mismo puerto** que TLS (443/udp) —
-  "always uses same port as TLS?" (openconnect, a confirmar con REA).
-- **Client hello DTLS** (payload del primer datagrama; VERIFICADO en openconnect, tokens
-  `clthello`/`svrhello` presentes en el binario):
+## Aceleración — DTLS (UDP)   ✅ IMPLEMENTADO + VALIDADO EN VIVO (20/10/2026)
+DTLS es **opportunistic y on-by-default**: si el XML trae `dtls="1"` se intenta DTLS;
+si algo falla o el gateway no reenvía datos, se cae a TLS de forma transparente. NO es
+PSK — es un **handshake DTLS con certificado normal** (igual que el lado TLS; openconnect
+`start_dtls_anon_handshake` usa el mismo cred store, sin verificar el cert del server).
+El SVPNCOOKIE NO es el secreto DTLS: va *dentro* del hello de aplicación.
+
+- **Puerto**: el mismo que TLS (443/udp, acá 10443/udp). Confirmado.
+- **Transporte**: `crate::gnutls` (dlopen de libgnutls en runtime, binario único; el mismo
+  módulo que usa AnyConnect para su DTLS). `DtlsSession::connect_cert`. OpenSSL/native-tls
+  no exponen DTLS; GnuTLS sí. Validado contra un `gnutls-serv --udp` local (DTLS1.2 AES-GCM).
+- **Hello de aplicación** (primer datagrama, tras el handshake DTLS):
   ```
   [u16 be len = 2 + 27 + len(cookie) + 1]
-  "GFtype\0clthello\0SVPNCOOKIE"   (27 bytes, incluye el NUL final)
+  "GFtype\0clthello\0SVPNCOOKIE\0"   (27 bytes, incluye el NUL final)
   <cookie>\0
   ```
-- **Server hello**: `be16[0]==len`, luego `"GFtype\0svrhello\0handshake"` (26B), estado
-  `"ok"` en offset 28. Si no → `DTLS_DISABLED`, seguir por TLS.
-- PSK: openconnect dice que el "secreto" es el `SVPNCOOKIE`. Ciphers PSK del binario:
-  `DHE-PSK-AES256-GCM-SHA384` etc. Derivación exacta del PSK → **RE con REA** (pendiente).
-- El binario tiene además stack **QUIC** (`clthello-tun2`, `quic_do_handshake`) → variante
-  de transporte más nueva (7.4); fuera de alcance inicial.
-- DTLS necesita el crate `openssl` directo (native-tls no expone DTLS).
+  Reenviado cada 1s hasta recibir el **svrhello** (≤5s). El cookie SAML pesa ~2KB → el
+  datagrama excede la MTU; se manda con `send_oversized` (GnuTLS fragmenta el record).
+- **Server hello**: `[be16 len]"GFtype\0svrhello\0handshake\0ok\0"`. En FortiOS 7.x
+  moderno el `type` es **`svrhello-tun`** (no `svrhello`); el parser acepta ambos y lee los
+  campos como pares `clave\0valor\0` (como el FortiClient). `handshake != ok` → cae a TLS.
+- **⚠ HALLAZGO CLAVE (lo que hacía fallar DTLS):** una vez establecido, el stream DTLS
+  **intercala records de control `GF…` (heartbeats `svrhello-tun`) ENTRE los frames PPP**.
+  openconnect los tolera porque lee **un datagrama = un frame** y descarta el que no empieza
+  con `0x5050` sin desincronizar. Nuestro `PppConn` bufferea bytes y parseaba el `GF`
+  (`magic=0x4746`) como framing PPP corrupto → desincronizaba → el túnel moría (a veces al
+  toque, a veces tras unos segundos, según cuándo cayera el primer heartbeat — por eso
+  parecía "intermitente / data-plane roto"). **Fix:** `take_frame` detecta `[be16 len]"GF"`,
+  drena `len` bytes y lo reporta como `FORTI_CTRL` (proto pseudo 0xffff, ignorado por el data
+  loop pero cuenta como RX/liveness). Nuestro keepalive propio sigue siendo el eco LCP (como
+  el `dtls_times.dpd` de openconnect = `heartbeat-interval` del XML). No hace falta responder
+  el heartbeat del gateway.
+- **Fallback robusto**: el handshake + la negociación PPP pueden andar aunque el gateway
+  después no reenvíe IP; por eso hay un *trial* en el data loop — si en `DTLS_TRIAL`=5s se
+  mandó data (`tout≥8`) y no volvió ni un frame IP (`tin==0`), se declara DTLS muerto y se
+  reconecta por TLS (acota el blackhole; auto-cura). El reconnect reusa sess/cookies sin
+  re-auth; una reconexión fallida NO re-corre el data loop sobre la conexión muerta (bug
+  arreglado). `--no-dtls` fuerza TLS.
+- **MEDIDO EN VIVO vs `SSO test GW` 203.0.113.30:10443 (SAML, 20/10/2026):** DTLS up,
+  estable 20s+ (varios heartbeats de 3s atravesados, `frame_err=0`), 0% loss; **50 pings
+  paralelos de 1200B: 79ms (DTLS) vs 253ms (TLS) ≈ 3.2× más rápido** (sin HOL blocking de
+  TCP, misma clase que el 7× de AnyConnect). Teardown limpio, resolv.conf restaurado.
+- El binario `vpn` tiene además `create_ssl_tunnel_dtls2` y stack **QUIC** (`clthello-tun2`,
+  `quic_do_handshake`) → transporte más nuevo (7.4); fuera de alcance.
 
 ---
 

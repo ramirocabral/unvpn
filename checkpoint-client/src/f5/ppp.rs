@@ -68,7 +68,11 @@ pub enum Framing {
 pub struct IpConfig {
     pub addr: Ipv4Addr,
     pub dns: Vec<Ipv4Addr>,
+    /// The MRU the gateway asked for in its LCP Configure-Request (caps our MTU).
+    pub peer_mru: Option<u16>,
 }
+
+pub use crate::forti::ppp::Transport;
 
 // ───────────────────────── buffered connection ──────────────────────────────
 
@@ -78,8 +82,13 @@ pub struct PppConn<S> {
     stream: S,
     rbuf: Vec<u8>,
     framing: Framing,
-    /// Socket fd to wait on when a non-blocking write would block.
+    /// Socket fd to wait on when a non-blocking write would block. Set once the link
+    /// is in the (non-blocking) data phase; then `fill` also drains to `WouldBlock`.
     poll_fd: Option<i32>,
+    /// Data frames queued by [`PppConn::queue`], written in one go by `flush_tx`.
+    txbuf: Vec<u8>,
+    /// Several frames per write (TLS byte stream) vs exactly one per record (DTLS).
+    coalesce: bool,
 }
 
 /// A read returned no data (timeout / WouldBlock).
@@ -87,7 +96,31 @@ pub const WOULDBLOCK: &str = "__wouldblock__";
 
 impl<S: Read + Write> PppConn<S> {
     pub fn new(stream: S, framing: Framing) -> Self {
-        PppConn { stream, rbuf: Vec::with_capacity(4096), framing, poll_fd: None }
+        PppConn { stream, rbuf: Vec::with_capacity(4096), framing, poll_fd: None, txbuf: Vec::new(), coalesce: true }
+    }
+
+    /// One frame per write (record-oriented transports such as DTLS).
+    pub fn set_record_mode(&mut self) {
+        self.coalesce = false;
+    }
+
+    pub fn get_mut(&mut self) -> &mut S {
+        &mut self.stream
+    }
+
+    /// Erase the transport type, keeping any buffered input.
+    pub fn boxed(self) -> PppConn<Box<dyn Transport>>
+    where
+        S: 'static,
+    {
+        PppConn {
+            stream: Box::new(self.stream),
+            rbuf: self.rbuf,
+            framing: self.framing,
+            poll_fd: self.poll_fd,
+            txbuf: self.txbuf,
+            coalesce: self.coalesce,
+        }
     }
 
     /// The stream is now non-blocking: make `send` wait for `fd` to be writable
@@ -114,6 +147,45 @@ impl<S: Read + Write> PppConn<S> {
     /// (0x0021 / 0x0057) use ACFC+PFC — a bare 1-byte protocol, no `FF 03` — which
     /// is exactly what F5's own client emits (`[0xf500][len][0x21][ip]`).
     pub fn send(&mut self, proto: u16, payload: &[u8]) -> Result<(), String> {
+        self.flush_tx()?;
+        let out = self.encode(proto, payload);
+        self.write_out(&out)
+    }
+
+    /// Queue a data frame; `flush_tx` writes the batch (one TLS record + one syscall
+    /// per burst on a byte stream). In record mode it is just `send`.
+    pub fn queue(&mut self, proto: u16, payload: &[u8]) -> Result<(), String> {
+        if !self.coalesce {
+            return self.send(proto, payload);
+        }
+        let out = self.encode(proto, payload);
+        self.txbuf.extend_from_slice(&out);
+        if self.txbuf.len() >= 16 * 1024 {
+            self.flush_tx()?;
+        }
+        Ok(())
+    }
+
+    /// Write out the frames queued by `queue`.
+    pub fn flush_tx(&mut self) -> Result<(), String> {
+        if self.txbuf.is_empty() {
+            return Ok(());
+        }
+        let out = std::mem::take(&mut self.txbuf);
+        let r = self.write_out(&out);
+        self.txbuf = out;
+        self.txbuf.clear();
+        r
+    }
+
+    fn write_out(&mut self, out: &[u8]) -> Result<(), String> {
+        crate::sysnet::write_all_polling(&mut self.stream, self.poll_fd, out).map_err(|e| format!("ppp {e}"))?;
+        self.stream.flush().ok();
+        Ok(())
+    }
+
+    /// One frame under the active framing (see `send` for the header rules).
+    fn encode(&self, proto: u16, payload: &[u8]) -> Vec<u8> {
         let mut frame = Vec::with_capacity(4 + payload.len());
         if proto < 0x0100 {
             frame.push(proto as u8);
@@ -124,7 +196,7 @@ impl<S: Read + Write> PppConn<S> {
         }
         frame.extend_from_slice(payload);
 
-        let out = match self.framing {
+        match self.framing {
             Framing::F5 => {
                 let mut o = Vec::with_capacity(4 + frame.len());
                 o.extend_from_slice(&F5_MAGIC.to_be_bytes());
@@ -133,10 +205,7 @@ impl<S: Read + Write> PppConn<S> {
                 o
             }
             Framing::Hdlc => hdlc_encode(&frame),
-        };
-        crate::sysnet::write_all_polling(&mut self.stream, self.poll_fd, &out).map_err(|e| format!("ppp {e}"))?;
-        self.stream.flush().ok();
-        Ok(())
+        }
     }
 
     /// Pull one complete frame from the buffer without doing I/O. Returns
@@ -213,17 +282,28 @@ impl<S: Read + Write> PppConn<S> {
 
     /// Do one `read` into the buffer. Maps timeout/WouldBlock to `Ok(0)`.
     pub fn fill(&mut self) -> Result<usize, String> {
+        // One read while negotiating (blocking with a timeout); in the non-blocking
+        // data phase, drain to WouldBlock — TLS keeps decrypted records in its own
+        // buffer where poll(fd) can't see them.
         let mut tmp = [0u8; 16384];
-        match self.stream.read(&mut tmp) {
-            Ok(0) => Err("tunnel closed by peer".into()),
-            Ok(n) => {
-                self.rbuf.extend_from_slice(&tmp[..n]);
-                Ok(n)
+        let mut total = 0;
+        loop {
+            match self.stream.read(&mut tmp) {
+                Ok(0) if total > 0 => return Ok(total),
+                Ok(0) => return Err("tunnel closed by peer".into()),
+                Ok(n) => {
+                    self.rbuf.extend_from_slice(&tmp[..n]);
+                    total += n;
+                    if self.poll_fd.is_none() || total >= 256 * 1024 {
+                        return Ok(total);
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {
+                    return Ok(total)
+                }
+                Err(e) => return Err(format!("tunnel read: {e}")),
             }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {
-                Ok(0)
-            }
-            Err(e) => Err(format!("tunnel read: {e}")),
         }
     }
 
@@ -381,11 +461,19 @@ fn iter_opts(body: &[u8]) -> Vec<(u8, Vec<u8>)> {
 /// a read timeout set.
 pub fn negotiate<S: Read + Write>(conn: &mut PppConn<S>, seed_ip: Option<Ipv4Addr>) -> Result<IpConfig, String> {
     let magic: [u8; 4] = crate::ike::crypto::random(4).try_into().unwrap_or([1, 2, 3, 4]);
-    lcp_phase(conn, &magic)?;
-    ipcp_phase(conn, seed_ip.unwrap_or(Ipv4Addr::UNSPECIFIED))
+    let peer_mru = lcp_phase(conn, &magic)?;
+    let mut ipc = ipcp_phase(conn, seed_ip.unwrap_or(Ipv4Addr::UNSPECIFIED))?;
+    ipc.peer_mru = peer_mru;
+    Ok(ipc)
 }
 
-fn lcp_phase<S: Read + Write>(conn: &mut PppConn<S>, magic: &[u8; 4]) -> Result<(), String> {
+/// The MRU option in a peer's LCP Configure-Request body, if any.
+fn mru_option(body: &[u8]) -> Option<u16> {
+    iter_opts(body).into_iter().find(|(t, v)| *t == LCP_OPT_MRU && v.len() == 2).map(|(_, v)| u16::from_be_bytes([v[0], v[1]]))
+}
+
+/// LCP to completion. Returns the gateway's MRU (from its Configure-Request).
+fn lcp_phase<S: Read + Write>(conn: &mut PppConn<S>, magic: &[u8; 4]) -> Result<Option<u16>, String> {
     let mut our_opts = Vec::new();
     our_opts.extend_from_slice(&opt(LCP_OPT_MRU, &DEFAULT_MRU.to_be_bytes()));
     our_opts.extend_from_slice(&opt(LCP_OPT_MAGIC, magic));
@@ -393,6 +481,7 @@ fn lcp_phase<S: Read + Write>(conn: &mut PppConn<S>, magic: &[u8; 4]) -> Result<
     let mut id = 1u8;
     let mut our_acked = false;
     let mut peer_acked = false;
+    let mut peer_mru = None;
     conn.send(PPP_LCP, &ctrl(CONF_REQ, id, &our_opts))?;
 
     let mut tries = 0;
@@ -402,6 +491,7 @@ fn lcp_phase<S: Read + Write>(conn: &mut PppConn<S>, magic: &[u8; 4]) -> Result<
                 let Some(c) = parse_ctrl(&payload) else { continue };
                 match c.code {
                     CONF_REQ => {
+                        peer_mru = mru_option(&c.body).or(peer_mru);
                         conn.send(PPP_LCP, &ctrl(CONF_ACK, c.id, &c.body))?;
                         peer_acked = true;
                     }
@@ -433,7 +523,7 @@ fn lcp_phase<S: Read + Write>(conn: &mut PppConn<S>, magic: &[u8; 4]) -> Result<
             Err(e) => return Err(e),
         }
     }
-    Ok(())
+    Ok(peer_mru)
 }
 
 fn ipcp_phase<S: Read + Write>(conn: &mut PppConn<S>, seed_ip: Ipv4Addr) -> Result<IpConfig, String> {
@@ -528,7 +618,7 @@ fn ipcp_phase<S: Read + Write>(conn: &mut PppConn<S>, seed_ip: Ipv4Addr) -> Resu
     if !dns2.is_unspecified() {
         dns.push(dns2);
     }
-    Ok(IpConfig { addr: want_ip, dns })
+    Ok(IpConfig { addr: want_ip, dns, peer_mru: None })
 }
 
 /// Build an LCP Echo-Request body — used for dead-peer detection (openconnect's
