@@ -7,15 +7,15 @@ description = "Native Linux Check Point VPN client (reverse-engineered CCC/IKE).
 [dependencies]
 native-tls = "0.2.12"
 openssl = "0.10"
-# Raw OpenSSL FFI — needed for the Cisco AnyConnect DTLS "fake session resume"
-# handshake, which native-tls can't express (hand-built SSL_SESSION + DTLS1_BAD_VER).
-openssl-sys = "0.9"
 libc = "0.2"
 
 [features]
 # Statically link OpenSSL (built from source) for a distro-agnostic binary.
 # Dev builds stay fast on the system OpenSSL; release/packaging uses this.
-vendored = ["openssl/vendored", "native-tls/vendored", "openssl-sys/vendored"]
+# NOTE: the AnyConnect DTLS fast-path links libgnutls dynamically (for
+# gnutls_session_set_premaster); a fully-static build would need gnutls handled too
+# (follow-up: feature-gate the DTLS path). CSTP/TCP works without gnutls.
+vendored = ["openssl/vendored", "native-tls/vendored"]
 
 [[bin]]
 name = "cpvpn"

@@ -282,9 +282,10 @@ fn open_channel(session: &Session, want_addr: Option<Ipv4Addr>) -> Result<(Chann
     let secret_hex: String = dtls_master.iter().map(|b| format!("{b:02X}")).collect();
     req.push_str(&format!("X-DTLS-Master-Secret: {secret_hex}\r\n"));
     req.push_str("X-DTLS-CipherSuite: DHE-RSA-AES256-SHA:AES256-SHA:AES128-SHA\r\n");
-    // Also offer DTLS 1.2 AEAD so a modern ASA gives us the DTLS1.2 resume path
-    // (classic DTLS1_BAD_VER is refused by newer gateways with a handshake alert).
-    req.push_str("X-DTLS12-CipherSuite: AES256-GCM-SHA384:AES128-GCM-SHA256\r\n");
+    // Offer DTLS 1.2 AEAD (ECDHE first) so a modern ASA gives us the DTLS1.2 resume;
+    // the gateway echoes the chosen name back in X-DTLS12-CipherSuite. The names must
+    // match what the GnuTLS resume expects (see dtls::DTLS12_CIPHERSUITES).
+    req.push_str(&format!("X-DTLS12-CipherSuite: {}\r\n", dtls::DTLS12_CIPHERSUITES));
     req.push_str("\r\n");
     tls.write_all(req.as_bytes()).map_err(|e| format!("CONNECT write: {e}"))?;
     tls.flush().ok();

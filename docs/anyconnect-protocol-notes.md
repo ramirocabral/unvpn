@@ -134,6 +134,26 @@ si el handshake no cierra, el cliente se queda en CSTP (fallback limpio); DTLS l
 sólo DATA, CSTP sigue con el control (DPD/keepalive) y es el ancla de liveness +
 reconexión. DTLS-DPD propio: si el UDP se calla, se cae a CSTP sin matar el túnel.
 
+### ✅ RESUELTO con GnuTLS (gw-a, live, 19/10)
+El data-plane DTLS **funciona end-to-end contra gw-a** usando **GnuTLS** para el
+socket DTLS (OpenSSL sigue para el TLS/CSTP). `anyconnect/dtls.rs` reescrito a FFI
+de **libgnutls**: `gnutls_init(CLIENT|DATAGRAM|NONBLOCK|NO_DEFAULT_EXTENSIONS)` —
+el flag `NO_DEFAULT_EXTENSIONS` es la clave (produce el ClientHello mínimo sin
+`supported_groups`/`ec_point_formats`/EMS que OpenSSL agrega sí o sí) —
+`gnutls_priority_set_direct` con el priority de openconnect, `gnutls_record_disable_padding`,
+`gnutls_session_set_premaster(CLIENT, version, kx, cipher, mac, COMP_NULL, master{48},
+session_id{32})`, `gnutls_transport_set_int2(fd,fd)`, `gnutls_handshake` (NONBLOCK +
+poll). Tabla cipher→(prio,version,kx,cipher,mac) espejo de openconnect `gnutls-dtls.c`
+(DTLS1.2 ECDHE-RSA-AES-GCM + clásicos DTLS1.0). El CONNECT ofrece
+`X-DTLS12-CipherSuite: ECDHE-RSA-AES256-GCM-SHA384:…` (ECDHE primero, nombres estilo
+GnuTLS) y el ASA elige/eco `ECDHE-RSA-AES256-GCM-SHA384`. **Medido vs CSTP: 100 dig
+paralelos 287ms (DTLS) vs 2087ms (CSTP) — 7× más rápido, empata openconnect (294ms);
+ping 0% loss, estable, sin fallback.** libgnutls se linkea dinámico (dev ok);
+follow-up: feature-gate para el build estático/musl (CSTP anda sin gnutls).
+
+Lo que sigue abajo es el **registro del diagnóstico** que llevó a GnuTLS (por qué
+OpenSSL no alcanza), se deja por valor de RE:
+
 **⚠ MURO contra ASAs modernos (gw-a, 19/10) — diagnosticado con captura (tcpdump +
 tshark) del ClientHello de openconnect vs el mío.** El mecanismo es **resume**
 (session_id + master-secret), NO full-handshake: confirmado. openconnect (GnuTLS)

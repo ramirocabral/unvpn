@@ -47,7 +47,6 @@ dependencies = [
  "libc",
  "native-tls",
  "openssl",
- "openssl-sys",
 ]
 
 [[package]]
