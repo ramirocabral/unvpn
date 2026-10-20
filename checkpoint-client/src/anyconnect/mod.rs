@@ -19,6 +19,7 @@
 pub mod auth;
 pub mod config;
 pub mod cstp;
+pub mod dtls;
 pub mod http;
 pub mod xml;
 

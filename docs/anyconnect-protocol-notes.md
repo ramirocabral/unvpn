@@ -117,13 +117,33 @@ pre-VPN, excludes en esa ruta, includes/default por el tun — todo en un
 `ip -batch`; en teardown se borra sólo lo que agregamos (`ip_batch_failed`).
 IPv4-only (se descartan paquetes no-v4; IPv6 deshabilitado en el tun).
 
-## DTLS (pendiente)
-Cisco AnyConnect DTLS = **resumen de sesión falso** (no PSK estándar): se fabrica
-un `SSL_SESSION` con `X-DTLS-Session-ID` + `X-DTLS-Master-Secret` (DTLS1_BAD_VER /
-`SSL_OP_CISCO_ANYCONNECT`) o PSK-NEGOTIATE en ASAs nuevos (master secret derivado
-del TLS con `SSL_export_keying_material`, label `PSK-NEGOTIATE`). Frames DTLS: 1
-byte de tipo (mismos códigos) + payload. Ver openconnect `openssl-dtls.c` /
-`dtls.c`. El data-plane actual es CSTP-only (TLS), que todo gateway soporta.
+## DTLS (implementado parcial — `anyconnect/dtls.rs`)
+Cisco AnyConnect DTLS = **resumen de sesión falso**: cliente y server ya comparten
+el master-secret (`X-DTLS-Master-Secret` que mandó el cliente en el CONNECT +
+`X-DTLS-Session-ID` que devolvió el server), así que el cliente "resume" una sesión
+que nunca existió. Implementado vía **FFI de openssl-sys** (native-tls no lo
+expresa): se fabrica un `SSL_SESSION` ASN.1 (`d2i_SSL_SESSION`) con id+secret+cipher
+y se hace `SSL_connect` sobre un BIO datagram. Dos variantes:
+- **Clásico** (`DTLS1_BAD_VER` + `SSL_OP_CISCO_ANYCONNECT`, cipher `AES256-SHA`…).
+- **DTLS 1.2** (min/max proto = DTLS1.2, cipher `AES256-GCM-SHA384` id 0x009D…),
+  cuando el gateway manda `X-DTLS12-CipherSuite` (se ofrece en el CONNECT).
+
+Frames DTLS: **1 byte de tipo** (mismos códigos que CSTP: 0 DATA, 3/4 DPD, 7 KA,
+5 disconnect) + payload — sin el header STF de 8 bytes. Data plane **best-effort**:
+si el handshake no cierra, el cliente se queda en CSTP (fallback limpio); DTLS lleva
+sólo DATA, CSTP sigue con el control (DPD/keepalive) y es el ancla de liveness +
+reconexión. DTLS-DPD propio: si el UDP se calla, se cae a CSTP sin matar el túnel.
+
+**⚠ MURO contra ASAs modernos (gw-a, 19/10):** gw-a **rechaza ambos** resumes
+(legacy y 1.2) con `handshake_failure` (alert 40). Causa: openconnect lo logra con
+**GnuTLS** (`gnutls_session_set_premaster`, que inyecta el master-secret en una
+sesión DTLS1.2 *negociada* tipo ECDHE sin handshake real) — **OpenSSL no tiene API
+pública equivalente**; su único camino de inyección es el resume de `SSL_SESSION`,
+que el ASA moderno no acepta. Verificado: openconnect contra gw-a usa GnuTLS y
+negocia `(DTLS1.2)-(ECDHE-RSA)-(AES-256-GCM)`. ⇒ **El resume OpenSSL sirve para ASAs
+clásicos, no para gw-a.** Para DTLS en gw-a haría falta **linkear GnuTLS** para el
+socket DTLS (usar `gnutls_session_set_premaster`) manteniendo OpenSSL para el TLS —
+sub-proyecto aparte. Ver openconnect `gnutls-dtls.c` vs `openssl-dtls.c`.
 
 ## Estado
 - **VALIDADO END-TO-END contra un ASA real (gw-a `203.0.113.20`, 19/10/2026)** con

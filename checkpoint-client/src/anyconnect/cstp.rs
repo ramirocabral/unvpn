@@ -21,6 +21,7 @@
 
 use super::auth::Session;
 use super::config::{self, TunnelConfig};
+use super::dtls;
 use super::http;
 use crate::sysnet;
 use crate::tun;
@@ -60,6 +61,9 @@ struct Channel {
     fd: i32,
     /// Bytes read from the socket but not yet split into frames.
     rx: Vec<u8>,
+    /// The 48-byte `X-DTLS-Master-Secret` sent in this channel's CONNECT — reused
+    /// to resume the DTLS session (must match what the gateway got).
+    dtls_master: [u8; 48],
 }
 
 impl Channel {
@@ -140,9 +144,6 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
         "# CSTP options: mtu {mtu} routes {} exclude {} default_route {} keepalive {} dpd {} rekey {} dtls_port {} dtls_cipher {:?}",
         cfg.split_include.len(), cfg.split_exclude.len(), cfg.default_route, cfg.keepalive, cfg.dpd, cfg.rekey, cfg.dtls_port, cfg.dtls_cipher
     );
-    if cfg.dtls_port != 0 {
-        out!("# note: gateway offers DTLS (UDP {}) — faster data plane; not yet implemented (CSTP/TLS only)", cfg.dtls_port);
-    }
     // This exact "— IP <ip>  DNS [..]" shape is what the GUI's log parser reads.
     println!("# ✅ CSTP up — IP {assigned}  DNS {:?}  (mtu {mtu})", dns);
     if let Some(b) = &cfg.banner {
@@ -185,15 +186,19 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
     out!("# liveness: DPD {}s, keepalive {}s, dead-peer {}s", ka.dpd_secs, ka.keepalive_secs, ka.dpd_dead_secs);
     out!("# ✅ TUNNEL UP. (send 'disconnect' on stdin or SIGTERM to stop)");
 
+    // 4b) DTLS fast path (best-effort): data on UDP, CSTP kept for control + fallback.
+    let mut dtls = try_dtls(session, &chan, &cfg, opts.no_dtls);
+
     // 5) Data loop wrapped in transparent reconnection, like the F5 back-end.
     let mut fail_streak = 0u32;
     let final_result: Result<(), String> = 'session: loop {
-        let outcome = data_loop(&mut chan, &mut tun_file, &ka);
+        let outcome = data_loop(&mut chan, &mut dtls, &mut tun_file, &ka);
         if AC_STOP.load(Ordering::SeqCst) {
             break 'session Ok(());
         }
         let reason = outcome.err().unwrap_or_else(|| "closed by peer".into());
         out!("# tunnel dropped ({reason})");
+        dtls = None; // the DTLS session is tied to this CSTP channel; rebuild after reconnect
 
         let mut reconnected = false;
         while fail_streak < MAX_RECONNECT_TRIES {
@@ -216,6 +221,7 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
                         let _ = tun::ip(&["addr", "add", &format!("{new_ip}/{}", newcfg.prefix()), "dev", &tun_name]);
                     }
                     out!("# ✅ reconnected — tunnel back up (IP {new_ip})");
+                    dtls = try_dtls(session, &chan, &newcfg, opts.no_dtls);
                     reconnected = true;
                     break;
                 }
@@ -232,7 +238,11 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
 
     // 6) Teardown: BYE frame, then logout, then NetRestore (DNS + routes) on drop.
     out!("# disconnecting — sending BYE, restoring DNS/routes …");
+    if let Some(d) = &dtls {
+        let _ = d.send(AC_DISCONN, &[0xb0]);
+    }
     let _ = chan.send(AC_DISCONN, &[0xb0]);
+    drop(dtls);
     drop(chan);
     let _ = http::request(&session.ep, "POST", "/+webvpn+/webvpn_logout.html", &mut session.cookies, None, b"");
     drop(restore);
@@ -266,14 +276,15 @@ fn open_channel(session: &Session, want_addr: Option<Ipv4Addr>) -> Result<(Chann
         req.push_str(&format!("X-CSTP-Address: {a}\r\n"));
     }
     // DTLS master secret must be 48 real random bytes (not zeros) or the ASA won't
-    // offer DTLS — it echoes nothing and the data plane stays on CSTP/TCP. We send a
-    // genuine secret so the gateway advertises `X-DTLS-Port`/cipher; the DTLS data
-    // plane itself is a follow-up, but eliciting the offer is the prerequisite.
-    let mut secret = [0u8; 48];
-    let _ = openssl::rand::rand_bytes(&mut secret);
-    let secret_hex: String = secret.iter().map(|b| format!("{b:02X}")).collect();
+    // offer DTLS. We keep these exact bytes to resume the DTLS session afterwards.
+    let mut dtls_master = [0u8; 48];
+    let _ = openssl::rand::rand_bytes(&mut dtls_master);
+    let secret_hex: String = dtls_master.iter().map(|b| format!("{b:02X}")).collect();
     req.push_str(&format!("X-DTLS-Master-Secret: {secret_hex}\r\n"));
     req.push_str("X-DTLS-CipherSuite: DHE-RSA-AES256-SHA:AES256-SHA:AES128-SHA\r\n");
+    // Also offer DTLS 1.2 AEAD so a modern ASA gives us the DTLS1.2 resume path
+    // (classic DTLS1_BAD_VER is refused by newer gateways with a handshake alert).
+    req.push_str("X-DTLS12-CipherSuite: AES256-GCM-SHA384:AES128-GCM-SHA256\r\n");
     req.push_str("\r\n");
     tls.write_all(req.as_bytes()).map_err(|e| format!("CONNECT write: {e}"))?;
     tls.flush().ok();
@@ -292,7 +303,39 @@ fn open_channel(session: &Session, want_addr: Option<Ipv4Addr>) -> Result<(Chann
 
     // Non-blocking for the poll loop; seed rx with any leftover body bytes.
     tls.get_ref().set_nonblocking(true).ok();
-    Ok((Channel { tls, fd, rx: resp.body }, cfg))
+    Ok((Channel { tls, fd, rx: resp.body, dtls_master }, cfg))
+}
+
+/// Try to bring up the DTLS fast path for this channel (best-effort). Returns
+/// `None` when the gateway offered no DTLS, `--no-dtls` was set, or the handshake
+/// didn't complete — the caller just stays on CSTP, which always works.
+fn try_dtls(session: &Session, chan: &Channel, cfg: &TunnelConfig, no_dtls: bool) -> Option<dtls::Dtls> {
+    if no_dtls || cfg.dtls_port == 0 || cfg.dtls_session_id.is_empty() {
+        return None;
+    }
+    // Prefer the DTLS 1.2 path when the gateway offered it (modern ASA); else the
+    // classic DTLS1_BAD_VER resume.
+    let dtls12 = cfg.dtls12_cipher.is_some();
+    let cipher = if dtls12 {
+        cfg.dtls12_cipher.clone().unwrap_or_default()
+    } else {
+        cfg.dtls_cipher.clone().unwrap_or_default()
+    };
+    let gw = match resolve_v4(&session.ep.host, session.ep.port) {
+        Ok(ip) => ip,
+        Err(_) => return None,
+    };
+    out!("# trying DTLS (UDP {} · {cipher} · {}) …", cfg.dtls_port, if dtls12 { "DTLSv1.2" } else { "DTLSv1-BAD" });
+    match dtls::connect(gw, cfg.dtls_port, &cfg.dtls_session_id, &chan.dtls_master, &cipher, dtls12, Duration::from_secs(4)) {
+        Ok(d) => {
+            out!("# ✅ DTLS up — data plane on UDP {} (faster; CSTP kept for control + fallback)", cfg.dtls_port);
+            Some(d)
+        }
+        Err(e) => {
+            out!("# DTLS unavailable ({e}) — staying on CSTP/TCP");
+            None
+        }
+    }
 }
 
 /// Liveness timers for one data-loop run.
@@ -302,26 +345,43 @@ struct Liveness {
     dpd_dead_secs: u64,
 }
 
-/// The poll(2) packet pump. Ok on clean stop, Err on tunnel failure (→ reconnect).
-fn data_loop(chan: &mut Channel, tun_file: &mut std::fs::File, ka: &Liveness) -> Result<(), String> {
+/// The poll(2) packet pump. Ok on clean stop, Err on CSTP failure (→ reconnect).
+///
+/// When `dtls` is up it carries the DATA packets (UDP, no TCP head-of-line
+/// blocking); the CSTP TCP stream still carries control (DPD/keepalive/disconnect)
+/// and is the liveness anchor + reconnect trigger. If the DTLS path goes quiet
+/// (UDP blocked mid-session) it's dropped and data silently falls back to CSTP —
+/// the tunnel never dies just because UDP did.
+fn data_loop(
+    chan: &mut Channel,
+    dtls: &mut Option<dtls::Dtls>,
+    tun_file: &mut std::fs::File,
+    ka: &Liveness,
+) -> Result<(), String> {
     let tun_fd = tun_file.as_raw_fd();
     let sock_fd = chan.fd;
     let (mut tin, mut tout, mut rx) = (0u64, 0u64, 0u64);
-    let mut last_rx = Instant::now();
-    let mut last_dpd = Instant::now();
-    let mut last_tx = Instant::now();
-    let mut last_stats = Instant::now();
+    let now = Instant::now();
+    let mut last_rx = now; // last CSTP frame (liveness anchor)
+    let mut last_dpd = now;
+    let mut last_tx = now;
+    let mut last_stats = now;
+    let mut last_dtls_rx = now;
+    let mut last_dtls_dpd = now;
     let mut buf = [0u8; 2048];
 
     loop {
         if AC_STOP.load(Ordering::SeqCst) {
             return Ok(());
         }
+        let dtls_fd = dtls.as_ref().map(|d| d.fd()).unwrap_or(-1);
         let mut fds = [
             libc::pollfd { fd: tun_fd, events: libc::POLLIN, revents: 0 },
             libc::pollfd { fd: sock_fd, events: libc::POLLIN, revents: 0 },
+            libc::pollfd { fd: dtls_fd, events: libc::POLLIN, revents: 0 },
         ];
-        let n = unsafe { libc::poll(fds.as_mut_ptr(), 2, 1000) };
+        let nfds = if dtls_fd >= 0 { 3 } else { 2 };
+        let n = unsafe { libc::poll(fds.as_mut_ptr(), nfds, 1000) };
         if n < 0 {
             let e = std::io::Error::last_os_error();
             if e.kind() == std::io::ErrorKind::Interrupted {
@@ -330,12 +390,25 @@ fn data_loop(chan: &mut Channel, tun_file: &mut std::fs::File, ka: &Liveness) ->
             return Err(format!("poll: {e}"));
         }
 
-        // tun → tunnel.
+        // tun → tunnel: prefer DTLS; on a DTLS send error, drop to CSTP for good.
         if fds[0].revents & libc::POLLIN != 0 {
             match tun_file.read(&mut buf) {
                 Ok(0) => return Err("tun closed".into()),
                 Ok(m) if tun::is_ipv4(&buf[..m]) => {
-                    chan.send(AC_DATA, &buf[..m])?;
+                    let sent_dtls = match dtls.as_ref() {
+                        Some(d) => match d.send(AC_DATA, &buf[..m]) {
+                            Ok(()) => true,
+                            Err(e) => {
+                                out!("# DTLS send failed ({e}) — falling back to CSTP");
+                                *dtls = None;
+                                false
+                            }
+                        },
+                        None => false,
+                    };
+                    if !sent_dtls {
+                        chan.send(AC_DATA, &buf[..m])?;
+                    }
                     tout += 1;
                     last_tx = Instant::now();
                 }
@@ -345,7 +418,34 @@ fn data_loop(chan: &mut Channel, tun_file: &mut std::fs::File, ka: &Liveness) ->
             }
         }
 
-        // tunnel → tun (drain every complete frame).
+        // DTLS → tun (data + its own DPD). A read error disables DTLS, not the tunnel.
+        if dtls_fd >= 0 && fds[2].revents & (libc::POLLIN | libc::POLLHUP) != 0 {
+            loop {
+                let Some(d) = dtls.as_ref() else { break };
+                match d.recv() {
+                    Ok(Some((AC_DATA, payload))) => {
+                        last_dtls_rx = Instant::now();
+                        if tun_file.write_all(&payload).is_ok() {
+                            tin += 1;
+                        }
+                    }
+                    Ok(Some((AC_DPD_OUT, _))) => {
+                        last_dtls_rx = Instant::now();
+                        let _ = d.send(AC_DPD_RESP, &[]);
+                    }
+                    Ok(Some((AC_DPD_RESP, _))) | Ok(Some((AC_KEEPALIVE, _))) => last_dtls_rx = Instant::now(),
+                    Ok(Some((_other, _))) => last_dtls_rx = Instant::now(),
+                    Ok(None) => break,
+                    Err(e) => {
+                        out!("# DTLS read error ({e}) — falling back to CSTP");
+                        *dtls = None;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // CSTP → tun (drain every complete frame). Control always lives here.
         if fds[1].revents & (libc::POLLIN | libc::POLLHUP) != 0 {
             if !chan.fill()? {
                 return Err("gateway closed the tunnel".into());
@@ -385,23 +485,36 @@ fn data_loop(chan: &mut Channel, tun_file: &mut std::fs::File, ka: &Liveness) ->
             }
         }
 
-        // DPD: prod the gateway if we've heard nothing for dpd_secs.
+        // CSTP DPD: prod the gateway if we've heard nothing for dpd_secs.
         if ka.dpd_secs > 0 && last_rx.elapsed().as_secs() >= ka.dpd_secs && last_dpd.elapsed().as_secs() >= ka.dpd_secs / 2 {
             chan.send(AC_DPD_OUT, &[])?;
             last_dpd = Instant::now();
             last_tx = Instant::now();
         }
-        // Keepalive: if we haven't *sent* anything for keepalive_secs.
+        // CSTP keepalive: if we haven't *sent* anything for keepalive_secs.
         if ka.keepalive_secs > 0 && last_tx.elapsed().as_secs() >= ka.keepalive_secs {
             chan.send(AC_KEEPALIVE, &[])?;
             last_tx = Instant::now();
         }
-        // Dead peer → reconnect.
+        // DTLS DPD + dead-peer: keep the UDP path probed; if it goes quiet, drop to
+        // CSTP (don't kill the tunnel — CSTP's own dead-peer check below does that).
+        if let Some(d) = dtls.as_ref() {
+            if ka.dpd_secs > 0 && last_dtls_dpd.elapsed().as_secs() >= ka.dpd_secs {
+                let _ = d.send(AC_DPD_OUT, &[]);
+                last_dtls_dpd = Instant::now();
+            }
+            if last_dtls_rx.elapsed().as_secs() >= ka.dpd_dead_secs {
+                out!("# DTLS went quiet for {}s — falling back to CSTP", last_dtls_rx.elapsed().as_secs());
+                *dtls = None;
+            }
+        }
+        // CSTP dead peer → reconnect.
         if last_rx.elapsed().as_secs() >= ka.dpd_dead_secs {
             return Err(format!("no data from gateway for {}s (dead peer)", last_rx.elapsed().as_secs()));
         }
         if last_stats.elapsed().as_secs() >= 10 {
-            out!("#  stats: rx_frames={rx} tun_in={tin} tun_out={tout}");
+            let path = if dtls.is_some() { "DTLS" } else { "CSTP" };
+            out!("#  stats: path={path} rx_frames={rx} tun_in={tin} tun_out={tout}");
             last_stats = Instant::now();
         }
     }

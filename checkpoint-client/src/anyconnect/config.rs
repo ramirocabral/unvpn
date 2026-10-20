@@ -54,8 +54,14 @@ pub struct TunnelConfig {
     // DTLS.
     pub dtls_port: u16,
     pub dtls_cipher: Option<String>,
+    /// `X-DTLS12-CipherSuite`: the server's chosen DTLS 1.2 cipher. When set, the
+    /// gateway is a modern ASA that wants DTLS 1.2 (not the legacy DTLS1_BAD_VER).
+    pub dtls12_cipher: Option<String>,
     pub dtls_keepalive: u32,
     pub dtls_dpd: u32,
+    /// `X-DTLS-Session-ID` decoded from hex (32 bytes) — the id for the fake
+    /// session-resume DTLS handshake.
+    pub dtls_session_id: Vec<u8>,
 }
 
 impl TunnelConfig {
@@ -65,9 +71,15 @@ impl TunnelConfig {
         for (k, v) in headers {
             let v = v.trim();
             // HTTP header names are case-insensitive; match on a lowercased suffix.
-            if let Some(name) = strip_ci(k, "X-CSTP-") {
+            // Check the `X-DTLS12-` prefix before `X-DTLS-` (they don't actually
+            // overlap — "X-DTLS1" != "X-DTLS-" — but keep the modern one explicit).
+            if let Some(name) = strip_ci(k, "X-DTLS12-") {
+                if name.eq_ignore_ascii_case("CipherSuite") {
+                    c.dtls12_cipher = Some(v.to_string());
+                }
+            } else if let Some(name) = strip_ci(k, "X-CSTP-") {
                 c.apply_cstp(&name.to_ascii_lowercase(), v);
-            } else if let Some(name) = strip_ci(k, "X-DTLS-").or_else(|| strip_ci(k, "X-DTLS12-")) {
+            } else if let Some(name) = strip_ci(k, "X-DTLS-") {
                 c.apply_dtls(&name.to_ascii_lowercase(), v);
             }
         }
@@ -113,6 +125,7 @@ impl TunnelConfig {
             "ciphersuite" => self.dtls_cipher = Some(v.to_string()),
             "keepalive" => self.dtls_keepalive = v.parse().unwrap_or(0),
             "dpd" => self.dtls_dpd = v.parse().unwrap_or(0),
+            "session-id" => self.dtls_session_id = decode_hex(v),
             _ => {}
         }
     }
@@ -164,6 +177,27 @@ fn push_route(v: &mut Vec<Route>, s: &str) {
             v.push(Route { net, prefix });
         }
     }
+}
+
+/// Decode a hex string (e.g. the 64-char DTLS session id) to bytes. Non-hex or an
+/// odd length yields an empty vec.
+fn decode_hex(s: &str) -> Vec<u8> {
+    let s = s.trim();
+    if s.len() % 2 != 0 {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(s.len() / 2);
+    let b = s.as_bytes();
+    let nyb = |c: u8| (c as char).to_digit(16).map(|d| d as u8);
+    let mut i = 0;
+    while i + 1 < b.len() {
+        match (nyb(b[i]), nyb(b[i + 1])) {
+            (Some(h), Some(l)) => out.push((h << 4) | l),
+            _ => return Vec::new(),
+        }
+        i += 2;
+    }
+    out
 }
 
 /// The banner may be URL-encoded (`%XX`) and `+`-spaced, like Cisco sends it.
@@ -240,6 +274,7 @@ mod tests {
             ("X-CSTP-Split-Include", "2001:db8::/32"),
             ("X-DTLS-Port", "443"),
             ("X-DTLS-CipherSuite", "DHE-RSA-AES256-SHA"),
+            ("X-DTLS-Session-ID", "00112233445566778899aabbccddeeff00112233445566778899AABBCCDDEEFF"),
         ]));
         assert!(!c.default_route);
         assert_eq!(c.split_include, vec![
@@ -249,6 +284,17 @@ mod tests {
         assert_eq!(c.split_exclude[0].to_cidr(), "172.16.9.0/24");
         assert_eq!(c.dtls_port, 443);
         assert_eq!(c.dtls_cipher.as_deref(), Some("DHE-RSA-AES256-SHA"));
+        assert_eq!(c.dtls_session_id.len(), 32);
+        assert_eq!(c.dtls_session_id[0], 0x00);
+        assert_eq!(c.dtls_session_id[31], 0xff);
+    }
+
+    #[test]
+    fn hex_decode() {
+        assert_eq!(decode_hex("00ff10"), vec![0x00, 0xff, 0x10]);
+        assert_eq!(decode_hex("DEAD"), vec![0xde, 0xad]);
+        assert!(decode_hex("abc").is_empty()); // odd length
+        assert!(decode_hex("zz").is_empty()); // non-hex
     }
 
     #[test]
