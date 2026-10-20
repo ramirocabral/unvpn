@@ -134,16 +134,28 @@ si el handshake no cierra, el cliente se queda en CSTP (fallback limpio); DTLS l
 sólo DATA, CSTP sigue con el control (DPD/keepalive) y es el ancla de liveness +
 reconexión. DTLS-DPD propio: si el UDP se calla, se cae a CSTP sin matar el túnel.
 
-**⚠ MURO contra ASAs modernos (gw-a, 19/10):** gw-a **rechaza ambos** resumes
-(legacy y 1.2) con `handshake_failure` (alert 40). Causa: openconnect lo logra con
-**GnuTLS** (`gnutls_session_set_premaster`, que inyecta el master-secret en una
-sesión DTLS1.2 *negociada* tipo ECDHE sin handshake real) — **OpenSSL no tiene API
-pública equivalente**; su único camino de inyección es el resume de `SSL_SESSION`,
-que el ASA moderno no acepta. Verificado: openconnect contra gw-a usa GnuTLS y
-negocia `(DTLS1.2)-(ECDHE-RSA)-(AES-256-GCM)`. ⇒ **El resume OpenSSL sirve para ASAs
-clásicos, no para gw-a.** Para DTLS en gw-a haría falta **linkear GnuTLS** para el
-socket DTLS (usar `gnutls_session_set_premaster`) manteniendo OpenSSL para el TLS —
-sub-proyecto aparte. Ver openconnect `gnutls-dtls.c` vs `openssl-dtls.c`.
+**⚠ MURO contra ASAs modernos (gw-a, 19/10) — diagnosticado con captura (tcpdump +
+tshark) del ClientHello de openconnect vs el mío.** El mecanismo es **resume**
+(session_id + master-secret), NO full-handshake: confirmado. openconnect (GnuTLS)
+manda este ClientHello que el ASA **acepta**: record version **0xfefd**, 1 cipher
+**`TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384` (0xC030)**, session_id = el
+`X-DTLS-Session-ID`, extensiones = {session_ticket, signature_algorithms,
+record_size_limit, renegotiation_info} — **sin `supported_groups` ni
+`ec_point_formats`, sin `extended_master_secret`**. Mis fixes a partir de eso:
+(1) usar **0xC030** (no 0x009D RSA — el header Cisco `AES256-GCM-SHA384` significa la
+variante ECDHE; con 0x009D → `handshake_failure` alert 40); (2) **EMS off**
+(`SSL_OP_NO_EXTENDED_MASTER_SECRET = SSL_OP_BIT(0) = 0x1`; en un resume ofrecer EMS
+fuerza al server a rechazar por RFC 7627). Con esos dos: alert 40 → **alert 47
+(illegal_parameter)**. **Lo que queda y NO se puede arreglar con OpenSSL:** OpenSSL
+**siempre agrega `supported_groups` + `ec_point_formats`** al ClientHello cuando hay
+un cipher ECDHE (openconnect/GnuTLS no los manda en un resume), y usa **record
+version 0xfeff** (GnuTLS 0xfefd); restringir las curvas a P-256 no alcanzó (es la
+*presencia* de las extensiones y/o el record version). No hay API pública de OpenSSL
+para suprimir esas extensiones ni fijar el record version del ClientHello. ⇒ **Para
+DTLS contra este ASA hay que usar GnuTLS** (`gnutls_session_set_premaster`, que
+produce exactamente ese ClientHello mínimo) para el socket DTLS, manteniendo OpenSSL
+para el TLS. Ver openconnect `gnutls-dtls.c`. El resume OpenSSL implementado sirve
+para ASAs clásicos/menos estrictos; en gw-a cae a CSTP (fallback limpio, <1s).
 
 ## Estado
 - **VALIDADO END-TO-END contra un ASA real (gw-a `203.0.113.20`, 19/10/2026)** con

@@ -33,6 +33,10 @@ const DTLS1_BAD_VER: u16 = 0x0100;
 const DTLS1_2_VERSION: c_long = 0xFEFD;
 const SSL_CTRL_SET_MIN_PROTO_VERSION: c_int = 123;
 const SSL_CTRL_SET_MAX_PROTO_VERSION: c_int = 124;
+/// `SSL_OP_NO_EXTENDED_MASTER_SECRET` = `SSL_OP_BIT(0)`. A resumed session must not
+/// advertise EMS or the ASA rejects it (RFC 7627 forces a full handshake, which it
+/// won't do) — openconnect's ClientHello omits it too.
+const SSL_OP_NO_EXTENDED_MASTER_SECRET: u64 = 0x0000_0001;
 /// `SSL_OP_NO_ENCRYPT_THEN_MAC` = `SSL_OP_BIT(19)`; Cisco DTLS never did EtM, and a
 /// resumed CBC session must have it off or the MAC placement won't match.
 const SSL_OP_NO_ENCRYPT_THEN_MAC: u64 = 0x0008_0000;
@@ -113,7 +117,8 @@ pub fn connect(
     dtls12: bool,
     timeout: Duration,
 ) -> Result<Dtls, String> {
-    let cipher_id = cipher_id(cipher).ok_or_else(|| format!("unsupported DTLS cipher {cipher:?}"))?;
+    let (cipher_id, ossl_name) =
+        resolve_cipher(cipher, dtls12).ok_or_else(|| format!("unsupported DTLS cipher {cipher:?}"))?;
     let version = if dtls12 { DTLS1_2_VERSION as u16 } else { DTLS1_BAD_VER };
     if session_id.is_empty() || master_secret.len() != 48 {
         return Err("missing DTLS session id / master secret".into());
@@ -135,19 +140,21 @@ pub fn connect(
         }
         let guard = CtxGuard(ctx);
         ssl::SSL_CTX_set_security_level(ctx, 0);
+        // Both paths must omit encrypt-then-mac and extended-master-secret from the
+        // ClientHello — Cisco's resume predates them and the ASA rejects a resume
+        // that advertises them (confirmed by capturing openconnect's ClientHello).
+        let mut options = ssl::SSL_OP_LEGACY_SERVER_CONNECT | SSL_OP_NO_ENCRYPT_THEN_MAC | SSL_OP_NO_EXTENDED_MASTER_SECRET;
         if dtls12 {
             // Modern ASA: pin DTLS 1.2 and resume at it (no Cisco BAD_VER quirk).
-            ssl::SSL_CTX_set_options(ctx, ssl::SSL_OP_LEGACY_SERVER_CONNECT);
+            ssl::SSL_CTX_set_options(ctx, options);
             ssl::SSL_CTX_ctrl(ctx, SSL_CTRL_SET_MIN_PROTO_VERSION, DTLS1_2_VERSION, std::ptr::null_mut());
             ssl::SSL_CTX_ctrl(ctx, SSL_CTRL_SET_MAX_PROTO_VERSION, DTLS1_2_VERSION, std::ptr::null_mut());
         } else {
             // Classic ASA: the ancient Cisco DTLS1_BAD_VER resume.
-            ssl::SSL_CTX_set_options(
-                ctx,
-                ssl::SSL_OP_CISCO_ANYCONNECT | ssl::SSL_OP_LEGACY_SERVER_CONNECT | SSL_OP_NO_ENCRYPT_THEN_MAC,
-            );
+            options |= ssl::SSL_OP_CISCO_ANYCONNECT;
+            ssl::SSL_CTX_set_options(ctx, options);
         }
-        let clist = std::ffi::CString::new(format!("{cipher}@SECLEVEL=0")).unwrap();
+        let clist = std::ffi::CString::new(format!("{ossl_name}@SECLEVEL=0")).unwrap();
         if ssl::SSL_CTX_set_cipher_list(ctx, clist.as_ptr() as *const c_char) != 1 {
             return Err(format!("no DTLS cipher {cipher} available in OpenSSL ({})", err_stack()));
         }
@@ -205,20 +212,26 @@ pub fn connect(
     }
 }
 
-/// Map a Cisco DTLS cipher name to its TLS cipher id (low 16 bits), the classic
-/// suites an ASA offers for the resume path.
-fn cipher_id(name: &str) -> Option<u16> {
-    Some(match name {
-        // Classic (DTLS1_BAD_VER / DTLS1.0) suites.
-        "AES256-SHA" => 0x0035,
-        "AES128-SHA" => 0x002F,
-        "DES-CBC3-SHA" => 0x000A,
-        "DHE-RSA-AES256-SHA" => 0x0039,
-        "DHE-RSA-AES128-SHA" => 0x0033,
-        // DTLS 1.2 AEAD suites (modern ASA).
-        "AES128-GCM-SHA256" => 0x009C,
-        "AES256-GCM-SHA384" => 0x009D,
-        _ => return None,
+/// Map a Cisco DTLS cipher name to `(tls_cipher_id, openssl_cipher_name)` for the
+/// resume session. On the DTLS 1.2 path the ASA's shorthand (`AES256-GCM-SHA384`)
+/// means the **ECDHE-RSA** suite (0xC030), not the RSA one (0x009D) — confirmed by
+/// capturing openconnect's ClientHello; using the RSA id gets a handshake_failure.
+fn resolve_cipher(name: &str, dtls12: bool) -> Option<(u16, &'static str)> {
+    Some(if dtls12 {
+        match name {
+            "AES256-GCM-SHA384" => (0xC030, "ECDHE-RSA-AES256-GCM-SHA384"),
+            "AES128-GCM-SHA256" => (0xC02F, "ECDHE-RSA-AES128-GCM-SHA256"),
+            _ => return None,
+        }
+    } else {
+        match name {
+            "AES256-SHA" => (0x0035, "AES256-SHA"),
+            "AES128-SHA" => (0x002F, "AES128-SHA"),
+            "DES-CBC3-SHA" => (0x000A, "DES-CBC3-SHA"),
+            "DHE-RSA-AES256-SHA" => (0x0039, "DHE-RSA-AES256-SHA"),
+            "DHE-RSA-AES128-SHA" => (0x0033, "DHE-RSA-AES128-SHA"),
+            _ => return None,
+        }
     })
 }
 
@@ -377,8 +390,12 @@ mod tests {
 
     #[test]
     fn cipher_ids() {
-        assert_eq!(cipher_id("AES256-SHA"), Some(0x0035));
-        assert_eq!(cipher_id("AES128-SHA"), Some(0x002F));
-        assert_eq!(cipher_id("bogus"), None);
+        assert_eq!(resolve_cipher("AES256-SHA", false), Some((0x0035, "AES256-SHA")));
+        // The DTLS 1.2 shorthand resolves to the ECDHE-RSA suite, not the RSA one.
+        assert_eq!(resolve_cipher("AES256-GCM-SHA384", true), Some((0xC030, "ECDHE-RSA-AES256-GCM-SHA384")));
+        assert_eq!(resolve_cipher("AES128-GCM-SHA256", true), Some((0xC02F, "ECDHE-RSA-AES128-GCM-SHA256")));
+        assert_eq!(resolve_cipher("bogus", true), None);
+        // A classic name is not offered on the dtls12 path and vice-versa.
+        assert_eq!(resolve_cipher("AES256-GCM-SHA384", false), None);
     }
 }
