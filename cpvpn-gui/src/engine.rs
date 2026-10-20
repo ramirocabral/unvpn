@@ -40,6 +40,9 @@ pub enum EngineEvent {
     Ip(String),
     Dns(String),
     Prompt(AuthPrompt),
+    /// AnyConnect SAML: show `login` in the embedded SSO window and, once
+    /// `final_url` loads, answer the pending `sso` prompt with the `cookie` value.
+    SsoBrowser { login: String, final_url: String, cookie: String },
     /// The shared `state` changed (TUNNEL UP / failure / teardown) — re-sync the UI.
     StateChanged,
 }
@@ -89,6 +92,13 @@ pub fn anyconnect_saml_entry(gateway: &str) -> String {
     let hostport = g.split(['/', '?', '#']).next().unwrap_or_default();
     let hostport = hostport.strip_suffix(":443").unwrap_or(hostport);
     format!("https://{hostport}/+CSCOE+/saml/")
+}
+
+/// `https://host[:port]` of a URL (`None` if it isn't https).
+fn sso_origin(url: &str) -> Option<&str> {
+    let rest = url.strip_prefix("https://")?;
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    Some(&url[..8 + end])
 }
 
 /// Resolve the engine binary to an absolute path (pkexec requires absolute).
@@ -234,6 +244,9 @@ impl Vpn {
             let tx = self.tx.clone();
             std::thread::spawn(move || {
                 let mut saml_opened = false;
+                // AnyConnect sso-v2 (embedded-browser flow): announced before SAML-URL.
+                let mut saml_final: Option<String> = None;
+                let mut saml_cookie: Option<String> = None;
                 for line in BufReader::new(r).lines().map_while(Result::ok) {
                     let clean = line.trim_start_matches(['#', ' ']).to_string();
                     eprintln!("[engine] {clean}"); // mirror to our stderr for logs/debugging
@@ -247,11 +260,31 @@ impl Vpn {
                         // SAML: open the IdP sign-in in the user's browser (the engine
                         // runs as root and can't reach the user's session) — once, and
                         // only the exact entry point of the gateway the user typed.
+                        if let Some(rest) = clean.strip_prefix("SAML-FINAL: ") {
+                            saml_final = Some(rest.trim().to_string());
+                        }
+                        if let Some(rest) = clean.strip_prefix("SAML-COOKIE: ") {
+                            saml_cookie = Some(rest.trim().to_string());
+                        }
                         if let Some(rest) = clean.strip_prefix("SAML-URL: ") {
                             let url = rest.trim();
                             if !saml_opened && saml_entry.as_deref().is_some_and(|e| url.starts_with(e)) {
                                 saml_opened = true;
-                                let _ = Command::new("xdg-open").arg(url).spawn();
+                                // Embedded window when the engine told us where the flow
+                                // ends (and that page is on the same gateway host).
+                                let same_host = |u: &str| saml_entry.as_deref().and_then(sso_origin) == sso_origin(u);
+                                match (&saml_final, &saml_cookie) {
+                                    (Some(f), Some(c)) if cfg!(feature = "webview") && same_host(f) => {
+                                        let _ = tx.try_send(UiMsg::Engine(EngineEvent::SsoBrowser {
+                                            login: url.to_string(),
+                                            final_url: f.clone(),
+                                            cookie: c.clone(),
+                                        }));
+                                    }
+                                    _ => {
+                                        let _ = Command::new("xdg-open").arg(url).spawn();
+                                    }
+                                }
                             }
                         }
                         // A mid-login question: carries gateway text — don't mine it for

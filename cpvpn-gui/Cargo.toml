@@ -13,6 +13,13 @@ dbus = "0.9"
 serde = { version = "1", features = ["derive"] }
 toml = "1"
 keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
+# Embedded browser for AnyConnect SAML (needs webkitgtk-6.0). Without it the SSO
+# login opens in the default browser and the token cookie is pasted by hand.
+webkit6 = { version = "0.6", optional = true }
+
+[features]
+default = ["webview"]
+webview = ["dep:webkit6"]
 
 [[bin]]
 name = "cpvpn-gui"

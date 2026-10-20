@@ -59,7 +59,11 @@ icons, a `.desktop` entry, and (optionally) a polkit rule so connecting prompts 
 admin password once and then caches it.
 
 **Requirements:** Rust/cargo (build), `pkexec` (polkit), `iproute2`, a desktop with a
-tray (optional). Build deps for static OpenSSL: a C compiler, `perl`, `make`.
+tray (optional). Build deps for static OpenSSL: a C compiler, `perl`, `make`. The GUI
+needs GTK4 + libadwaita and, for the AnyConnect SSO sign-in window, `webkitgtk-6.0`
+(Arch: `pacman -S webkitgtk-6.0`). Without it, build the GUI with
+`--no-default-features`: SSO then opens in the default browser and the token cookie is
+pasted by hand.
 
 ### Manual build
 
@@ -92,6 +96,7 @@ sudo cpvpn f5 -g vpn.example.com -u <user> --connect       # password (+ OTP) on
 cpvpn anyconnect -g https://vpn.example.com/GROUP --probe          # shows form/groups/SSO
 sudo cpvpn anyconnect -g https://vpn.example.com -u <user> --connect   # password (+ 2FA) on stdin
 sudo cpvpn anyconnect -g https://vpn.example.com/GROUP --sso --connect # SAML: browser + paste token cookie
+                                                     # (the GUI does SSO in its own window — no pasting)
 ```
 Send `disconnect` on stdin (or SIGTERM) for a clean teardown.
 
@@ -140,13 +145,13 @@ for_window [app_id="cpvpn"] floating enable
       keepalive + transparent reconnection, GUI selector. *(live-validated end-to-end.)*
       See [`docs/f5-protocol-notes.md`](docs/f5-protocol-notes.md).
 - [x] **Cisco AnyConnect SSL-VPN** — aggregate-auth XML login (groups, challenge/2FA,
-      SAML/SSO via browser + token paste), **CSTP** data plane (STF framing), split/full routing, DNS,
+      SAML/SSO in an embedded sign-in window), **CSTP** data plane (STF framing), split/full routing, DNS,
       DPD/keepalive + transparent reconnection, GUI selector. *(live-validated
       end-to-end against a real Cisco ASA — auth, split-tunnel routing, corp DNS and
       bidirectional data plane, clean teardown.)*
       See [`docs/anyconnect-protocol-notes.md`](docs/anyconnect-protocol-notes.md).
 - [ ] Fortinet/AnyConnect DTLS acceleration (UDP) and Fortinet IPsec/IKEv2 mode.
-- [ ] AnyConnect SSO via an embedded webview (token paste for now); OpenVPN back-end.
+- [ ] OpenVPN back-end.
 
 ## Legal
 

@@ -13,6 +13,8 @@
 mod engine;
 mod icon;
 mod profiles;
+#[cfg(feature = "webview")]
+mod sso;
 mod tray;
 
 use std::cell::{Cell, RefCell};
@@ -127,6 +129,9 @@ struct App {
     // mid-login question
     prompt_group: adw::PreferencesGroup,
     prompt_rows: RefCell<Vec<gtk::Widget>>,
+    /// The embedded AnyConnect SSO window while a SAML login is in progress.
+    #[cfg(feature = "webview")]
+    sso_window: RefCell<Option<adw::Window>>,
 
     // log
     log_buffer: gtk::TextBuffer,
@@ -337,6 +342,8 @@ impl App {
             ext_dns_row,
             prompt_group,
             prompt_rows: RefCell::new(Vec::new()),
+            #[cfg(feature = "webview")]
+            sso_window: RefCell::new(None),
             log_buffer,
             log_view,
             vpn: RefCell::new(Vpn::new(tx.clone())),
@@ -719,6 +726,7 @@ impl App {
                     self.dns_row.set_visible(!dns.is_empty());
                 }
                 EngineEvent::Prompt(p) => self.show_prompt(p),
+                EngineEvent::SsoBrowser { login, final_url, cookie } => self.open_sso_window(&login, &final_url, &cookie),
                 EngineEvent::StateChanged => self.sync_ui(),
             },
             UiMsg::Tray(cmd) => self.handle_tray(cmd),
@@ -778,6 +786,56 @@ impl App {
         }
     }
 
+    // ── AnyConnect SSO window ────────────────────────────────────────────────
+
+    /// Show the SAML login in the embedded browser; when it reaches the final page,
+    /// pipe the token cookie to the engine's pending `sso` prompt — no copy/paste.
+    #[cfg(feature = "webview")]
+    fn open_sso_window(&self, login: &str, final_url: &str, cookie: &str) {
+        self.close_sso_window();
+        let app = self.rc();
+        let win = sso::open(&self.window, login, final_url, cookie, move |r| {
+            app.sso_window.borrow_mut().take();
+            if app.vpn.borrow().state() != State::Connecting {
+                return; // aborted meanwhile
+            }
+            match r {
+                Ok(token) => {
+                    app.vpn.borrow_mut().answer_prompt(&token);
+                    app.append_log("→ SSO token captured from the sign-in window");
+                    app.clear_prompt();
+                }
+                // Leave the prompt card up: the token can still be pasted by hand.
+                Err(e) => app.append_log(&format!("SSO: {e} — paste the token or Disconnect")),
+            }
+        });
+        *self.sso_window.borrow_mut() = Some(win);
+        self.append_log("SSO: sign in in the window that opened");
+    }
+
+    #[cfg(not(feature = "webview"))]
+    fn open_sso_window(&self, login: &str, _final_url: &str, _cookie: &str) {
+        let _ = std::process::Command::new("xdg-open").arg(login).spawn();
+    }
+
+    /// Close the SSO window, if any, without answering the engine.
+    fn close_sso_window(&self) {
+        // Take it first: closing runs the window's callback, which touches the cell.
+        #[cfg(feature = "webview")]
+        let w = self.sso_window.borrow_mut().take();
+        #[cfg(feature = "webview")]
+        if let Some(w) = w {
+            w.close();
+        }
+    }
+
+    fn sso_window_open(&self) -> bool {
+        #[cfg(feature = "webview")]
+        return self.sso_window.borrow().is_some();
+        #[cfg(not(feature = "webview"))]
+        false
+    }
+
     // ── mid-login question UI ────────────────────────────────────────────────
 
     fn show_prompt(&self, p: AuthPrompt) {
@@ -793,7 +851,14 @@ impl App {
             _ => ("Two-factor authentication", "Code"),
         };
         self.prompt_group.set_title(title);
-        self.prompt_group.set_description((!p.message.is_empty()).then_some(p.message.as_str()));
+        let message = if p.kind == "sso" && self.sso_window_open() {
+            "Sign in in the window that opened — the VPN connects on its own. \
+             (Or paste the acSamlv2Token cookie here.)"
+                .to_string()
+        } else {
+            p.message.clone()
+        };
+        self.prompt_group.set_description((!message.is_empty()).then_some(message.as_str()));
 
         let new_password = p.kind == "newpass" || p.kind == "renew";
         let masked = new_password || p.kind == "answer" || p.kind == "sso";
@@ -913,6 +978,11 @@ impl App {
             self.status_pill.set_tooltip_text((!name.is_empty()).then_some(name.as_str()));
         } else {
             self.status_pill.set_tooltip_text(None);
+        }
+
+        // The SSO window only makes sense while a login is in progress.
+        if state != State::Connecting {
+            self.close_sso_window();
         }
 
         let editable = matches!(state, State::Disconnected | State::Error(_));

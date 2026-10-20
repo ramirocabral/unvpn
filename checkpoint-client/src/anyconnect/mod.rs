@@ -241,6 +241,12 @@ impl Prompter for CliPrompter {
         // the login URL for the front-end to open, then wait for the token the user
         // pastes (the `<token_cookie>` value after completing the IdP login).
         let cookie = if sso.token_cookie.is_empty() { "acSamlv2Token" } else { &sso.token_cookie };
+        // For a front-end with an embedded browser (the GUI): the page whose load
+        // means "done", and the cookie that then holds the token. Before SAML-URL.
+        if !sso.login_final.is_empty() {
+            println!("# SAML-FINAL: {}", sso.login_final);
+            println!("# SAML-COOKIE: {cookie}");
+        }
         println!("# SAML-URL: {}", sso.login);
         let msg = format!(
             "Sign in in the browser tab, then paste the {cookie} cookie of {} (DevTools → Application/Storage → Cookies)",

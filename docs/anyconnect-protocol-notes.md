@@ -65,22 +65,35 @@ una línea de stdin (el GUI muestra la tarjeta de prompt; en TTY se tipea).
 `new_password` → `# AUTH-PROMPT: newpass:`. Password rechazada = el gateway
 re-muestra el form inicial con `<error>` → lo detecto y corto (no reintento).
 
-### SSO / SAML (`sso-v2`) — PARCIAL
+### SSO / SAML (`sso-v2`)
 Gateways tipo gw-b responden con `<auth>` que trae `<sso-v2-login>` (URL del
 IdP), `<sso-v2-login-final>`, `<sso-v2-token-cookie-name>` (ej. `acSamlv2Token`) y
 un `<input type="sso">`. El cliente oficial abre un webview, el usuario se
-autentica y lee la cookie del token al llegar a `login-final`. **Acá, sin
-webview**: `cpvpn anyconnect -g <url> --sso --connect` (sin `-u`) emite `#
-SAML-URL: <login>` y `# AUTH-PROMPT: sso:` para **pegar el valor de la cookie del
-token** (DevTools → Application/Storage → Cookies del host del gateway). Se acepta
-el valor pelado o `acSamlv2Token=…` / un header `Cookie:` entero. Si con `--sso` el
-gateway pide password, corta con error (no se cuelga leyendo stdin). Vía CLI
-también `--sso-token <valor>`. En la GUI: AnyConnect → Authentication "SSO /
-SAML"; abre con `xdg-open` solo URLs `https://<host del gateway>/+CSCOE+/saml/…`
-y muestra la tarjeta "Finish the browser sign-in" para pegar el token. _Follow-up: automatizar la captura con
-un webview (webkit2gtk-4.1 está instalado) o el loopback-listener
-`single-sign-on-external-browser` + HPKE (ECDH P-256 / HKDF-SHA256 / AES-256-GCM,
-ver openconnect `hpke.c`) — gw-b ofrece `sso-v2`, no external-browser._
+autentica y lee la cookie del token al llegar a `login-final`; el token va en
+`<auth><sso-token>…</sso-token></auth>`. GW-B no ofrece
+`single-sign-on-external-browser` (no manda `sso-v2-browser-mode`), así que no hay
+loopback-listener posible: hace falta el webview.
+
+- **Engine** (`cpvpn anyconnect -g <url> --sso --connect`, sin `-u`): emite
+  `# SAML-FINAL: <login-final>`, `# SAML-COOKIE: <nombre>`, `# SAML-URL: <login>` y
+  después `# AUTH-PROMPT: sso:`, y lee el token de stdin. Acepta el valor pelado o
+  `acSamlv2Token=…` / un header `Cookie:` entero. Con `--sso`, si el gateway pide
+  password, corta con error (no se cuelga en stdin). También `--sso-token <valor>`.
+- **GUI** (AnyConnect → Authentication "SSO / SAML"): solo acepta la URL de login si
+  es `https://<host del gateway>/+CSCOE+/saml/…` y la final del mismo host. Abre una
+  ventana WebKitGTK 6 (`src/sso.rs`, feature `webview`, default); al terminar de
+  cargar `login-final` lee la cookie del token del cookie manager (funciona con
+  HttpOnly) y la manda al engine. Si aparece `acSamlv2Error`, o se cierra la
+  ventana, queda la tarjeta para pegar el token a mano.
+  - Una sola `NetworkSession` por proceso (thread_local) con cookies persistentes
+    en `$XDG_DATA_HOME/cpvpn/webview/cookies.sqlite`, para que el IdP recuerde la
+    cuenta. Liberarla junto con la vista hacía crashear WebKit (SIGSEGV en un timer
+    de JSC) al cerrar la ventana; la ventana además se cierra en un idle, no dentro
+    del callback de cookies.
+  - WebKitGTK 6 no persiste cookies salvo con `set_persistent_storage`. Antes de
+    cada login se borra el token que haya quedado para el gateway, así nunca se
+    reusa uno viejo.
+  - Sin `webkitgtk-6.0` (`--no-default-features`): `xdg-open` + pegar la cookie.
 
 ## CSTP (data plane) — framing STF sobre el mismo TLS
 Con la cookie `webvpn`, el cliente manda `CONNECT /CSCOSSLC/tunnel HTTP/1.1` con
