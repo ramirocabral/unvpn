@@ -458,27 +458,6 @@ impl App {
         self.remember_key_pass_row.set_visible(key_pass);
         self.token_row.set_visible(cp);
         self.password_row.set_title(if cp { "PIN" } else { "Password" });
-
-        let hint = if saml && anyconnect {
-            "You'll sign in through your browser, then paste the SSO token cookie here."
-        } else if saml && gp {
-            "You'll sign in in a browser window; the result is passed to the VPN automatically."
-        } else if saml {
-            "You'll sign in through your browser."
-        } else if cp {
-            "SecurID PIN + the one-time token emailed to you."
-        } else if anyconnect {
-            "Full gateway URL incl. any group path. A 2FA code is requested if needed."
-        } else if gp {
-            "Portal: the server you log in to. Gateway: which of the portal's gateways to tunnel through — leave empty for its preferred one. A 2FA code is requested if needed."
-        } else if openvpn {
-            "A client .ovpn profile. Certificates/keys are read from it; a key passphrase (unless saved) or OTP is asked for if needed."
-        } else if wireguard {
-            "A wg-quick .conf profile (keys, Address, DNS, peers). Runs on the kernel's WireGuard; PostUp/PreUp hooks are not executed."
-        } else {
-            "A token / 2FA code is requested if the gateway needs one."
-        };
-        self.form_group.set_description(Some(hint));
     }
 
     fn form_ready(&self) -> bool {
