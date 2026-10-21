@@ -10,8 +10,6 @@ Check Point *Endpoint Connect / Trac*, **Fortinet FortiGate**, **F5 BIG-IP APM**
 **Cisco AnyConnect** SSL-VPNs, **OpenVPN** and **WireGuard** today. Pretty GUI, a real
 system-tray icon, and a self-contained engine that runs on any distro.
 
-<img src="docs/screenshot.png" width="420" alt="unvpn GUI"/>
-
 </div>
 
 ---
@@ -126,7 +124,6 @@ Send `disconnect` on stdin (or SIGTERM) for a clean teardown.
 
 - **`unvpn/`** — the engine + CLI (protocol, crypto, tun, data plane).
 - **`unvpn-gui/`** — the GUI + tray (drives the engine as a subprocess).
-- **`docs/protocol-notes.md`** — the reverse-engineering ledger.
 
 ### Maximum portability (optional)
 For a single fully-static binary that runs even without a matching glibc, build the engine
@@ -152,32 +149,29 @@ for_window [app_id="unvpn"] floating enable
       alive past the 1-hour SA lifetime. (DPD is not required by Check Point.)
 - [x] **Fortinet FortiGate SSL-VPN** — password, FortiToken/OTP + push, **SAML/SSO**,
       in-process **PPP** (LCP/IPCP) data plane, split/full-tunnel routing, DNS, GUI selector.
-      *(built + unit-tested; live-gateway verification pending.)* See
-      [`docs/forti-protocol-notes.md`](docs/forti-protocol-notes.md).
+      *(built + unit-tested; live-gateway verification pending.)*
 - [x] **F5 BIG-IP APM SSL-VPN** — HTML-form login (+ OTP), webtop "Start"
       (`f5-vpn://`) handoff, in-process **PPP** data plane, split/full routing, DNS,
       keepalive + transparent reconnection, GUI selector. *(live-validated end-to-end.)*
-      See [`docs/f5-protocol-notes.md`](docs/f5-protocol-notes.md).
 - [x] **Cisco AnyConnect SSL-VPN** — aggregate-auth XML login (groups, challenge/2FA,
       SAML/SSO in an embedded sign-in window), **CSTP** data plane (STF framing), split/full routing, DNS,
       DPD/keepalive + transparent reconnection, GUI selector. *(live-validated
       end-to-end against a real Cisco ASA — auth, split-tunnel routing, corp DNS and
       bidirectional data plane, clean teardown.)*
-      See [`docs/anyconnect-protocol-notes.md`](docs/anyconnect-protocol-notes.md).
 - [x] **OpenVPN** (2.x protocol, from scratch — no `openvpn` binary) — `.ovpn` profiles
       (inline/files, PKCS#12, encrypted keys), UDP/TCP, **tls-auth / tls-crypt**, TLS 1.2/1.3
       with OpenVPN-style server verification, AES-GCM / ChaCha20-Poly1305 (`P_DATA_V2`) and
       legacy AES-CBC+HMAC, TLS-EKM or TLS1.0-PRF keys, user/pass + static/dynamic
       challenge, auth-token, renegotiation, ping-restart + reconnection, GUI profile with
       a .ovpn picker. *(interop-validated against OpenVPN 2.7.8 — and faster than its
-      userspace data path.)* See [`docs/openvpn-protocol-notes.md`](docs/openvpn-protocol-notes.md).
+      userspace data path.)*
 - [x] **WireGuard** — wg-quick `.conf` profiles on the **kernel's WireGuard**, configured
       over generic netlink (no `wg`/`wg-quick`): keys + preshared key, multiple peers,
       IPv4 + IPv6, full/split routing with the endpoint pinned outside the tunnel, `Table`,
       `FwMark`, DNS + search domains, a handshake check before any route goes in, stats, clean
       teardown; `PostUp`-style hooks are never executed. GUI profile with a .conf picker.
       *(validated against kernel WireGuard peers — handshake, v4/v6 data plane ~3 Gbit/s —
-      and live against a real WireGuard server; teardown restores routes and DNS exactly.)* See [`docs/wireguard-notes.md`](docs/wireguard-notes.md).
+      and live against a real WireGuard server; teardown restores routes and DNS exactly.)*
 - [x] DTLS acceleration (UDP) for AnyConnect, Fortinet and F5.
 - [ ] Fortinet IPsec/IKEv2 mode; OpenVPN tls-crypt-v2 / IPv6; WireGuard userspace fallback
       (hosts without the kernel module).
