@@ -103,7 +103,7 @@ pub fn run(s: &mut Session, opts: RunOpts) -> Result<(), String> {
         out!("# --no-routes: NOT installing routes or DNS.");
     } else {
         restore.routes = setup_routes(gw_ip, &tun_name, &cfg);
-        restore.dns = sysnet::set_dns(&cfg.dns, &cfg.domains.join(" "));
+        restore.dns = sysnet::set_dns(&sysnet::tunnelled_dns(&cfg.dns, &tun_name), &cfg.domains.join(" "));
     }
     if opts.watch_stdin {
         sysnet::spawn_stdin_disconnect(&GP_STOP);

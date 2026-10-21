@@ -383,7 +383,7 @@ pub fn run(mut p: Prepared, prompter: &mut dyn Prompter, opts: RunOpts) -> Resul
             tmp.dhcp_option(&o.iter().map(String::as_str).collect::<Vec<_>>());
             domains.extend(tmp.domains);
         }
-        restore.dns = sysnet::set_dns(&dns, &domains.join(" "));
+        restore.dns = sysnet::set_dns(&sysnet::tunnelled_dns(&dns, &tun_name), &domains.join(" "));
     }
     if opts.watch_stdin {
         sysnet::spawn_stdin_disconnect(&OV_STOP);

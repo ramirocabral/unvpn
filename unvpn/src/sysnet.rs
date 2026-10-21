@@ -82,6 +82,38 @@ pub fn set_dns<A: std::fmt::Display + std::fmt::Debug>(dns: &[A], domains: &str)
     Some(backup)
 }
 
+/// The resolvers in `dns` whose queries the kernel routes into `tun`, checked once
+/// the tunnel's routes are in. A split tunnel's gateway often pushes resolvers its
+/// routes don't cover (a corporate DNS outside the include list, 8.8.8.8): those
+/// queries leave via the LAN, where the corporate one just times out — and every
+/// lookup that reads resolv.conf stalls ~5 s per try on it before the next server —
+/// while the public one only displaces the LAN resolver. Logs what it leaves out.
+pub fn tunnelled_dns<A: std::fmt::Display + std::fmt::Debug + Clone>(dns: &[A], tun: &str) -> Vec<A> {
+    let (keep, outside): (Vec<A>, Vec<A>) =
+        dns.iter().cloned().partition(|d| route_dev(&d.to_string()).as_deref() == Some(tun));
+    if !outside.is_empty() {
+        out!("# DNS {outside:?} not routed through the tunnel — not used");
+        if keep.is_empty() {
+            out!("# no tunnelled DNS server — leaving the system resolver as is");
+        }
+    }
+    keep
+}
+
+/// The `dev` the kernel picks for `dst` (`ip route get`).
+fn route_dev(dst: &str) -> Option<String> {
+    let out = std::process::Command::new("ip").args(["route", "get", dst]).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    dev_of(&String::from_utf8_lossy(&out.stdout))
+}
+
+fn dev_of(route_get: &str) -> Option<String> {
+    let toks: Vec<&str> = route_get.lines().next()?.split_whitespace().collect();
+    toks.windows(2).find(|w| w[0] == "dev").map(|w| w[1].to_string())
+}
+
 /// Undo [`set_dns`], restoring the original file or symlink and clearing the sidecar.
 pub fn restore_dns(backup: Option<DnsBackup>) {
     let Some(b) = backup else { return };
@@ -343,6 +375,16 @@ impl Drop for EchoOff {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dev_of_route_get() {
+        assert_eq!(dev_of("10.1.2.3 dev cpfg0 src 10.0.0.5 uid 0 \n    cache \n").as_deref(), Some("cpfg0"));
+        assert_eq!(
+            dev_of("192.168.50.25 via 192.168.1.1 dev eth0 src 192.168.1.2 uid 1000 \n").as_deref(),
+            Some("eth0")
+        );
+        assert_eq!(dev_of(""), None);
+    }
 
     #[test]
     fn sidecar_roundtrip_file() {

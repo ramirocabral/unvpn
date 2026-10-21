@@ -114,19 +114,7 @@ pub fn run(
             None => Some(resolve_v4(&session.host, session.port)?),
         };
         restore.routes = setup_routes(gw, &tun_name, &cfg);
-        // A split tunnel's gateway often pushes resolvers its routes don't cover (a
-        // corporate DNS outside the include list, a public one like 8.8.8.8). Those
-        // queries leave via the LAN: the corporate one just times out — every lookup
-        // that reads resolv.conf then stalls ~5 s per try before the next server — and
-        // the public one only displaces the LAN resolver. Keep the tunnelled ones.
-        let (tunnelled, outside): (Vec<Ipv4Addr>, Vec<Ipv4Addr>) = dns.iter().partition(|&&ip| cfg.tunnels(ip));
-        if !outside.is_empty() {
-            out!("# DNS {outside:?} not routed through the tunnel — not used");
-        }
-        if tunnelled.is_empty() && !dns.is_empty() {
-            out!("# no tunnelled DNS server — leaving the system resolver as is");
-        }
-        restore.dns = sysnet::set_dns(&tunnelled, &cfg.domains);
+        restore.dns = sysnet::set_dns(&sysnet::tunnelled_dns(&dns, &tun_name), &cfg.domains);
     }
 
     sysnet::spawn_stdin_disconnect(&FORTI_STOP);

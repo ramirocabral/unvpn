@@ -164,7 +164,7 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
     } else {
         let gw = resolve_v4(&session.ep.host, session.ep.port).ok();
         restore.routes = setup_routes(gw, &tun_name, &cfg);
-        restore.dns = sysnet::set_dns(&dns, &cfg.domains.join(" "));
+        restore.dns = sysnet::set_dns(&sysnet::tunnelled_dns(&dns, &tun_name), &cfg.domains.join(" "));
     }
 
     if opts.watch_stdin {

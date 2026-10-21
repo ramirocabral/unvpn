@@ -164,7 +164,7 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
             None => Some(resolve_v4(&session.host, session.port)?),
         };
         restore.routes = setup_routes(gw, &tun_name, &cfg);
-        restore.dns = sysnet::set_dns(&dns, &cfg.domains);
+        restore.dns = sysnet::set_dns(&sysnet::tunnelled_dns(&dns, &tun_name), &cfg.domains);
     }
 
     // The F5 protocol expects the tunnel to drop and the client to transparently
