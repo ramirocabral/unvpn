@@ -1,15 +1,19 @@
-//! Embedded-browser SSO for AnyConnect SAML (`sso-v2`), like Cisco's own client.
+//! Embedded-browser SSO for SAML logins, like the vendors' own clients.
 //!
-//! The gateway only offers the "embedded browser" flow: the client shows the IdP
-//! login itself and, once the page reaches `sso-v2-login-final`, reads the token
-//! cookie (`acSamlv2Token`) from its own cookie jar. The engine runs as root and
-//! has no display, so the GUI does that part: it opens a WebKitGTK window on the
-//! login URL, waits for the final page, pulls the cookie and hands the value back
-//! (it is then piped to the engine's `# AUTH-PROMPT: sso:` on stdin).
+//! AnyConnect (`sso-v2`): the client shows the IdP login itself and, once the
+//! page reaches `sso-v2-login-final`, reads the token cookie (`acSamlv2Token`)
+//! from its own cookie jar. GlobalProtect: the page that completes the flow
+//! carries the result in its response headers (`saml-username`,
+//! `prelogin-cookie` / `portal-userauthcookie`), or — when the portal is set to
+//! use the default browser — the IdP redirects to a `globalprotectcallback:` URL.
+//! The engine runs as root and has no display, so the GUI does that part: it
+//! opens a WebKitGTK window on the login URL, captures the result and hands it
+//! back (it is then piped to the engine's `# AUTH-PROMPT: sso:` on stdin).
 //!
 //! The web data lives in `$XDG_DATA_HOME/unvpn/webview`, so the IdP can remember
 //! the account ("stay signed in") between connections.
 
+use crate::engine::SsoWatch;
 use adw::prelude::*;
 use gtk::glib;
 use std::cell::Cell;
@@ -41,20 +45,23 @@ thread_local! {
 }
 
 /// Open the SSO window on `login`. `on_done` is called exactly once: `Ok(token)`
-/// when `final_url` loaded and carried `cookie`, `Err(reason)` if the login
-/// failed or the user closed the window. The caller keeps the returned window to
-/// close it if the connection is aborted.
+/// when `watch` saw the login complete, `Err(reason)` if the login failed or the
+/// user closed the window. The caller keeps the returned window to close it if
+/// the connection is aborted.
 pub fn open(
     parent: &impl IsA<gtk::Window>,
     login: &str,
-    final_url: &str,
-    cookie: &str,
+    watch: &SsoWatch,
     on_done: impl Fn(Result<String, String>) + 'static,
 ) -> adw::Window {
     let session = SESSION.with(|s| s.clone());
     let view = webkit6::WebView::builder().network_session(&session).vexpand(true).hexpand(true).build();
 
-    let host = final_url.split('/').nth(2).unwrap_or_default().to_string();
+    let shown_url = match watch {
+        SsoWatch::Cookie { final_url, .. } => final_url.as_str(),
+        SsoWatch::GpHeaders => login,
+    };
+    let host = if shown_url.starts_with("data:") { String::new() } else { shown_url.split('/').nth(2).unwrap_or_default().to_string() };
     let header = adw::HeaderBar::builder()
         .title_widget(&adw::WindowTitle::new("VPN sign-in", &host))
         .build();
@@ -83,8 +90,13 @@ pub fn open(
         })
     };
 
-    let final_url = final_url.to_string();
-    let cookie = cookie.to_string();
+    let (final_url, cookie) = match watch {
+        SsoWatch::Cookie { final_url, cookie } => (final_url.clone(), cookie.clone()),
+        SsoWatch::GpHeaders => {
+            watch_gp(&view, &win, finish.clone());
+            (String::new(), String::new())
+        }
+    };
     let (final_for_clear, cookie_name) = (final_url.clone(), cookie.clone());
     view.connect_load_changed({
         let finish = finish.clone();
@@ -94,7 +106,7 @@ pub fn open(
                 return;
             }
             let Some(uri) = v.uri() else { return };
-            if !uri.starts_with(final_url.as_str()) {
+            if final_url.is_empty() || !uri.starts_with(final_url.as_str()) {
                 return;
             }
             let Some(cm) = v.network_session().and_then(|s| s.cookie_manager()) else {
@@ -147,7 +159,7 @@ pub fn open(
         let login = login.to_string();
         Rc::new(move || view.load_uri(&login))
     };
-    match session.cookie_manager() {
+    match session.cookie_manager().filter(|_| !cookie_name.is_empty()) {
         Some(cm) => {
             let cm2 = cm.clone();
             let name = cookie_name.clone();
@@ -173,4 +185,65 @@ pub fn open(
     }
     win.present();
     win
+}
+
+/// GlobalProtect: finish on the response headers of a page that completes the
+/// SAML flow, or on a `globalprotectcallback:` navigation (never followed). The
+/// answer for the engine is `saml-username=…;<cookie-name>=…` (values
+/// percent-encoded) or the callback URL itself.
+fn watch_gp(view: &webkit6::WebView, win: &adw::Window, finish: Rc<dyn Fn(Result<String, String>)>) {
+    let close_later = |win: glib::WeakRef<adw::Window>| {
+        glib::idle_add_local_once(move || {
+            if let Some(w) = win.upgrade() {
+                w.close();
+            }
+        });
+    };
+
+    view.connect_decide_policy({
+        let finish = finish.clone();
+        let win = win.downgrade();
+        move |_, decision, _| {
+            let Some(nav) = decision.downcast_ref::<webkit6::NavigationPolicyDecision>() else { return false };
+            let uri = nav.navigation_action().and_then(|a| a.request()).and_then(|r| r.uri()).unwrap_or_default();
+            if !uri.starts_with("globalprotectcallback:") {
+                return false;
+            }
+            decision.ignore();
+            finish(Ok(uri.to_string()));
+            close_later(win.clone());
+            true
+        }
+    });
+
+    view.connect_load_changed({
+        let win = win.downgrade();
+        move |v, ev| {
+            if ev != webkit6::LoadEvent::Finished {
+                return;
+            }
+            let Some(h) = v.main_resource().and_then(|r| r.response()).and_then(|r| r.http_headers()) else { return };
+            let get = |n: &str| h.one(n).map(|v| v.to_string()).filter(|v| !v.is_empty());
+            if get("saml-auth-status").as_deref() == Some("-1") {
+                finish(Err("SAML login failed (saml-auth-status -1)".into()));
+                close_later(win.clone());
+                return;
+            }
+            let found = ["prelogin-cookie", "portal-userauthcookie"].into_iter().find_map(|n| get(n).map(|v| (n, v)));
+            let Some((name, value)) = found else { return };
+            let user = get("saml-username").unwrap_or_default();
+            finish(Ok(format!("saml-username={};{name}={}", pct(&user), pct(&value))));
+            close_later(win.clone());
+        }
+    });
+}
+
+/// Percent-encode everything but unreserved characters (the engine decodes).
+fn pct(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }

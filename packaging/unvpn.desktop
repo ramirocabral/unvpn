@@ -2,7 +2,7 @@
 Type=Application
 Name=unvpn
 GenericName=VPN Client
-Comment=Native Check Point / FortiGate / F5 BIG-IP / AnyConnect / OpenVPN client with a system-tray icon
+Comment=Native Check Point / FortiGate / F5 BIG-IP / AnyConnect / GlobalProtect / OpenVPN / WireGuard client with a system-tray icon
 Exec=unvpn-gui
 Icon=unvpn
 Terminal=false

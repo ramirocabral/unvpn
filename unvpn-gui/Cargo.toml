@@ -2,7 +2,7 @@
 name = "unvpn-gui"
 version = "0.2.0"
 edition = "2021"
-description = "Native Linux VPN client GUI (Check Point / Fortinet / F5 / AnyConnect / OpenVPN) — GTK4 + libadwaita, with connection profiles."
+description = "Native Linux VPN client GUI (Check Point / Fortinet / F5 / AnyConnect / GlobalProtect / OpenVPN / WireGuard) — GTK4 + libadwaita, with connection profiles."
 
 [dependencies]
 gtk = { package = "gtk4", version = "0.11", features = ["v4_12"] }

@@ -39,10 +39,22 @@ pub enum EngineEvent {
     Ip(String),
     Dns(String),
     Prompt(AuthPrompt),
-    /// AnyConnect SAML: show `login` in the embedded SSO window and, once
-    /// `final_url` loads, answer the pending `sso` prompt with the `cookie` value.
-    SsoBrowser { login: String, final_url: String, cookie: String },
+    /// SAML: show `login` in the embedded SSO window and answer the pending
+    /// `sso` prompt with what `watch` captures.
+    SsoBrowser { login: String, watch: SsoWatch },
     StateChanged,
+}
+
+/// How the embedded SSO window recognises a finished login.
+#[derive(Clone)]
+#[cfg_attr(not(feature = "webview"), allow(dead_code))]
+pub enum SsoWatch {
+    /// AnyConnect: once `final_url` has loaded, the token is the `cookie` cookie.
+    Cookie { final_url: String, cookie: String },
+    /// GlobalProtect: the result comes as response headers of the page that ends
+    /// the flow (`saml-username` + `prelogin-cookie`/`portal-userauthcookie`), or
+    /// as a navigation to `globalprotectcallback:`.
+    GpHeaders,
 }
 
 pub enum TrayCmd {
@@ -250,6 +262,8 @@ impl Vpn {
                 // AnyConnect sso-v2 (embedded-browser flow): announced before SAML-URL.
                 let mut saml_final: Option<String> = None;
                 let mut saml_cookie: Option<String> = None;
+                // GlobalProtect: the SAML result arrives as response headers.
+                let mut saml_headers = false;
                 for line in BufReader::new(r).lines().map_while(Result::ok) {
                     let clean = line.trim_start_matches(['#', ' ']).to_string();
                     eprintln!("[engine] {clean}");
@@ -269,9 +283,27 @@ impl Vpn {
                         if let Some(rest) = clean.strip_prefix("SAML-COOKIE: ") {
                             saml_cookie = Some(rest.trim().to_string());
                         }
+                        if clean.starts_with("SAML-HEADERS:") {
+                            saml_headers = true;
+                        }
                         if let Some(rest) = clean.strip_prefix("SAML-URL: ") {
                             let url = rest.trim();
-                            if !saml_opened && saml_entry.as_deref().is_some_and(|e| url.starts_with(e)) {
+                            // GlobalProtect hands over the IdP's own URL (any host —
+                            // the gateway picks the IdP) or an auto-posting form as a
+                            // `data:` page; the latter only ever goes to the embedded view.
+                            let gp_https = url.starts_with("https://");
+                            let gp_form = url.starts_with("data:text/html");
+                            if !saml_opened && saml_headers && saml_entry.is_some() && (gp_https || gp_form) {
+                                saml_opened = true;
+                                if cfg!(feature = "webview") {
+                                    let _ = tx.try_send(UiMsg::Engine(EngineEvent::SsoBrowser {
+                                        login: url.to_string(),
+                                        watch: SsoWatch::GpHeaders,
+                                    }));
+                                } else if gp_https {
+                                    let _ = Command::new("xdg-open").arg(url).spawn();
+                                }
+                            } else if !saml_opened && saml_entry.as_deref().is_some_and(|e| url.starts_with(e)) {
                                 saml_opened = true;
                                 // Embedded window when the engine told us where the flow
                                 // ends (and that page is on the same gateway host).
@@ -280,8 +312,7 @@ impl Vpn {
                                     (Some(f), Some(c)) if cfg!(feature = "webview") && same_host(f) => {
                                         let _ = tx.try_send(UiMsg::Engine(EngineEvent::SsoBrowser {
                                             login: url.to_string(),
-                                            final_url: f.clone(),
-                                            cookie: c.clone(),
+                                            watch: SsoWatch::Cookie { final_url: f.clone(), cookie: c.clone() },
                                         }));
                                     }
                                     _ => {
@@ -331,6 +362,7 @@ impl Vpn {
                         || clean.starts_with("forti failed")
                         || clean.starts_with("f5 failed")
                         || clean.starts_with("anyconnect failed")
+                        || clean.starts_with("globalprotect failed")
                         || clean.starts_with("openvpn failed")
                         || clean.starts_with("wireguard failed")
                         || clean.contains("login rejected")

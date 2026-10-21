@@ -19,6 +19,8 @@ pub enum Backend {
     F5,
     #[serde(rename = "anyconnect")]
     AnyConnect,
+    #[serde(rename = "globalprotect")]
+    GlobalProtect,
     #[serde(rename = "openvpn")]
     OpenVpn,
     #[serde(rename = "wireguard")]
@@ -32,6 +34,7 @@ impl Backend {
             Backend::Forti => "FortiClient",
             Backend::F5 => "F5",
             Backend::AnyConnect => "AnyConnect (Cisco)",
+            Backend::GlobalProtect => "GlobalProtect",
             Backend::OpenVpn => "OpenVPN",
             Backend::WireGuard => "WireGuard",
         }
@@ -44,13 +47,20 @@ impl Backend {
             Backend::Forti => 1,
             Backend::F5 => 2,
             Backend::AnyConnect => 3,
-            Backend::OpenVpn => 4,
-            Backend::WireGuard => 5,
+            Backend::GlobalProtect => 4,
+            Backend::OpenVpn => 5,
+            Backend::WireGuard => 6,
         }
     }
 
     pub fn has_sso(self) -> bool {
-        matches!(self, Backend::Forti | Backend::AnyConnect)
+        matches!(self, Backend::Forti | Backend::AnyConnect | Backend::GlobalProtect)
+    }
+
+    /// Back-ends whose `group` field is in use: AnyConnect's tunnel group,
+    /// GlobalProtect's choice among the portal's gateways.
+    pub fn uses_group(self) -> bool {
+        matches!(self, Backend::AnyConnect | Backend::GlobalProtect)
     }
 
     /// Back-ends configured by a profile file (`gateway` holds its path).
@@ -63,8 +73,9 @@ impl Backend {
             1 => Backend::Forti,
             2 => Backend::F5,
             3 => Backend::AnyConnect,
-            4 => Backend::OpenVpn,
-            5 => Backend::WireGuard,
+            4 => Backend::GlobalProtect,
+            5 => Backend::OpenVpn,
+            6 => Backend::WireGuard,
             _ => Backend::CheckPoint,
         }
     }
@@ -80,7 +91,8 @@ pub struct Profile {
     pub user: String,
     #[serde(default)]
     pub realm: String,
-    /// AnyConnect tunnel group (pre-selects the gateway's group dropdown).
+    /// AnyConnect tunnel group (pre-selects the gateway's group dropdown), or the
+    /// GlobalProtect gateway to pick from the portal's list.
     #[serde(default)]
     pub group: String,
     #[serde(default, alias = "forti_saml")]
@@ -99,7 +111,7 @@ impl Profile {
         } else if !self.user.is_empty() {
             parts.push(self.user.clone());
         }
-        if self.backend == Backend::AnyConnect && !self.group.is_empty() {
+        if self.backend.uses_group() && !self.group.is_empty() {
             parts.push(self.group.clone());
         }
         if self.backend.uses_profile_file() {

@@ -14,6 +14,7 @@ Supported VPNs:
 - Fortinet FortiGate SSL-VPN
 - F5 BIG-IP APM
 - Cisco AnyConnect
+- Palo Alto GlobalProtect
 - OpenVPN
 - WireGuard
 
@@ -70,6 +71,7 @@ sudo unvpn forti -g vpn.example.com -u alice --connect               # Fortinet
 sudo unvpn forti -g vpn.example.com --saml --connect                 # Fortinet with SSO
 sudo unvpn f5 -g vpn.example.com -u alice --connect                  # F5
 sudo unvpn anyconnect -g https://vpn.example.com -u alice --connect  # AnyConnect
+sudo unvpn gp -g vpn.example.com -u alice --connect                  # GlobalProtect
 sudo unvpn openvpn -c profile.ovpn --connect                         # OpenVPN
 sudo unvpn wireguard -c wg0.conf --connect                           # WireGuard
 ```

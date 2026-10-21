@@ -22,7 +22,7 @@ use std::time::Duration;
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 
-use engine::{anyconnect_saml_entry, saml_entry, AuthPrompt, EngineEvent, State, TrayCmd, Tx, UiMsg, Vpn};
+use engine::{anyconnect_saml_entry, saml_entry, AuthPrompt, EngineEvent, SsoWatch, State, TrayCmd, Tx, UiMsg, Vpn};
 use profiles::{Backend, Profile};
 
 const APP_ID: &str = "io.github.unvpn.Client";
@@ -166,7 +166,7 @@ impl App {
 
         let name_row = adw::EntryRow::builder().title("Profile name").build();
 
-        let backend_model = gtk::StringList::new(&["Check Point", "FortiClient", "F5", "AnyConnect (Cisco)", "OpenVPN", "WireGuard"]);
+        let backend_model = gtk::StringList::new(&["Check Point", "FortiClient", "F5", "AnyConnect (Cisco)", "GlobalProtect", "OpenVPN", "WireGuard"]);
         let backend_row = adw::ComboRow::builder().title("VPN client").model(&backend_model).build();
 
         let gateway_row = adw::EntryRow::builder().title("Gateway").build();
@@ -419,6 +419,7 @@ impl App {
         let forti = b == Backend::Forti;
         let cp = b == Backend::CheckPoint;
         let anyconnect = b == Backend::AnyConnect;
+        let gp = b == Backend::GlobalProtect;
         let openvpn = b == Backend::OpenVpn;
         let wireguard = b == Backend::WireGuard;
         let saml = self.sso();
@@ -438,9 +439,15 @@ impl App {
         });
 
         self.sso_row.set_visible(b.has_sso());
-        // The realm row doubles as AnyConnect's optional tunnel-group field.
-        self.realm_row.set_visible(forti || anyconnect);
-        self.realm_row.set_title(if anyconnect { "Group (optional)" } else { "Realm (optional)" });
+        // The realm row doubles as AnyConnect's tunnel group / GlobalProtect's gateway.
+        self.realm_row.set_visible(forti || b.uses_group());
+        self.realm_row.set_title(if anyconnect {
+            "Group (optional)"
+        } else if gp {
+            "Gateway (optional)"
+        } else {
+            "Realm (optional)"
+        });
         self.user_row.set_visible(need_creds);
         self.password_row.set_visible(need_creds);
         self.remember_row.set_visible(need_creds);
@@ -452,12 +459,16 @@ impl App {
 
         let hint = if saml && anyconnect {
             "You'll sign in through your browser, then paste the SSO token cookie here."
+        } else if saml && gp {
+            "You'll sign in in a browser window; the result is passed to the VPN automatically."
         } else if saml {
             "You'll sign in through your browser."
         } else if cp {
             "SecurID PIN + the one-time token emailed to you."
         } else if anyconnect {
             "Full gateway URL incl. any group path. A 2FA code is requested if needed."
+        } else if gp {
+            "The portal (or a gateway). Gateway: one of the portal's, by name — empty uses its preferred. A 2FA code is requested if needed."
         } else if openvpn {
             "A client .ovpn profile. Certificates/keys are read from it; a key passphrase (unless saved) or OTP is asked for if needed."
         } else if wireguard {
@@ -471,8 +482,8 @@ impl App {
     fn form_ready(&self) -> bool {
         let gw = !self.gateway_row.text().trim().is_empty();
         match self.backend() {
-            Backend::Forti | Backend::AnyConnect if self.sso() => gw,
-            Backend::Forti | Backend::F5 | Backend::AnyConnect => {
+            Backend::Forti | Backend::AnyConnect | Backend::GlobalProtect if self.sso() => gw,
+            Backend::Forti | Backend::F5 | Backend::AnyConnect | Backend::GlobalProtect => {
                 gw && !self.user_row.text().trim().is_empty()
                     && !self.password_row.text().is_empty()
             }
@@ -584,8 +595,8 @@ impl App {
         self.name_row.set_text(&p.name);
         self.gateway_row.set_text(&p.gateway);
         self.user_row.set_text(&p.user);
-        // realm_row doubles as AnyConnect's group field.
-        self.realm_row.set_text(if p.backend == Backend::AnyConnect { &p.group } else { &p.realm });
+        // realm_row doubles as AnyConnect's group / GlobalProtect's gateway field.
+        self.realm_row.set_text(if p.backend.uses_group() { &p.group } else { &p.realm });
         self.remember_row.set_active(p.remember_password);
         self.token_row.set_text("");
         let secret = if p.remember_password { profiles::secret_get(&p.name).unwrap_or_default() } else { String::new() };
@@ -630,9 +641,9 @@ impl App {
             backend,
             gateway: self.gateway_row.text().trim().to_string(),
             user: self.user_row.text().trim().to_string(),
-            // realm_row doubles as AnyConnect's group field.
-            realm: if backend == Backend::AnyConnect { String::new() } else { realm_field.clone() },
-            group: if backend == Backend::AnyConnect { realm_field } else { String::new() },
+            // realm_row doubles as AnyConnect's group / GlobalProtect's gateway field.
+            realm: if backend.uses_group() { String::new() } else { realm_field.clone() },
+            group: if backend.uses_group() { realm_field } else { String::new() },
             sso: self.sso(),
             remember_password: remember,
             remember_key_pass,
@@ -797,6 +808,26 @@ impl App {
                     (args, vec![self.password_row.text().to_string()], None)
                 }
             }
+            Backend::GlobalProtect => {
+                let mut args: Vec<String> = vec!["gp".into(), "-g".into(), gw.clone()];
+                if !realm.is_empty() {
+                    args.push("--gw".into());
+                    args.push(realm);
+                }
+                if self.sso() {
+                    // The engine announces the IdP URL; the result is captured by the
+                    // embedded window (or pasted) and answers `# AUTH-PROMPT: sso:`.
+                    args.push("--saml".into());
+                    args.push("--connect".into());
+                    (args, vec![], Some(gw.clone()))
+                } else {
+                    args.push("-u".into());
+                    args.push(user);
+                    args.push("--connect".into());
+                    // A 2FA code, if any, is collected via `# AUTH-PROMPT: code:`.
+                    (args, vec![self.password_row.text().to_string()], None)
+                }
+            }
         };
 
         self.vpn.borrow_mut().connect(args, stdin_lines, label, saml);
@@ -816,7 +847,7 @@ impl App {
                     self.dns_row.set_visible(!dns.is_empty());
                 }
                 EngineEvent::Prompt(p) => self.show_prompt(p),
-                EngineEvent::SsoBrowser { login, final_url, cookie } => self.open_sso_window(&login, &final_url, &cookie),
+                EngineEvent::SsoBrowser { login, watch } => self.open_sso_window(&login, &watch),
                 EngineEvent::StateChanged => self.sync_ui(),
             },
             UiMsg::Tray(cmd) => self.handle_tray(cmd),
@@ -878,10 +909,10 @@ impl App {
     /// Show the SAML login in the embedded browser; when it reaches the final page,
     /// pipe the token cookie to the engine's pending `sso` prompt — no copy/paste.
     #[cfg(feature = "webview")]
-    fn open_sso_window(&self, login: &str, final_url: &str, cookie: &str) {
+    fn open_sso_window(&self, login: &str, watch: &SsoWatch) {
         self.close_sso_window();
         let app = self.rc();
-        let win = sso::open(&self.window, login, final_url, cookie, move |r| {
+        let win = sso::open(&self.window, login, watch, move |r| {
             app.sso_window.borrow_mut().take();
             if app.vpn.borrow().state() != State::Connecting {
                 return; // aborted meanwhile
@@ -901,7 +932,7 @@ impl App {
     }
 
     #[cfg(not(feature = "webview"))]
-    fn open_sso_window(&self, login: &str, _final_url: &str, _cookie: &str) {
+    fn open_sso_window(&self, login: &str, _watch: &SsoWatch) {
         let _ = std::process::Command::new("xdg-open").arg(login).spawn();
     }
 
@@ -1200,7 +1231,7 @@ fn build_ui(app: &adw::Application) {
             .application_name("unvpn")
             .version(env!("CARGO_PKG_VERSION"))
             .developer_name("unvpn")
-            .comments("Native Linux VPN client — Check Point · Fortinet · F5")
+            .comments("Native Linux VPN client — Check Point · Fortinet · F5 · AnyConnect · GlobalProtect · OpenVPN · WireGuard")
             .build();
         dialog.present(Some(&state_app.window));
     }));
