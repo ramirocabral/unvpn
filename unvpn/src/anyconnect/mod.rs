@@ -263,7 +263,7 @@ fn clean_sso_token(raw: &str, cookie: &str) -> Option<String> {
 }
 
 /// Read one line from stdin, echo off on a TTY. The GUI pipes answers here.
-fn read_secret(prompt: &str) -> Option<String> {
+pub(crate) fn read_secret(prompt: &str) -> Option<String> {
     let fd = libc::STDIN_FILENO;
     let is_tty = unsafe { libc::isatty(fd) == 1 };
     if is_tty {

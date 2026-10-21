@@ -47,13 +47,13 @@ impl EspSa {
         spi_out: u32,
         km_out: &[u8],
     ) -> Result<Self, String> {
-        let (cipher, enc_len, iv_len) = if transform_id == u8::from(TransformId::Esp3Des) {
-            (Cipher::des_ede3_cbc(), 24usize, 8usize)
+        let (cipher, enc_len) = if transform_id == u8::from(TransformId::Esp3Des) {
+            (Cipher::des_ede3_cbc(), 24usize)
         } else if transform_id == u8::from(TransformId::EspAesCbc) {
             match key_bits {
-                128 => (Cipher::aes_128_cbc(), 16, 16),
-                192 => (Cipher::aes_192_cbc(), 24, 16),
-                _ => (Cipher::aes_256_cbc(), 32, 16),
+                128 => (Cipher::aes_128_cbc(), 16),
+                192 => (Cipher::aes_192_cbc(), 24),
+                _ => (Cipher::aes_256_cbc(), 32),
             }
         } else {
             return Err(format!("unsupported ESP transform id {transform_id}"));
@@ -70,19 +70,38 @@ impl EspSa {
             return Err("ESP key material too short".into());
         }
 
-        Ok(EspSa {
-            spi_in,
-            spi_out,
-            enc_in: km_in[..enc_len].to_vec(),
-            auth_in: km_in[enc_len..enc_len + auth_len].to_vec(),
-            enc_out: km_out[..enc_len].to_vec(),
-            auth_out: km_out[enc_len..enc_len + auth_len].to_vec(),
+        Ok(EspSa::from_keys(
             cipher,
             digest,
-            iv_len,
+            icv_len,
+            (spi_in, &km_in[..enc_len], &km_in[enc_len..enc_len + auth_len]),
+            (spi_out, &km_out[..enc_len], &km_out[enc_len..enc_len + auth_len]),
+        ))
+    }
+
+    /// An SA whose keys were handed over out of band (GlobalProtect delivers them
+    /// in its HTTPS config) rather than derived by IKE. Each direction is
+    /// `(spi, enc_key, auth_key)`; the ICV is the HMAC truncated to `icv_len`.
+    pub fn from_keys(
+        cipher: Cipher,
+        digest: MessageDigest,
+        icv_len: usize,
+        inbound: (u32, &[u8], &[u8]),
+        outbound: (u32, &[u8], &[u8]),
+    ) -> Self {
+        EspSa {
+            spi_in: inbound.0,
+            spi_out: outbound.0,
+            enc_in: inbound.1.to_vec(),
+            auth_in: inbound.2.to_vec(),
+            enc_out: outbound.1.to_vec(),
+            auth_out: outbound.2.to_vec(),
+            cipher,
+            digest,
+            iv_len: cipher.iv_len().unwrap_or(cipher.block_size()),
             icv_len,
             seq: AtomicU32::new(1),
-        })
+        }
     }
 
     fn hmac(&self, key: &[u8], data: &[u8]) -> Vec<u8> {
