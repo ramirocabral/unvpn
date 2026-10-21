@@ -178,7 +178,13 @@ pub fn install_stop_signals(flag: &'static AtomicBool) {
 pub fn spawn_stdin_disconnect(flag: &'static AtomicBool) {
     std::thread::spawn(move || {
         loop {
-            match stdin_next(None) {
+            // Short waits so the pump's lock is free while a [`StdinWatchPause`] lets
+            // a mid-session re-login read its prompts' answers.
+            if WATCH_PAUSED.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(100));
+                continue;
+            }
+            match stdin_next(Some(Duration::from_millis(250))) {
                 StdinEvent::Line(l) if is_disconnect(&l) => break,
                 StdinEvent::Line(_) | StdinEvent::Timeout => continue,
                 StdinEvent::Eof => break,
@@ -186,6 +192,26 @@ pub fn spawn_stdin_disconnect(flag: &'static AtomicBool) {
         }
         flag.store(true, Ordering::SeqCst);
     });
+}
+
+static WATCH_PAUSED: AtomicBool = AtomicBool::new(false);
+
+/// While alive, the [`spawn_stdin_disconnect`] watcher leaves stdin alone, so the
+/// session can ask (2FA, password) on it again; a `disconnect` typed meanwhile
+/// reaches whoever is reading.
+pub struct StdinWatchPause;
+
+impl StdinWatchPause {
+    pub fn new() -> Self {
+        WATCH_PAUSED.store(true, Ordering::SeqCst);
+        StdinWatchPause
+    }
+}
+
+impl Drop for StdinWatchPause {
+    fn drop(&mut self) {
+        WATCH_PAUSED.store(false, Ordering::SeqCst);
+    }
 }
 
 #[derive(Debug, PartialEq)]

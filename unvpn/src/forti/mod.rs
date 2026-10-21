@@ -20,6 +20,7 @@ use std::time::Duration;
 const INFO_PATH: &str = "/remote/info";
 const SAML_START: &str = "/remote/saml/start?redirect=1";
 
+#[derive(Clone)]
 struct Args {
     host: String,
     port: u16,
@@ -44,7 +45,7 @@ struct Args {
     save_cookie: Option<String>,
 }
 
-#[derive(PartialEq)]
+#[derive(Clone, PartialEq)]
 enum Action {
     Probe,
     Login,
@@ -496,9 +497,23 @@ fn authenticate_fresh(a: &Args) -> Result<Session, String> {
 }
 
 fn connect(a: &Args) -> Result<(), String> {
-    let mut session = authenticate(a)?;
+    let mut a = a.clone();
+    // A password login reads the password from stdin once; keep it, since the
+    // gateway may end the session mid-tunnel and we then have to log in again.
+    if a.password.is_none() && a.cookie_file.is_none() && !a.saml && !a.user.is_empty() {
+        a.password = Some(read_password().ok_or("no password provided")?);
+    }
+    let mut session = authenticate(&a)?;
     if sysnet::stop_requested() {
         return Err("disconnect requested — not bringing the tunnel up".into());
     }
-    tunnel::run(&mut session, a.no_dtls, a.no_routes)
+    let (no_dtls, no_routes) = (a.no_dtls, a.no_routes);
+    let mut reauth = || {
+        if a.cookie_file.is_some() {
+            return Err("logged in with --cookie-file; can't log in again on our own".to_string());
+        }
+        a.code = None; // a --code is single-use
+        authenticate_fresh(&a)
+    };
+    tunnel::run(&mut session, no_dtls, no_routes, &mut reauth)
 }

@@ -29,8 +29,13 @@ const TUN_MTU: u32 = 1400;
 const PPP_OVERHEAD: usize = 10;
 const MAX_RECONNECT_TRIES: u32 = 4;
 /// Grace window for a fresh DTLS link to prove it forwards data before we fall back
-/// to TLS (bounds the blackhole on a gateway whose DTLS data plane is broken).
-const DTLS_TRIAL: Duration = Duration::from_secs(5);
+/// to TLS (bounds the blackhole on a gateway whose DTLS data plane is broken). Long
+/// and demanding on purpose: packets to hosts that simply don't answer (filtered by
+/// the gateway's policy, down) must not cost us DTLS, since the TLS fallback means
+/// a second login and TCP-over-TCP.
+const DTLS_TRIAL: Duration = Duration::from_secs(20);
+/// IP packets sent into the tunnel, none answered, before the trial gives up.
+const DTLS_TRIAL_PACKETS: u64 = 40;
 
 const CLTHELLO: &[u8] = b"GFtype\0clthello\0SVPNCOOKIE\0";
 
@@ -47,42 +52,38 @@ struct Up {
     gw: Option<Ipv4Addr>,
 }
 
-/// Blocks until the stop flag is set (SIGTERM / `disconnect` on stdin).
-pub fn run(session: &mut Session, no_dtls: bool, no_routes: bool) -> Result<(), String> {
+/// Why [`data_loop`] gave up on a link.
+enum LinkDown {
+    /// A fresh DTLS link that carried no IP back (see [`DTLS_TRIAL`]).
+    DtlsTrial(String),
+    Lost(String),
+}
+
+impl From<String> for LinkDown {
+    fn from(e: String) -> Self {
+        LinkDown::Lost(e)
+    }
+}
+
+/// Blocks until the stop flag is set (SIGTERM / `disconnect` on stdin). `reauth`
+/// logs in again when the gateway has ended the session under us.
+pub fn run(
+    session: &mut Session,
+    no_dtls: bool,
+    no_routes: bool,
+    reauth: &mut dyn FnMut() -> Result<Session, String>,
+) -> Result<(), String> {
     if session.svpncookie().is_none() {
         return Err("no SVPNCOOKIE — not authenticated".into());
     }
-
-    println!("# fetching tunnel config ({XML_PATH}) …");
-    let resp = http::request(
-        &session.host,
-        session.port,
-        "GET",
-        XML_PATH,
-        &mut session.cookies,
-        &[],
-        b"",
-        Duration::from_secs(20),
-    )?;
-    if resp.status != 200 {
-        return Err(format!("config request failed: HTTP {}", resp.status));
-    }
-    if let Ok(p) = std::env::var("UNVPN_FORTI_DUMP_XML") {
-        let _ = std::fs::write(&p, &resp.body);
-        println!("# (raw tunnel XML dumped to {p})");
-    }
-    let cfg = config::parse(&resp.body_str());
-    println!(
-        "# config: dtls={} heartbeat={}s idle={}s dns={:?} domains={:?} routes={} exclude={}",
-        cfg.dtls, cfg.heartbeat, cfg.idle_timeout, cfg.dns, cfg.domains, cfg.routes.len(), cfg.exclude.len()
-    );
+    let cfg = fetch_config(session)?;
 
     let mut want_dtls = cfg.dtls && !no_dtls;
     if cfg.dtls && no_dtls {
         println!("# --no-dtls: gateway offers DTLS but staying on TLS");
     }
     let mut up = open_link(session, want_dtls)?;
-    let assigned = cfg.assigned_ip.unwrap_or(up.ipc.addr);
+    let mut assigned = cfg.assigned_ip.unwrap_or(up.ipc.addr);
     let mut dns = cfg.dns.clone();
     if dns.is_empty() {
         dns = up.ipc.dns.clone();
@@ -127,17 +128,30 @@ pub fn run(session: &mut Session, no_dtls: bool, no_routes: bool) -> Result<(), 
         if FORTI_STOP.load(Ordering::SeqCst) {
             break Ok(());
         }
-        let Err(e) = outcome else { break Ok(()) }; // peer terminated cleanly
+        let Err(down) = outcome else { break Ok(()) }; // peer terminated cleanly
+        // A gateway that hands out DTLS but forwards nothing over it also ends the
+        // whole SSL-VPN session once we abandon that tunnel (the TLS tunnel request
+        // is closed, then 403): only a new login gets us a working TLS tunnel.
+        let mut relogin = false;
+        let e = match down {
+            LinkDown::DtlsTrial(e) => {
+                let _ = up.conn.send(ppp::PPP_LCP, &ppp::terminate_request(0xfd));
+                relogin = true;
+                e
+            }
+            LinkDown::Lost(e) => e,
+        };
         if up.dtls {
             // This DTLS link failed (UDP timeout, or the gateway's DTLS data plane
             // didn't forward): don't retry DTLS — the TLS link is the reliable path.
             want_dtls = false;
         }
         out!("# warning: link dropped ({e}) — reconnecting over TLS …");
-        // Rebuild the link (no re-auth), retrying with a short backoff. Only once we
-        // hold a fresh link do we loop back into data_loop — never re-run it on the
-        // dead one.
+        // Rebuild the link, retrying with a short backoff. Only once we hold a fresh
+        // link do we loop back into data_loop — never re-run it on the dead one.
         let mut attempt = 0u32;
+        let mut relogged = false;
+        let mut new_cfg_ip = None;
         loop {
             if FORTI_STOP.load(Ordering::SeqCst) {
                 break 'session Ok(());
@@ -146,17 +160,45 @@ pub fn run(session: &mut Session, no_dtls: bool, no_routes: bool) -> Result<(), 
             if attempt > MAX_RECONNECT_TRIES {
                 break 'session Err(format!("tunnel lost ({e}); reconnect failed {MAX_RECONNECT_TRIES} times"));
             }
-            if sleep_interruptible(attempt as u64) {
+            if !relogin && sleep_interruptible(attempt as u64) {
                 break 'session Ok(());
             }
+            if relogin {
+                out!("# the gateway ended the session — logging in again …");
+                let pause = sysnet::StdinWatchPause::new();
+                let fresh = reauth();
+                drop(pause);
+                match fresh {
+                    Ok(s) => *session = s,
+                    Err(e2) => break 'session Err(format!("tunnel lost ({e}); new login failed: {e2}")),
+                }
+                relogin = false;
+                relogged = true;
+                match fetch_config(session) {
+                    Ok(c) => new_cfg_ip = c.assigned_ip,
+                    Err(e2) => {
+                        out!("# reconnect attempt {attempt}/{MAX_RECONNECT_TRIES} failed: {e2}");
+                        continue;
+                    }
+                }
+            }
             match open_link(session, want_dtls) {
-                Ok(new) if new.ipc.addr != up.ipc.addr && cfg.assigned_ip.is_none() => {
+                Ok(new) if !relogged && new.ipc.addr != up.ipc.addr && cfg.assigned_ip.is_none() => {
                     break 'session Err(format!(
                         "reconnected but the gateway assigned a new IP {} (was {})",
                         new.ipc.addr, up.ipc.addr
                     ));
                 }
                 Ok(new) => {
+                    let ip = if relogged { new_cfg_ip.unwrap_or(new.ipc.addr) } else { assigned };
+                    if ip != assigned {
+                        // New session, new address: swap it on the tun (our routes are
+                        // plain `dev` routes, so they stay).
+                        let _ = tun::ip(&["addr", "add", &format!("{ip}/32"), "dev", &tun_name]);
+                        let _ = tun::ip(&["addr", "del", &format!("{assigned}/32"), "dev", &tun_name]);
+                        out!("# tunnel IP is now {ip} (was {assigned})");
+                        assigned = ip;
+                    }
                     if new.mtu < up.mtu {
                         let _ = tun::ip(&["link", "set", "dev", &tun_name, "mtu", &new.mtu.to_string()]);
                     }
@@ -164,7 +206,13 @@ pub fn run(session: &mut Session, no_dtls: bool, no_routes: bool) -> Result<(), 
                     out!("# reconnected over {}", path(up.dtls));
                     break;
                 }
-                Err(e2) => out!("# reconnect attempt {attempt}/{MAX_RECONNECT_TRIES} failed: {e2}"),
+                Err(e2) => {
+                    out!("# reconnect attempt {attempt}/{MAX_RECONNECT_TRIES} failed: {e2}");
+                    // 403 on the tunnel request: the SVPNCOOKIE is no longer valid.
+                    if e2.contains(" 403") && !relogged {
+                        relogin = true;
+                    }
+                }
             }
         }
     };
@@ -174,6 +222,34 @@ pub fn run(session: &mut Session, no_dtls: bool, no_routes: bool) -> Result<(), 
     let _ = up.conn.send(ppp::PPP_LCP, &ppp::terminate_request(0xfe));
     drop(restore);
     result
+}
+
+/// `GET /remote/fortisslvpn_xml`: the tunnel's IP, DNS, routes and DTLS offer.
+fn fetch_config(session: &mut Session) -> Result<config::TunnelConfig, String> {
+    println!("# fetching tunnel config ({XML_PATH}) …");
+    let resp = http::request(
+        &session.host,
+        session.port,
+        "GET",
+        XML_PATH,
+        &mut session.cookies,
+        &[],
+        b"",
+        Duration::from_secs(20),
+    )?;
+    if resp.status != 200 {
+        return Err(format!("config request failed: HTTP {}", resp.status));
+    }
+    if let Ok(p) = std::env::var("UNVPN_FORTI_DUMP_XML") {
+        let _ = std::fs::write(&p, &resp.body);
+        println!("# (raw tunnel XML dumped to {p})");
+    }
+    let cfg = config::parse(&resp.body_str());
+    println!(
+        "# config: dtls={} heartbeat={}s idle={}s dns={:?} domains={:?} routes={} exclude={}",
+        cfg.dtls, cfg.heartbeat, cfg.idle_timeout, cfg.dns, cfg.domains, cfg.routes.len(), cfg.exclude.len()
+    );
+    Ok(cfg)
 }
 
 fn path(dtls: bool) -> &'static str {
@@ -369,7 +445,7 @@ fn data_loop(
     heartbeat: u64,
     dead_secs: u64,
     dtls: bool,
-) -> Result<(), String> {
+) -> Result<(), LinkDown> {
     let tun_fd = tun_file.as_raw_fd();
     let mut echo_id = 1u8;
     let mut last_hb = Instant::now();
@@ -390,8 +466,11 @@ fn data_loop(
         if FORTI_STOP.load(Ordering::SeqCst) {
             return Ok(());
         }
-        if dtls && tin == 0 && tout >= 8 && started.elapsed() >= DTLS_TRIAL {
-            return Err(format!("DTLS up but no data forwarded in {}s (gateway DTLS data plane broken)", DTLS_TRIAL.as_secs()));
+        if dtls && tin == 0 && tout >= DTLS_TRIAL_PACKETS && started.elapsed() >= DTLS_TRIAL {
+            return Err(LinkDown::DtlsTrial(format!(
+                "DTLS up but no IP came back in {}s — sent {tout} packets, got {rx} control frames, {perr} framing errors",
+                DTLS_TRIAL.as_secs()
+            )));
         }
         let mut fds = [
             libc::pollfd { fd: tun_fd, events: libc::POLLIN, revents: 0 },
@@ -403,14 +482,14 @@ fn data_loop(
             if e.kind() == std::io::ErrorKind::Interrupted {
                 continue;
             }
-            return Err(format!("poll: {e}"));
+            return Err(format!("poll: {e}").into());
         }
 
         // tun → tunnel: drain everything queued (bounded), sent as one batch.
         if fds[0].revents & libc::POLLIN != 0 {
             for _ in 0..64 {
                 match tun_file.read(&mut buf) {
-                    Ok(0) => return Err("tun closed".into()),
+                    Ok(0) => return Err(LinkDown::Lost("tun closed".into())),
                     Ok(m) if tun::is_ipv4(&buf[..m]) => {
                         conn.queue(ppp::PPP_IPV4, &buf[..m])?;
                         tout += 1;
@@ -418,7 +497,7 @@ fn data_loop(
                     Ok(_) => {} // not IPv4 (the tunnel is IPv4-only) — drop
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                    Err(e) => return Err(format!("tun read: {e}")),
+                    Err(e) => return Err(format!("tun read: {e}").into()),
                 }
             }
             conn.flush_tx()?;
@@ -446,7 +525,7 @@ fn data_loop(
                     Err(e) => {
                         perr += 1;
                         if perr > 20 {
-                            return Err(format!("tunnel framing error: {e}"));
+                            return Err(format!("tunnel framing error: {e}").into());
                         }
                         break;
                     }
@@ -465,7 +544,7 @@ fn data_loop(
             last_hb = Instant::now();
         }
         if last_rx.elapsed().as_secs() >= dead_secs {
-            return Err(format!("no data from gateway for {}s (dead peer)", last_rx.elapsed().as_secs()));
+            return Err(format!("no data from gateway for {}s (dead peer)", last_rx.elapsed().as_secs()).into());
         }
         if last_stats.elapsed().as_secs() >= 10 {
             out!("#  stats[{}]: rx_frames={rx} tun_in={tin} tun_out={tout} frame_err={perr}", path(dtls));
