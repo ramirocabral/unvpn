@@ -434,6 +434,8 @@ impl App {
             "Profile (.ovpn file)"
         } else if wireguard {
             "Config (.conf file)"
+        } else if gp {
+            "Portal"
         } else {
             "Gateway"
         });
@@ -468,7 +470,7 @@ impl App {
         } else if anyconnect {
             "Full gateway URL incl. any group path. A 2FA code is requested if needed."
         } else if gp {
-            "The portal (or a gateway). Gateway: one of the portal's, by name — empty uses its preferred. A 2FA code is requested if needed."
+            "Portal: the server you log in to. Gateway: which of the portal's gateways to tunnel through — leave empty for its preferred one. A 2FA code is requested if needed."
         } else if openvpn {
             "A client .ovpn profile. Certificates/keys are read from it; a key passphrase (unless saved) or OTP is asked for if needed."
         } else if wireguard {
