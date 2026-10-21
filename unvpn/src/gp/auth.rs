@@ -499,7 +499,16 @@ impl Session {
             let resp = self.post(portal, path, &body)?;
             match resp.status {
                 200 => {}
-                512 => return Err(GpError::BadCreds("invalid username or password".into())),
+                512 => {
+                    // The server's own words, when it says something short and plain.
+                    let text = crate::gp::one_line(&resp.body_str());
+                    let detail = if !text.is_empty() && !text.starts_with('<') && text.len() <= 200 {
+                        format!(" (server: {text})")
+                    } else {
+                        String::new()
+                    };
+                    return Err(GpError::BadCreds(format!("invalid username or password{detail}")));
+                }
                 513 => return Err(GpError::Other("the gateway requires a client certificate".into())),
                 s => return Err(GpError::Other(format!("{path}: HTTP {s}"))),
             }

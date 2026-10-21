@@ -186,7 +186,7 @@ fn do_login(a: &Args) -> Result<Session, String> {
     let who = if a.user.is_empty() { "<SAML>" } else { &a.user };
     println!("# authenticating {who} @ {} …", s.portal_ep.base_url());
     let creds = Creds { user: a.user.clone(), password: a.password.clone() };
-    let mut p = CliPrompter { code: a.code.clone(), saml_cookie: a.saml_cookie.clone(), saml_only: a.saml };
+    let mut p = CliPrompter { code: a.code.clone(), saml_cookie: a.saml_cookie.clone(), saml_only: a.saml, password_asked: false };
     s.login(&creds, a.role, a.gw.as_deref(), &mut p)?;
     let auth = s.auth.as_ref().ok_or("login returned no session")?;
     println!("# authenticated — GlobalProtect session for {} on {}", auth.user, s.ep.host_header());
@@ -209,6 +209,9 @@ struct CliPrompter {
     saml_cookie: Option<String>,
     /// `--saml` without a password: a password form is a mismatch.
     saml_only: bool,
+    /// The first password comes queued on stdin (GUI) or typed at the TTY; a later
+    /// one (after a rejection) needs a prompt the GUI can show.
+    password_asked: bool,
 }
 
 impl Prompter for CliPrompter {
@@ -221,6 +224,10 @@ impl Prompter for CliPrompter {
     fn password(&mut self, label: &str, _message: &str) -> Result<String, String> {
         if self.saml_only {
             return Err("the server asked for a password, not SAML — use password auth (-u <user>)".into());
+        }
+        if std::mem::replace(&mut self.password_asked, true) {
+            println!("# AUTH-PROMPT: answer: {} (the previous one was rejected)", one_line(label));
+            let _ = std::io::stdout().flush();
         }
         crate::anyconnect::read_secret(&format!("{label}: ")).ok_or_else(|| "no password provided".into())
     }
