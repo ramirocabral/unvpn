@@ -15,6 +15,13 @@ pub struct Route {
     pub mask: Ipv4Addr,
 }
 
+impl Route {
+    pub fn contains(&self, ip: Ipv4Addr) -> bool {
+        let m = u32::from(self.mask);
+        u32::from(ip) & m == u32::from(self.net) & m
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct TunnelConfig {
     pub dtls: bool,
@@ -27,6 +34,16 @@ pub struct TunnelConfig {
     pub routes: Vec<Route>,
     /// Exclude routes (`negate="1"`).
     pub exclude: Vec<Route>,
+}
+
+impl TunnelConfig {
+    /// Whether traffic to `ip` goes into the tunnel under the routes we install.
+    pub fn tunnels(&self, ip: Ipv4Addr) -> bool {
+        if self.exclude.iter().any(|r| r.contains(ip)) {
+            return false;
+        }
+        self.routes.is_empty() || self.routes.iter().any(|r| r.contains(ip))
+    }
 }
 
 /// Never fails: a malformed body yields an empty config (no IP ⇒ error upstream).
@@ -203,6 +220,25 @@ fn parse_attrs(s: &str) -> BTreeMap<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tunnels_follows_split_and_exclude_routes() {
+        let r = |n: &str, m: &str| Route { net: n.parse().unwrap(), mask: m.parse().unwrap() };
+        let ip = |s: &str| s.parse::<Ipv4Addr>().unwrap();
+        let mut cfg = TunnelConfig {
+            routes: vec![r("172.16.5.10", "255.255.255.255"), r("10.0.0.0", "255.0.0.0")],
+            exclude: vec![r("10.9.0.0", "255.255.0.0")],
+            ..Default::default()
+        };
+        assert!(cfg.tunnels(ip("172.16.5.10")));
+        assert!(cfg.tunnels(ip("10.1.2.3")));
+        assert!(!cfg.tunnels(ip("10.9.0.53")));
+        assert!(!cfg.tunnels(ip("192.168.50.25")));
+        assert!(!cfg.tunnels(ip("8.8.8.8")));
+        cfg.routes.clear(); // full tunnel
+        assert!(cfg.tunnels(ip("8.8.8.8")));
+        assert!(!cfg.tunnels(ip("10.9.1.1")));
+    }
 
     const SAMPLE: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 <sslvpn-tunnel ver="2" dtls="1" patch="1">
