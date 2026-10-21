@@ -58,5 +58,5 @@ command -v gtk-update-icon-cache >/dev/null && $S gtk-update-icon-cache -qtf "$P
 command -v update-desktop-database >/dev/null && $S update-desktop-database -q "$PREFIX/share/applications" 2>/dev/null || true
 
 echo
-echo "✓ Installed. Launch 'unvpn-gui', or find 'unvpn' in your application menu."
+echo "Installed. Launch 'unvpn-gui', or find 'unvpn' in your application menu."
 echo "  CLI engine: 'unvpn' (see 'unvpn --help')."

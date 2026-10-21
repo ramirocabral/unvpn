@@ -290,7 +290,7 @@ FortiGate SSL-VPN real, **password-only** (sin SAML), autorizado por el usuario 
 FortiGate con "SSO para túnel VPN" + "navegador externo para SAML" (IdP Authentik en
 203.0.113.31:19000), autorizado por el usuario.
 - `--probe` ✅ → `remote info: sso_port=8020 remoteauthtimeout=240s`, `SAML/SSO is ENABLED →
-  IdP 203.0.113.31:19000`, `external-browser SSO ✓` (antes del fix el probe lo daba como
+  IdP 203.0.113.31:19000`, `external-browser SSO supported` (antes del fix el probe lo daba como
   password-path porque el GW responde 200+JS, no 302).
 - `sudo unvpn forti -g 203.0.113.30:10443 --saml --connect --no-routes` ✅✅ (18/10/2026):
   navegador abierto como el usuario (Brave/Sway) → login IdP + MFA → redirect a

@@ -189,7 +189,7 @@ fn do_login(a: &Args) -> Result<Session, String> {
     let creds = Creds { user: a.user.clone(), password: a.password.clone(), group: a.group.clone() };
     let mut p = CliPrompter { code: a.code.clone(), sso_token: a.sso_token.clone(), sso_only: a.sso };
     s.login(&creds, &mut p)?;
-    println!("# ✅ authenticated — webvpn session acquired.");
+    println!("# authenticated — webvpn session acquired.");
     if let Some(g) = &s.group {
         println!("# tunnel group: {g}");
     }

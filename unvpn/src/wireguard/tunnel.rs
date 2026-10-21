@@ -126,14 +126,14 @@ pub fn run(cfg: Config, opts: RunOpts) -> Result<(), String> {
     }
 
     if opts.probe {
-        out!("# ✅ probe OK — removing {ifname}");
+        out!("# probe OK — removing {ifname}");
         drop(link);
         return Ok(());
     }
 
     let ip = iface.addresses.first().map(|a| a.addr.to_string()).unwrap_or_default();
     // This exact "— IP <ip>  DNS [..]" shape is what the GUI's log parser reads.
-    out!("# ✅ WireGuard up — IP {ip}  DNS {:?}  (mtu {mtu})", if opts.no_routes { &[][..] } else { &iface.dns[..] });
+    out!("# WireGuard up — IP {ip}  DNS {:?}  (mtu {mtu})", if opts.no_routes { &[][..] } else { &iface.dns[..] });
 
     let mut restore = sysnet::NetRestore::default();
     if opts.no_routes {
@@ -146,7 +146,7 @@ pub fn run(cfg: Config, opts: RunOpts) -> Result<(), String> {
         drop(restore);
         return Err("disconnect requested before the tunnel came up".into());
     }
-    out!("# ✅ TUNNEL UP. (send 'disconnect' on stdin or SIGTERM to stop)");
+    out!("# TUNNEL UP. (send 'disconnect' on stdin or SIGTERM to stop)");
 
     let result = monitor(&mut nl, &ifname);
     out!("# disconnecting — removing {ifname}, restoring DNS/routes …");
@@ -215,14 +215,14 @@ fn wait_handshake(nl: &mut WgNetlink, ifname: &str, cfg: &Config, reachable: &[u
             if !done[i] && peer_state(&st, &p.public_key).is_some_and(|s| s.last_handshake != 0) {
                 done[i] = true;
                 first_ok.get_or_insert_with(Instant::now);
-                out!("# ✅ handshake with peer {} ({} ms)", short(&p.public_key), start.elapsed().as_millis());
+                out!("# handshake with peer {} ({} ms)", short(&p.public_key), start.elapsed().as_millis());
             }
         }
         let all = reachable.iter().all(|&i| done[i]);
         let others_timed_out = first_ok.is_some_and(|t| t.elapsed() >= OTHERS_WAIT);
         if all || others_timed_out {
             for &i in reachable.iter().filter(|&&i| !done[i]) {
-                out!("# ⚠ no handshake yet with peer {} — continuing (the kernel keeps retrying)", short(&cfg.peers[i].public_key));
+                out!("# warning: no handshake yet with peer {} — continuing (the kernel keeps retrying)", short(&cfg.peers[i].public_key));
             }
             return Ok(());
         }
@@ -272,10 +272,10 @@ fn monitor(nl: &mut WgNetlink, ifname: &str) -> Result<(), String> {
             let (prx, ptx): (u64, u64) = p.peers.iter().fold((0, 0), |a, p| (a.0 + p.rx_bytes, a.1 + p.tx_bytes));
             let silent = tx > ptx && rx == prx && age.is_none_or(|a| a > STALE_HANDSHAKE);
             if silent && !warned {
-                out!("# ⚠ peer not answering (no reply / handshake for a while) — the kernel keeps retrying");
+                out!("# warning: peer not answering (no reply / handshake for a while) — the kernel keeps retrying");
                 warned = true;
             } else if !silent && warned && rx > prx {
-                out!("# ✅ peer answering again");
+                out!("# peer answering again");
                 warned = false;
             }
         }

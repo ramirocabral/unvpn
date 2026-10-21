@@ -145,7 +145,7 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
         cfg.split_include.len(), cfg.split_exclude.len(), cfg.default_route, cfg.keepalive, cfg.dpd, cfg.rekey, cfg.dtls_port, cfg.dtls_cipher
     );
     // This exact "— IP <ip>  DNS [..]" shape is what the GUI's log parser reads.
-    println!("# ✅ CSTP up — IP {assigned}  DNS {:?}  (mtu {mtu})", dns);
+    println!("# CSTP up — IP {assigned}  DNS {:?}  (mtu {mtu})", dns);
     if let Some(b) = &cfg.banner {
         println!("# banner: {}", super::auth::one_line(b));
     }
@@ -185,7 +185,7 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
     let keepalive = clamp_secs(cfg.keepalive, 20, 20, 60);
     let ka = Liveness { dpd_secs: dpd, keepalive_secs: keepalive, dpd_dead_secs: (dpd * 2).max(90) };
     out!("# liveness: DPD {}s, keepalive {}s, dead-peer {}s", ka.dpd_secs, ka.keepalive_secs, ka.dpd_dead_secs);
-    out!("# ✅ TUNNEL UP. (send 'disconnect' on stdin or SIGTERM to stop)");
+    out!("# TUNNEL UP. (send 'disconnect' on stdin or SIGTERM to stop)");
 
     // 4b) DTLS fast path (best-effort): data on UDP, CSTP kept for control + fallback.
     let mut dtls = try_dtls(session, &chan, &cfg, opts.no_dtls);
@@ -221,7 +221,7 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
                         let _ = tun::ip(&["addr", "del", &format!("{assigned}/{}", cfg.prefix()), "dev", &tun_name]);
                         let _ = tun::ip(&["addr", "add", &format!("{new_ip}/{}", newcfg.prefix()), "dev", &tun_name]);
                     }
-                    out!("# ✅ reconnected — tunnel back up (IP {new_ip})");
+                    out!("# reconnected — tunnel back up (IP {new_ip})");
                     dtls = try_dtls(session, &chan, &newcfg, opts.no_dtls);
                     reconnected = true;
                     break;
@@ -330,7 +330,7 @@ fn try_dtls(session: &Session, chan: &Channel, cfg: &TunnelConfig, no_dtls: bool
     out!("# trying DTLS (UDP {} · {cipher} · {}) …", cfg.dtls_port, if dtls12 { "DTLSv1.2" } else { "DTLSv1-BAD" });
     match dtls::connect(gw, cfg.dtls_port, &cfg.dtls_session_id, &chan.dtls_master, &cipher, dtls12, Duration::from_secs(4)) {
         Ok(d) => {
-            out!("# ✅ DTLS up — data plane on UDP {} (faster; CSTP kept for control + fallback)", cfg.dtls_port);
+            out!("# DTLS up — data plane on UDP {} (faster; CSTP kept for control + fallback)", cfg.dtls_port);
             Some(d)
         }
         Err(e) => {

@@ -165,7 +165,7 @@ fn probe(a: &Args) -> Result<(), String> {
         || bl.contains("f5 networks")
         || server.to_ascii_lowercase().contains("big");
     if looks_f5 {
-        println!("# looks like an F5 BIG-IP APM logon portal ✓");
+        println!("# looks like an F5 BIG-IP APM logon portal");
     } else {
         println!("# does not obviously look like F5 APM (no MRHSession / my.policy / auth_form)");
     }
@@ -293,7 +293,7 @@ fn do_login(a: &Args) -> Result<Session, String> {
 
         match s.submit(&form, &answers)? {
             Outcome::Authenticated => {
-                println!("# ✅ authenticated — MRHSession + F5_ST acquired.");
+                println!("# authenticated — MRHSession + F5_ST acquired.");
                 return Ok(s);
             }
             Outcome::Failed(msg) => return Err(msg),
@@ -325,7 +325,7 @@ fn launch(a: &Args) -> Result<(), String> {
     println!("# f5-vpn launch: server={}:{} resource={:?}", p.host, p.port, p.resource);
     println!("# exchanging one-time token for a session (get_sessid_for_token.php3) …");
     let mut session = auth::Session::from_handoff(p.host, p.port, timeout(), &p.token)?;
-    println!("# ✅ session acquired via handoff (MRHSession set)");
+    println!("# session acquired via handoff (MRHSession set)");
     tunnel::run(
         &mut session,
         tunnel::RunOpts {

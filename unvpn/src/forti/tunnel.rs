@@ -95,7 +95,7 @@ pub fn run(session: &mut Session, no_dtls: bool, no_routes: bool) -> Result<(), 
     if dns.is_empty() {
         dns = up.ipc.dns.clone();
     }
-    println!("# ✅ PPP up over {} — IP {assigned}  DNS {dns:?}  (IPCP gave {})", path(up.dtls), up.ipc.addr);
+    println!("# PPP up over {} — IP {assigned}  DNS {dns:?}  (IPCP gave {})", path(up.dtls), up.ipc.addr);
 
     // 4) tun device + addressing. Distinct name from the Check Point back-end
     //    ("unvpn0") so both tunnels can be up at once without colliding.
@@ -132,7 +132,7 @@ pub fn run(session: &mut Session, no_dtls: bool, no_routes: bool) -> Result<(), 
     let hb = if cfg.heartbeat > 0 { cfg.heartbeat as u64 } else { 10 };
     let dead_secs = (hb * 6).max(60);
 
-    out!("# ✅ TUNNEL UP over {}. (send 'disconnect' on stdin or SIGTERM to stop)", path(up.dtls));
+    out!("# TUNNEL UP over {}. (send 'disconnect' on stdin or SIGTERM to stop)", path(up.dtls));
     let result = 'session: loop {
         let outcome = data_loop(&mut up.conn, &mut tun_file, up.fd, hb, dead_secs, up.dtls);
         if FORTI_STOP.load(Ordering::SeqCst) {
@@ -144,7 +144,7 @@ pub fn run(session: &mut Session, no_dtls: bool, no_routes: bool) -> Result<(), 
             // didn't forward): don't retry DTLS — the TLS link is the reliable path.
             want_dtls = false;
         }
-        out!("# ⚠ link dropped ({e}) — reconnecting over TLS …");
+        out!("# warning: link dropped ({e}) — reconnecting over TLS …");
         // Rebuild the link (no re-auth), retrying with a short backoff. Only once we
         // hold a fresh link do we loop back into data_loop — never re-run it on the
         // dead one.
@@ -172,7 +172,7 @@ pub fn run(session: &mut Session, no_dtls: bool, no_routes: bool) -> Result<(), 
                         let _ = tun::ip(&["link", "set", "dev", &tun_name, "mtu", &new.mtu.to_string()]);
                     }
                     up = new;
-                    out!("# ✅ reconnected over {}", path(up.dtls));
+                    out!("# reconnected over {}", path(up.dtls));
                     break; // back to data_loop on the fresh link
                 }
                 Err(e2) => out!("# reconnect attempt {attempt}/{MAX_RECONNECT_TRIES} failed: {e2}"),

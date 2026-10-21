@@ -353,7 +353,7 @@ pub fn run(mut p: Prepared, prompter: &mut dyn Prompter, opts: RunOpts) -> Resul
     print_push(&est.push);
 
     if opts.login_only {
-        out!("# ✅ authenticated — configuration received (--login: not bringing up the tunnel).");
+        out!("# authenticated — configuration received (--login: not bringing up the tunnel).");
         let mut eng = est.engine;
         say_goodbye(&mut eng);
         return Ok(());
@@ -366,7 +366,7 @@ pub fn run(mut p: Prepared, prompter: &mut dyn Prompter, opts: RunOpts) -> Resul
     let compress = push.compress.or(p.cfg.compress).unwrap_or(Compress::None);
     let dns = if p.cfg.route_nopull { Vec::new() } else { push.dns.clone() };
     // This exact "— IP <ip>  DNS [..]" shape is what the GUI's log parser reads.
-    out!("# ✅ OpenVPN up — IP {ifc_local}  DNS {:?}  (mtu {mtu})", dns);
+    out!("# OpenVPN up — IP {ifc_local}  DNS {:?}  (mtu {mtu})", dns);
 
     // tun device.
     let (mut tun_file, tun_name) = tun::open_tun(TUN_NAME)?;
@@ -401,7 +401,7 @@ pub fn run(mut p: Prepared, prompter: &mut dyn Prompter, opts: RunOpts) -> Resul
     let ping_restart = push.ping_restart.or(p.cfg.ping_restart).unwrap_or(120).max(ping * 3);
     let reneg = p.cfg.reneg_sec.filter(|&s| s > 0);
     out!("# liveness: ping {ping}s, ping-restart {ping_restart}s{}", reneg.map(|r| format!(", reneg {r}s")).unwrap_or_default());
-    out!("# ✅ TUNNEL UP. (send 'disconnect' on stdin or SIGTERM to stop)");
+    out!("# TUNNEL UP. (send 'disconnect' on stdin or SIGTERM to stop)");
 
     let mut fail_streak = 0u32;
     let result: Result<(), String> = 'session: loop {
@@ -439,7 +439,7 @@ pub fn run(mut p: Prepared, prompter: &mut dyn Prompter, opts: RunOpts) -> Resul
                     }
                     engine = est.engine;
                     push = est.push;
-                    out!("# ✅ reconnected — tunnel back up (IP {})", push.ifconfig.map(|x| x.0).unwrap_or(ifc_local));
+                    out!("# reconnected — tunnel back up (IP {})", push.ifconfig.map(|x| x.0).unwrap_or(ifc_local));
                     reconnected = true;
                     break;
                 }
@@ -676,7 +676,7 @@ fn data_loop(
                 }
                 Event::NewKeyActive { key_id } => {
                     key_born = Instant::now();
-                    out!("# ✅ data keys renegotiated (key id {key_id})");
+                    out!("# data keys renegotiated (key id {key_id})");
                 }
                 Event::TlsUp { key_id, version, .. } if key_id != 0 => out!("# renegotiation: TLS up ({version})"),
                 _ => {}
@@ -832,7 +832,7 @@ pub fn probe(p: &Prepared) -> Result<(), String> {
                 while let Some(ev) = eng.events.pop_front() {
                     if let Event::TlsUp { version, cipher, .. } = ev {
                         let pi = p.peer.lock().unwrap().clone();
-                        out!("#   ✅ TLS up: {version} {cipher}");
+                        out!("#   TLS up: {version} {cipher}");
                         out!("#   server cert: {}", pi.subject);
                         out!("#   issuer:      {}", pi.issuer);
                         return Ok(());
@@ -842,7 +842,7 @@ pub fn probe(p: &Prepared) -> Result<(), String> {
             Err(if got_reset { "TLS handshake did not complete".into() } else { "no answer (wrong port/proto, or tls-auth/tls-crypt key mismatch)".into() })
         })();
         if let Err(e) = r {
-            out!("#   ✗ {e}");
+            out!("#   failed: {e}");
         }
     }
     Ok(())

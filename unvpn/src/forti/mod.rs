@@ -164,7 +164,7 @@ fn probe(a: &Args) -> Result<(), String> {
     println!("# GET {INFO_PATH} → HTTP {} · Server: {server}", resp.status);
     let body = resp.body_str();
     if body.contains("fgt_lang") || body.contains("<api ") || server.to_ascii_lowercase().contains("forti") {
-        println!("# looks like a FortiGate SSL-VPN portal ✓");
+        println!("# looks like a FortiGate SSL-VPN portal");
     }
     let info = saml::parse_remote_info(&body);
     if info != saml::RemoteInfo::default() {
@@ -180,7 +180,7 @@ fn probe(a: &Args) -> Result<(), String> {
             let idp = url.split('/').nth(2).unwrap_or(&url);
             println!("# SAML/SSO is ENABLED → IdP {idp}");
             if info.sso_port.is_some() {
-                println!("#   external-browser SSO ✓ (redirect back to 127.0.0.1:{})", info.sso_port.unwrap());
+                println!("#   external-browser SSO supported (redirect back to 127.0.0.1:{})", info.sso_port.unwrap());
             }
             println!("#   (use: unvpn forti -g {}:{} --connect)", a.host, a.port);
         }
@@ -299,7 +299,7 @@ fn do_login(a: &Args) -> Result<Session, String> {
     for round in 0..=MAX_AUTH_ROUNDS {
         let ch = match outcome {
             AuthOutcome::Authenticated => {
-                println!("# ✅ authenticated — SVPNCOOKIE acquired ({} bytes).", s.svpncookie().map(|c| c.len()).unwrap_or(0));
+                println!("# authenticated — SVPNCOOKIE acquired ({} bytes).", s.svpncookie().map(|c| c.len()).unwrap_or(0));
                 return Ok(s);
             }
             AuthOutcome::Failed(msg) => return Err(msg),
@@ -497,7 +497,7 @@ fn authenticate_fresh(a: &Args) -> Result<Session, String> {
     if use_saml {
         let opts = saml::SamlOpts { port: a.saml_port, open_browser: !a.no_browser };
         let s = saml::login(&a.host, a.port, &a.realm, &opts)?;
-        println!("# ✅ SAML authenticated — SVPNCOOKIE acquired ({} bytes).", s.svpncookie().map(|c| c.len()).unwrap_or(0));
+        println!("# SAML authenticated — SVPNCOOKIE acquired ({} bytes).", s.svpncookie().map(|c| c.len()).unwrap_or(0));
         Ok(s)
     } else {
         do_login(a)

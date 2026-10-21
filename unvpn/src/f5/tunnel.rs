@@ -224,7 +224,7 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
         }
     }
 
-    out!("# ✅ TUNNEL UP over {}. (send 'disconnect' on stdin or SIGTERM to stop)", path(on_dtls));
+    out!("# TUNNEL UP over {}. (send 'disconnect' on stdin or SIGTERM to stop)", path(on_dtls));
     tun::set_nonblocking(&tun_file);
 
     let mut fail_streak = 0u32;
@@ -277,7 +277,7 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
                             write_status_file(sf, &session.host, assigned, &dns);
                         }
                     }
-                    out!("# ✅ reconnected — tunnel back up over {} (IP {assigned})", path(on_dtls));
+                    out!("# reconnected — tunnel back up over {} (IP {assigned})", path(on_dtls));
                     reconnected = true;
                     break;
                 }
@@ -479,7 +479,7 @@ fn finish(conn: F5Conn, ipc: ppp::IpConfig, cfg: &F5Options, l: Link) -> Channel
         dns = ipc.dns.clone();
     }
     let mtu = l.mtu.min(link_mtu(ipc.peer_mru, None));
-    println!("# ✅ PPP up over {} — IP {ip}  DNS {dns:?}  (IPCP gave {})", path(l.dtls), ipc.addr);
+    println!("# PPP up over {} — IP {ip}  DNS {dns:?}  (IPCP gave {})", path(l.dtls), ipc.addr);
     Channel { conn, fd: l.fd, ip, dns, gw: l.gw, mtu, dtls: l.dtls }
 }
 

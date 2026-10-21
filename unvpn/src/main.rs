@@ -142,9 +142,9 @@ fn cmd_tunnel(args: &[String]) {
                             .path(&["optional", "subnet"])
                             .and_then(|v| v.text())
                             .unwrap_or_default();
-                        println!("✅ SSL TUNNEL UP — Office Mode IP: {ip}  subnet: {subnet}");
+                        println!("SSL TUNNEL UP — Office Mode IP: {ip}  subnet: {subnet}");
                     } else if p.name == "disconnect" {
-                        println!("❌ gateway sent disconnect (session invalid/expired?)");
+                        println!("gateway sent disconnect (session invalid/expired?)");
                     }
                 }
                 Err(e) => println!("(could not parse control reply: {e})\n{s}"),
@@ -437,7 +437,7 @@ fn run_tunnel(
         });
     }
 
-    println!("# ✅ TUNNEL UP. (send 'disconnect' on stdin or SIGTERM to stop)");
+    println!("# TUNNEL UP. (send 'disconnect' on stdin or SIGTERM to stop)");
     let mut ticks = 0u32;
     while !TUNNEL_STOP.load(Ordering::SeqCst) {
         std::thread::sleep(std::time::Duration::from_millis(500));
@@ -535,9 +535,9 @@ fn ike_control_loop(
                             if nl > 0 {
                                 lease_secs = nl;
                             }
-                            println!("# ✅ OM lease renewed ({lease_secs}s)");
+                            println!("# OM lease renewed ({lease_secs}s)");
                         }
-                        Err(e) => println!("# ⚠ OM lease renew failed: {e}"),
+                        Err(e) => println!("# warning: OM lease renew failed: {e}"),
                     }
                     lease_next = Some(Instant::now() + lease_renew_at(lease_secs));
                     match do_rekey(&mut session, &sock, &esp, om_ip, &ike_rx) {
@@ -546,9 +546,9 @@ fn ike_control_loop(
                                 lifetime_secs = life;
                                 esp_interval = rekey_interval(lifetime_secs);
                             }
-                            println!("# ✅ ESP SA rekeyed (spi_in={si:#010x} spi_out={so:#010x})");
+                            println!("# ESP SA rekeyed (spi_in={si:#010x} spi_out={so:#010x})");
                         }
-                        Err(e) => println!("# ⚠ ESP rekey failed: {e} — keeping current SA"),
+                        Err(e) => println!("# warning: ESP rekey failed: {e} — keeping current SA"),
                     }
                     esp_next = Instant::now() + esp_interval;
                 } else if now >= esp_next {
@@ -558,9 +558,9 @@ fn ike_control_loop(
                                 lifetime_secs = life;
                                 esp_interval = rekey_interval(lifetime_secs);
                             }
-                            println!("# ✅ ESP SA rekeyed (spi_in={si:#010x} spi_out={so:#010x}, next {}s)", esp_interval.as_secs());
+                            println!("# ESP SA rekeyed (spi_in={si:#010x} spi_out={so:#010x}, next {}s)", esp_interval.as_secs());
                         }
-                        Err(e) => println!("# ⚠ ESP rekey failed: {e} — keeping current SA"),
+                        Err(e) => println!("# warning: ESP rekey failed: {e} — keeping current SA"),
                     }
                     esp_next = Instant::now() + esp_interval;
                 }
@@ -904,7 +904,7 @@ fn cmd_ike(args: &[String]) {
 
         session.compute_keys(&gw_pub, &gw_nonce)?;
         println!(
-            "# ✅ Phase 1 key material derived: SKEYID={}B d={}B a={}B e={}B",
+            "# Phase 1 key material derived: SKEYID={}B d={}B a={}B e={}B",
             session.skeyid.len(),
             session.skeyid_d.len(),
             session.skeyid_a.len(),
@@ -934,12 +934,12 @@ fn cmd_ike(args: &[String]) {
         let hash_r = session.hash_id_r(&id_r);
         match (service::find_signature(&m6), service::find_certificates(&m6).first().cloned()) {
             (Some(sig), Some(cert)) => match session.verify_rsa_signature(&hash_r, &sig, &cert) {
-                Ok(()) => println!("# ✅ Phase 1 COMPLETE — gateway SIG_R verified against its certificate."),
-                Err(e) => println!("# ⚠ gateway SIG_R did not verify: {e}"),
+                Ok(()) => println!("# Phase 1 COMPLETE — gateway SIG_R verified against its certificate."),
+                Err(e) => println!("# warning: gateway SIG_R did not verify: {e}"),
             },
             _ => match service::find_hash(&m6) {
-                Some(h) if h == hash_r => println!("# ✅ Phase 1 COMPLETE — HASH_R matches."),
-                _ => println!("# ⚠ msg6 had no SIG_R/cert and no matching HASH_R (payloads={})", m6.payloads.len()),
+                Some(h) if h == hash_r => println!("# Phase 1 COMPLETE — HASH_R matches."),
+                _ => println!("# warning: msg6 had no SIG_R/cert and no matching HASH_R (payloads={})", m6.payloads.len()),
             },
         }
 
@@ -975,7 +975,7 @@ fn cmd_ike(args: &[String]) {
                         &ack,
                     )?;
                     udp.send(&ack_msg)?;
-                    println!("# ✅✅ SecurID AUTH SUCCEEDED via native IKE (Status=1).");
+                    println!("# SecurID AUTH SUCCEEDED via native IKE (Status=1).");
 
                     // Office Mode: internal IP + DNS + domains.
                     let mac = ike::crypto::random(6);
@@ -1017,7 +1017,7 @@ fn cmd_ike(args: &[String]) {
                         .and_then(to_secs)
                         .or_else(|| service::get_long_attr(&oma, ConfigAttributeType::AddressExpiry).and_then(to_secs))
                         .unwrap_or(0);
-                    println!("# ✅ Office Mode: IP {om_ip} / {om_mask}  DNS {dns:?}  domains \"{domains}\"  lease={lease_secs}s");
+                    println!("# Office Mode: IP {om_ip} / {om_mask}  DNS {dns:?}  domains \"{domains}\"  lease={lease_secs}s");
 
                     // Quick Mode (Phase 2): negotiate the ESP SA.
                     let our_spi = ike::crypto::random_u32();
@@ -1061,7 +1061,7 @@ fn cmd_ike(args: &[String]) {
                     }
                     let esp = service::parse_esp_proposal(&qm2)?;
                     println!(
-                        "# ✅ Quick Mode ESP SA: transform={} auth={} key_bits={} encap={:#x} gw_spi={:#010x} our_spi={:#010x} lifetime={}s",
+                        "# Quick Mode ESP SA: transform={} auth={} key_bits={} encap={:#x} gw_spi={:#010x} our_spi={:#010x} lifetime={}s",
                         esp.transform_id, esp.auth_alg, esp.key_bits, esp.encap, esp.gateway_spi, our_spi, esp.lifetime_secs
                     );
 
@@ -1084,7 +1084,7 @@ fn cmd_ike(args: &[String]) {
                         esp.gateway_spi,
                         &km_out,
                     )?);
-                    println!("# ✅✅✅ FULL IKE/IPSec HANDSHAKE COMPLETE — ESP SA ready.");
+                    println!("# FULL IKE/IPSec HANDSHAKE COMPLETE — ESP SA ready.");
 
                     if let Some(path) = &save_session {
                         save_session_file(path, &host, om_ip, om_mask, &esp, our_spi, &km_in, &km_out, &dns, &domains)?;
@@ -1336,7 +1336,7 @@ fn cmd_login(args: &[String]) {
                 let cookie = extract_cookie(&raw, "CPCVPN_SESSION_ID");
 
                 if authed == "true" {
-                    println!("\n✅ AUTH OK (is_authenticated=true).");
+                    println!("\nAUTH OK (is_authenticated=true).");
                     if !sid.is_empty() {
                         println!("   session_id : {sid}");
                     }
@@ -1359,7 +1359,7 @@ fn cmd_login(args: &[String]) {
                         .path(&["ResponseData", "error_code"])
                         .and_then(|v| v.text())
                         .unwrap_or_default();
-                    println!("\n❌ AUTH FAILED (is_authenticated=false, error_code={ecode}).");
+                    println!("\nAUTH FAILED (is_authenticated=false, error_code={ecode}).");
                     if !err.is_empty() {
                         println!("   gateway says: \"{err}\"");
                     }
@@ -1421,7 +1421,7 @@ fn cmd_login(args: &[String]) {
                     .and_then(|h| ccc::deobfuscate(&h).ok())
                     .map(|b| String::from_utf8_lossy(&b).into_owned())
                     .unwrap_or_default();
-                println!("❌ auth not completed (authn_status={other}). {err}");
+                println!("auth not completed (authn_status={other}). {err}");
                 return;
             }
         }
