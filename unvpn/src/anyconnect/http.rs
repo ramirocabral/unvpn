@@ -1,12 +1,9 @@
 //! Minimal HTTPS/1.1 client for the Cisco AnyConnect control channel.
 //!
-//! Same shape as the Fortinet/F5 back-ends' `http` (native-tls + a trivial cookie
-//! jar, one-shot `Connection: close` requests), with what AnyConnect needs on top:
-//! a configurable User-Agent, the aggregate-auth headers on every request
-//! (`X-Transcend-Version`, `X-Aggregate-Auth`), an XML content type, and
-//! redirects handed back to the caller — the auth layer decides whether a
-//! `Location` is a load-balancer hop to another gateway (follow) or something
-//! XML-POST can't handle (fail), exactly as openconnect does.
+//! Every request carries the aggregate-auth headers (`X-Transcend-Version`,
+//! `X-Aggregate-Auth`). Redirects are handed back to the caller: the auth layer
+//! decides whether a `Location` is a load-balancer hop to another gateway
+//! (follow) or something XML-POST can't handle (fail), as openconnect does.
 //!
 //! Certificates: like the other back-ends and openconnect's default, the gateway
 //! certificate is accepted (corporate CAs are often not in the system store); the
@@ -18,7 +15,6 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
 
-/// A trivial cookie jar: name → value (one gateway, one session).
 #[derive(Default, Clone, Debug)]
 pub struct Cookies(pub BTreeMap<String, String>);
 
@@ -29,14 +25,12 @@ impl Cookies {
     pub fn set(&mut self, name: &str, value: &str) {
         self.0.insert(name.to_string(), value.to_string());
     }
-    /// Render the `Cookie:` header value (`a=1; b=2`), or `None` if empty.
     pub fn header(&self) -> Option<String> {
         if self.0.is_empty() {
             return None;
         }
         Some(self.0.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join("; "))
     }
-    /// Absorb a `Set-Cookie` header value; an empty value clears the cookie.
     pub fn absorb(&mut self, set_cookie: &str) {
         let pair = set_cookie.split(';').next().unwrap_or("").trim();
         if let Some((k, v)) = pair.split_once('=') {
@@ -53,7 +47,6 @@ impl Cookies {
     }
 }
 
-/// A parsed HTTP response.
 pub struct Response {
     pub status: u16,
     pub headers: Vec<(String, String)>,
@@ -69,7 +62,6 @@ impl Response {
     }
 }
 
-/// Where requests go and how they identify themselves.
 #[derive(Clone, Debug)]
 pub struct Endpoint {
     pub host: String,
@@ -79,7 +71,7 @@ pub struct Endpoint {
 }
 
 impl Endpoint {
-    /// `Host:` header value (port only when not 443, as the real client does).
+    /// Port only when not 443, as the real client does.
     pub fn host_header(&self) -> String {
         if self.port == 443 {
             self.host.clone()
@@ -87,13 +79,11 @@ impl Endpoint {
             format!("{}:{}", self.host, self.port)
         }
     }
-    /// `https://host[:port]` (no trailing slash).
     pub fn base_url(&self) -> String {
         format!("https://{}", self.host_header())
     }
 }
 
-/// Open a TLS stream to the gateway. Blocking, with read/write timeouts.
 pub fn connect_tls(host: &str, port: u16, timeout: Duration) -> Result<TlsStream<TcpStream>, String> {
     let connector = TlsConnector::builder()
         .danger_accept_invalid_certs(true)
@@ -133,8 +123,8 @@ pub fn common_headers(ep: &Endpoint, cookies: &Cookies) -> String {
     h
 }
 
-/// One-shot request (`Connection: close`). `content_type` is sent with a body.
-/// Updates the cookie jar from any `Set-Cookie`. Redirects are NOT followed.
+/// One-shot request (`Connection: close`). Updates the cookie jar from any
+/// `Set-Cookie`. Redirects are NOT followed.
 pub fn request(
     ep: &Endpoint,
     method: &str,
@@ -230,7 +220,6 @@ pub fn read_response<S: Read>(s: &mut S, with_body: bool) -> Result<Response, St
     Ok(Response { status, headers, body })
 }
 
-/// Parse a status line + headers block.
 pub fn parse_head(head: &[u8]) -> Result<(u16, Vec<(String, String)>), String> {
     let text = String::from_utf8_lossy(head);
     let mut lines = text.split("\r\n");
@@ -291,7 +280,6 @@ pub fn split_url(url: &str) -> Result<(String, u16, String), String> {
     if authority.is_empty() {
         return Err(format!("no host in {url:?}"));
     }
-    // [v6]:port, host:port, or host.
     let (host, port) = if let Some(v6) = authority.strip_prefix('[') {
         let (h, tail) = v6.split_once(']').ok_or("bad [IPv6] host")?;
         let port = tail.strip_prefix(':').map(|p| p.parse::<u16>().map_err(|_| "bad port")).transpose()?;

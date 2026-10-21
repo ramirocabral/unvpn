@@ -41,23 +41,16 @@
 
 use std::fmt::Write as _;
 
-/// A CCC value: the Check Point S-expression is a tree of these.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
-    /// Empty value: `()`.
     Empty,
-    /// Bare integer: `(100)`.
     Num(i64),
-    /// Quoted string: `("TRAC")`.
     Str(String),
-    /// Bare symbol: `(ClientHello)`.
     Sym(String),
-    /// Keyed map: `(:key (val) :key2 (...))`.
     Map(Vec<(String, Value)>),
 }
 
 impl Value {
-    /// Build a `Map` from borrowed keys.
     pub fn map(entries: Vec<(&str, Value)>) -> Value {
         Value::Map(
             entries
@@ -75,7 +68,6 @@ impl Value {
         Value::Sym(s.to_string())
     }
 
-    /// Direct child lookup inside a `Map`.
     pub fn get(&self, key: &str) -> Option<&Value> {
         match self {
             Value::Map(entries) => entries.iter().find(|(k, _)| k == key).map(|(_, v)| v),
@@ -83,7 +75,6 @@ impl Value {
         }
     }
 
-    /// Recursive child lookup following a key path.
     pub fn path(&self, keys: &[&str]) -> Option<&Value> {
         let mut cur = self;
         for k in keys {
@@ -100,7 +91,6 @@ impl Value {
         out
     }
 
-    /// The scalar content as an owned string, if this is a scalar node.
     pub fn text(&self) -> Option<String> {
         match self {
             Value::Num(n) => Some(n.to_string()),
@@ -109,10 +99,9 @@ impl Value {
         }
     }
 
-    /// Serialize at the given indentation level. Check Point's gateway parser
-    /// REQUIRES this multi-line, tab-indented layout: a single-line body is
-    /// rejected with `return_code (504)` and an empty header echo. Verified
-    /// against the live gateway; matches snx-rs's `encode_object`.
+    /// Check Point's gateway parser REQUIRES this multi-line, tab-indented
+    /// layout: a single-line body is rejected with `return_code (504)`. Matches
+    /// snx-rs's `encode_object`.
     fn write_indented(&self, out: &mut String, level: usize) {
         match self {
             Value::Empty => out.push_str("()"),
@@ -140,7 +129,6 @@ impl Value {
         }
     }
 
-    /// Human-readable indented rendering (for debugging responses).
     pub fn pretty(&self, indent: usize) -> String {
         let pad = "  ".repeat(indent);
         match self {
@@ -170,12 +158,9 @@ fn push_tabs(out: &mut String, n: usize) {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Secret obfuscation (Check Point "snx" scheme), ported verbatim from snx-rs
 // `util.rs`. username/password/prompt/active_key travel as hex of a per-index
-// XOR against a fixed table, emitted in reversed byte order. `obfuscate` is
-// what we send; `deobfuscate` reads prompt/active_key back from a response.
-// ---------------------------------------------------------------------------
+// XOR against a fixed table, emitted in reversed byte order.
 
 const XOR_TABLE: &[u8] = &[
     45, 79, 68, 73, 70, 73, 69, 68, 38, 87, 48, 82, 79, 80, 69, 82, 84, 89, 51, 72, 69, 69, 84, 55, 73, 84, 72, 47, 43,
@@ -190,7 +175,6 @@ fn translate_byte(i: usize, c: u8) -> u8 {
     }
 }
 
-/// Per-index XOR with the table, emitted in reverse byte order.
 fn translate(data: &[u8]) -> Vec<u8> {
     data.iter()
         .enumerate()
@@ -199,12 +183,10 @@ fn translate(data: &[u8]) -> Vec<u8> {
         .collect()
 }
 
-/// Obfuscate a secret into the hex form Check Point expects on the wire.
 pub fn obfuscate(data: &[u8]) -> String {
     hex_encode(&translate(data))
 }
 
-/// Inverse of [`obfuscate`]: decode a hex secret from a server response.
 pub fn deobfuscate(hexstr: &str) -> Result<Vec<u8>, String> {
     let mut unhexed = hex_decode(hexstr)?;
     unhexed.reverse();
@@ -232,7 +214,6 @@ fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
         .collect()
 }
 
-/// A top-level CCC packet: a named root wrapping keyed entries.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Packet {
     pub name: String,
@@ -240,7 +221,6 @@ pub struct Packet {
 }
 
 impl Packet {
-    /// Serialize to the CCC wire form: `(Name :k (v) ...)`.
     pub fn serialize(&self) -> String {
         let mut out = String::new();
         out.push('(');
@@ -267,7 +247,6 @@ impl Packet {
     }
 }
 
-/// Build a CCC `ClientHello` request (first message of the handshake).
 pub fn client_hello(request_id: i64) -> Packet {
     let header = Value::map(vec![
         ("id", Value::Num(request_id)),
@@ -352,16 +331,11 @@ pub fn multi_challenge(request_id: i64, session_id: &str, user_input: &str) -> P
     }
 }
 
-// ---------------------------------------------------------------------------
-// Parser: recursive-descent over the CCC S-expression grammar.
-// ---------------------------------------------------------------------------
-
 struct Parser<'a> {
     s: &'a [u8],
     i: usize,
 }
 
-/// Parse a CCC packet, e.g. a `(CCCserverResponse ...)` reply.
 pub fn parse(input: &str) -> Result<Packet, String> {
     let mut p = Parser {
         s: input.as_bytes(),
@@ -405,7 +379,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Read a bare token up to whitespace or a paren.
     fn read_bare(&mut self) -> Result<String, String> {
         self.skip_ws();
         let start = self.i;
@@ -440,7 +413,6 @@ impl<'a> Parser<'a> {
         Err("unterminated quoted string".to_string())
     }
 
-    /// Read a parenthesized value: `()`, `(scalar)`, or `(:k (v) ...)`.
     fn read_value(&mut self) -> Result<Value, String> {
         self.skip_ws();
         self.expect(b'(')?;
@@ -474,7 +446,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Read a sequence of `:key value` pairs until a closing paren.
     fn read_map_body(&mut self) -> Result<Value, String> {
         let mut entries = Vec::new();
         loop {
@@ -494,8 +465,7 @@ impl<'a> Parser<'a> {
         Ok(Value::Map(entries))
     }
 
-    /// Read a map key: bare chars up to whitespace or a paren. May be empty
-    /// (the array case above), so unlike `read_bare` it never errors.
+    /// May be empty (the array case above), so unlike `read_bare` it never errors.
     fn read_key(&mut self) -> String {
         self.skip_ws();
         let start = self.i;
@@ -532,8 +502,6 @@ mod tests {
 
     #[test]
     fn parse_server_response_login_options() {
-        // Shape of a CCCserverResponse advertising a realm + auth method,
-        // matching the `login_options_list` vocabulary seen in TrAPI.dll.
         let sample = r#"(CCCserverResponse
             :ResponseHeader (
                 :id (0)
@@ -631,7 +599,6 @@ mod tests {
         assert!(got.contains(":client_type (TRAC)"));
         assert!(got.contains(":selectedLoginOption (vpn)"));
         assert!(got.contains(":password ()"));
-        // username is obfuscated, never clear text.
         assert!(!got.contains("user\n") && !got.contains("(user)"));
     }
 

@@ -2,13 +2,7 @@
 //!
 //! Native, from-scratch client for the FortiGate SSL-VPN protocol (the one
 //! openfortivpn / openconnect speak), reverse-engineered from FortiClient
-//! 7.4.3 for Linux. See docs/forti-protocol-notes.md.
-//!
-//! Subcommand: `unvpn forti -g <gw> -u <user> [...]`
-//!   --probe      non-destructive reachability + auth-method detection (no creds)
-//!   --login      authenticate (password + any 2FA step) and show the result
-//!   --connect    authenticate, then bring up the PPP tunnel (needs sudo)       [F4]
-//!   --saml       SSO/SAML login via the browser (auto-detected when no --user)   [F3]
+//! 7.4.3 for Linux.
 
 pub mod auth;
 pub mod config;
@@ -26,7 +20,6 @@ use std::time::Duration;
 const INFO_PATH: &str = "/remote/info";
 const SAML_START: &str = "/remote/saml/start?redirect=1";
 
-/// Parsed `unvpn forti` arguments.
 struct Args {
     host: String,
     port: u16,
@@ -100,7 +93,6 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
         match a.as_str() {
             "--gateway" | "-g" => {
                 let v = it.next().ok_or("--gateway needs a value")?;
-                // host[:port]
                 if let Some((h, p)) = v.rsplit_once(':') {
                     if let Ok(pn) = p.parse::<u16>() {
                         host = Some(h.to_string());
@@ -385,7 +377,6 @@ fn do_login(a: &Args) -> Result<Session, String> {
     Err(format!("gave up after {MAX_AUTH_ROUNDS} authentication rounds"))
 }
 
-/// How a FortiToken Mobile push round ended.
 enum PushEnd {
     /// The push (or a code typed meanwhile) produced this reply; the code, if typed.
     Done(AuthOutcome, Option<String>),
@@ -432,7 +423,7 @@ fn push_or_code(s: &mut Session, ch: &Challenge, msg: &str) -> Result<PushEnd, S
                 cancel.cancel();
                 return Err("authentication cancelled".into());
             }
-            StdinEvent::Line(l) if l.trim().is_empty() => {} // nothing typed — keep waiting
+            StdinEvent::Line(l) if l.trim().is_empty() => {}
             StdinEvent::Line(code) => {
                 cancel.cancel();
                 // The push may have been approved while we read this line: it already
@@ -504,7 +495,6 @@ fn authenticate_fresh(a: &Args) -> Result<Session, String> {
     }
 }
 
-/// Authenticate and bring up the PPP tunnel. Needs root.
 fn connect(a: &Args) -> Result<(), String> {
     let mut session = authenticate(a)?;
     if sysnet::stop_requested() {

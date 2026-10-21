@@ -165,9 +165,7 @@ impl Engine {
         self.wrap.name()
     }
 
-    // ───────────────────────────── receive ─────────────────────────────
-
-    /// Process one received packet. Returns the decrypted payload of a data packet.
+    /// Returns the decrypted payload of a data packet.
     pub fn handle_packet(&mut self, pkt: &[u8]) -> Result<Option<Vec<u8>>, String> {
         let Some(&first) = pkt.first() else { return Ok(None) };
         let (op, kid) = (opcode(first), key_id(first));
@@ -236,10 +234,6 @@ impl Engine {
         Ok(None)
     }
 
-    // ───────────────────────────── drive ─────────────────────────────
-
-    /// Advance every key state (TLS handshake, key exchange, text) and flush
-    /// pending control packets + ACKs.
     pub fn pump(&mut self) -> Result<(), String> {
         let now = Instant::now();
         // Retire expired lame ducks and stalled renegotiations.
@@ -293,7 +287,6 @@ impl Engine {
             ks.sent_key = true;
         }
 
-        // Read everything TLS has decrypted, one record at a time.
         if ks.hs_done {
             let mut buf = vec![0u8; 17 * 1024];
             loop {
@@ -333,7 +326,6 @@ impl Engine {
             }
         }
 
-        // Ship whatever TLS produced as reliable P_CONTROL_V1 messages.
         let ks = &mut self.keys[i];
         if let Some(tls) = ks.tls.as_mut() {
             let tx = std::mem::take(&mut tls.get_mut().tx);
@@ -365,12 +357,9 @@ impl Engine {
         Ok(())
     }
 
-    /// Earliest control retransmit deadline (for the poll timeout).
     pub fn next_deadline(&self) -> Option<Instant> {
         self.keys.iter().filter_map(|k| k.rel.next_deadline()).min()
     }
-
-    // ───────────────────────────── keys ─────────────────────────────
 
     /// Derive and install the data keys of the initial key (key_id 0) once the
     /// PUSH_REPLY fixed the cipher/key-derivation. Later keys do this by themselves.
@@ -432,14 +421,10 @@ impl Engine {
         Ok(())
     }
 
-    /// Whether some key currently encrypts data.
     pub fn has_data_key(&self) -> bool {
         self.keys.iter().any(|k| k.data.is_some() && k.expire.is_none())
     }
 
-    // ───────────────────────────── send ─────────────────────────────
-
-    /// Encrypt one data-channel payload with the active key.
     pub fn encrypt(&mut self, payload: &[u8]) -> Result<Option<Vec<u8>>, String> {
         let peer_id = self.peer_id;
         let Some(ks) = self.keys.iter_mut().find(|k| k.data.is_some() && k.expire.is_none()) else { return Ok(None) };
@@ -506,7 +491,7 @@ fn write_string(b: &mut Vec<u8>, s: &str) {
     b.push(0);
 }
 
-/// Parse the server's key-method-2 message: returns its (random1, random2).
+/// Returns the server's (random1, random2).
 fn parse_key_method_2(m: &[u8]) -> Result<([u8; 32], [u8; 32]), String> {
     if m.len() < 4 + 1 + 64 {
         return Err(format!("short key-method message ({} bytes)", m.len()));
@@ -524,7 +509,6 @@ fn parse_key_method_2(m: &[u8]) -> Result<([u8; 32], [u8; 32]), String> {
     Ok((r1, r2))
 }
 
-/// The server's options string, for the log (best effort).
 #[cfg(test)]
 fn read_options(m: &[u8]) -> Option<String> {
     let l = u16::from_be_bytes([*m.get(69)?, *m.get(70)?]) as usize;

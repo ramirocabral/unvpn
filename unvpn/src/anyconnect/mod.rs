@@ -4,17 +4,6 @@
 //! the Secure Client / AnyConnect speaks to an ASA or Secure Firewall, and the one
 //! openconnect's default (`anyconnect`) backend interoperates with. Reverse-
 //! engineered from the AnyConnect Windows installer plus openconnect prior art.
-//! See docs/anyconnect-protocol-notes.md.
-//!
-//! Subcommand: `unvpn anyconnect -g <url> -u <user> [...]`
-//!   --probe      non-destructive aggregate-auth handshake (no creds): shows the
-//!                login form / groups / SSO the gateway offers
-//!   --login      authenticate and show the result (no tunnel)
-//!   --connect    authenticate, then bring up the CSTP tunnel (needs root)
-//!
-//! `-g` takes the full gateway URL, including the group path if any
-//! (`https://vpn.example.com/GROUPNAME`), exactly as it appears in the browser or
-//! the NetworkManager `gateway` field.
 
 pub mod auth;
 pub mod config;
@@ -28,11 +17,11 @@ use http::Endpoint;
 use std::io::Write;
 use std::time::Duration;
 
-/// Version string reported to the gateway (`<version who="vpn">`). Some policies
-/// branch on a plausible AnyConnect version; this mirrors a recent client.
+/// Reported as `<version who="vpn">`. Some policies branch on a plausible
+/// AnyConnect version; this mirrors a recent client.
 const CLIENT_VERSION: &str = "4.10.07073";
-/// Default User-Agent. The real client sends `AnyConnect <version> <platform>`;
-/// openconnect appends its own. Kept close to the genuine one for policy interop.
+/// The real client sends `AnyConnect <version> <platform>`; kept close to the
+/// genuine one for policy interop.
 const DEFAULT_UA: &str = "AnyConnect Linux_64 4.10.07073";
 
 struct Args {
@@ -139,8 +128,8 @@ fn make_session(a: &Args) -> Result<Session, String> {
     Ok(Session::new(ep, path, CLIENT_VERSION.to_string()))
 }
 
-/// Non-destructive probe: run the init exchange with no credentials and report
-/// what the gateway offers (form fields, groups, SSO).
+/// Run the init exchange with no credentials and report what the gateway offers
+/// (form fields, groups, SSO).
 fn probe(a: &Args) -> Result<(), String> {
     let mut s = make_session(a)?;
     println!("# probing {} …", s.ep.base_url());
@@ -181,8 +170,6 @@ fn probe(a: &Args) -> Result<(), String> {
     Ok(())
 }
 
-/// Authenticate; returns the session with its `webvpn` cookie. Shared by
-/// `--login` and `--connect`.
 fn do_login(a: &Args) -> Result<Session, String> {
     let mut s = make_session(a)?;
     println!("# authenticating {} @ {} …", if a.user.is_empty() { "<SSO>" } else { &a.user }, s.ep.base_url());
@@ -196,7 +183,7 @@ fn do_login(a: &Args) -> Result<Session, String> {
     Ok(s)
 }
 
-/// Authenticate and bring up the tunnel. Needs root.
+/// Needs root.
 fn connect(a: &Args) -> Result<(), String> {
     let mut s = do_login(a)?;
     cstp::run(&mut s, cstp::RunOpts { no_routes: a.no_routes, watch_stdin: true, no_dtls: a.no_dtls })
@@ -220,7 +207,6 @@ impl Prompter for CliPrompter {
     }
 
     fn ask(&mut self, kind: &str, message: &str) -> Result<String, String> {
-        // A pre-supplied OTP answers the first `code` prompt.
         if kind == "code" {
             if let Some(c) = self.code.take() {
                 return Ok(c);
@@ -267,7 +253,6 @@ impl Prompter for CliPrompter {
 /// copied from DevTools / a Cookie header, with stray quotes/whitespace.
 fn clean_sso_token(raw: &str, cookie: &str) -> Option<String> {
     let mut t = raw.trim();
-    // `acSamlv2Token=VALUE; other=…` → VALUE (the cookie may sit anywhere in a header).
     if !cookie.is_empty() {
         if let Some(v) = t.split(';').map(str::trim).find_map(|kv| kv.strip_prefix(cookie)?.strip_prefix('=')) {
             t = v;
@@ -277,8 +262,7 @@ fn clean_sso_token(raw: &str, cookie: &str) -> Option<String> {
     (!t.is_empty()).then(|| t.to_string())
 }
 
-/// Read one line from stdin, with echo off on a TTY (restored after). The GUI
-/// pipes answers here; a TTY user types them.
+/// Read one line from stdin, echo off on a TTY. The GUI pipes answers here.
 fn read_secret(prompt: &str) -> Option<String> {
     let fd = libc::STDIN_FILENO;
     let is_tty = unsafe { libc::isatty(fd) == 1 };

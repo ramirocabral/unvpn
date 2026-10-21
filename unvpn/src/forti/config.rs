@@ -29,9 +29,7 @@ pub struct TunnelConfig {
     pub exclude: Vec<Route>,
 }
 
-/// Parse the tunnel XML. Tolerant: unknown elements are ignored, missing fields
-/// default. Never fails — a malformed body yields an empty config the caller can
-/// sanity-check (no IP ⇒ error upstream).
+/// Never fails: a malformed body yields an empty config (no IP ⇒ error upstream).
 pub fn parse(xml: &str) -> TunnelConfig {
     let mut cfg = TunnelConfig::default();
     for (name, attrs) in start_tags(xml) {
@@ -104,7 +102,6 @@ fn push_domain(domains: &mut String, d: &str) {
     }
 }
 
-/// Yield `(tag_name, attributes)` for every start/empty element in the document.
 fn start_tags(xml: &str) -> Vec<(String, BTreeMap<String, String>)> {
     let mut out = Vec::new();
     let bytes = xml.as_bytes();
@@ -114,7 +111,6 @@ fn start_tags(xml: &str) -> Vec<(String, BTreeMap<String, String>)> {
             i += 1;
             continue;
         }
-        // Skip comments, declarations, closing tags.
         if xml[i..].starts_with("<!--") {
             if let Some(end) = xml[i..].find("-->") {
                 i += end + 3;
@@ -131,9 +127,8 @@ fn start_tags(xml: &str) -> Vec<(String, BTreeMap<String, String>)> {
                 break;
             }
         }
-        // A start/empty tag: <name attr="v" .../>
         let Some(close_rel) = xml[i..].find('>') else { break };
-        let inner = &xml[i + 1..i + close_rel]; // between < and >
+        let inner = &xml[i + 1..i + close_rel];
         let inner = inner.trim_end_matches('/').trim();
         if let Some((name, rest)) = split_name(inner) {
             out.push((name, parse_attrs(rest)));
@@ -158,7 +153,6 @@ fn parse_attrs(s: &str) -> BTreeMap<String, String> {
     let bytes = s.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        // key
         while i < bytes.len() && (bytes[i] as char).is_whitespace() {
             i += 1;
         }
@@ -174,11 +168,10 @@ fn parse_attrs(s: &str) -> BTreeMap<String, String> {
             i += 1;
         }
         if i >= bytes.len() || bytes[i] != b'=' {
-            // bare attribute without value
             map.insert(key, String::new());
             continue;
         }
-        i += 1; // skip '='
+        i += 1;
         while i < bytes.len() && (bytes[i] as char).is_whitespace() {
             i += 1;
         }
@@ -193,7 +186,7 @@ fn parse_attrs(s: &str) -> BTreeMap<String, String> {
                 i += 1;
             }
             let v = s[vstart..i].to_string();
-            i += 1; // skip closing quote
+            i += 1;
             v
         } else {
             let vstart = i;
@@ -238,8 +231,8 @@ mod tests {
         assert_eq!(c.assigned_ip, Some("10.80.134.200".parse().unwrap()));
         assert_eq!(c.dns.len(), 2);
         assert!(c.domains.contains("corp.example.com"));
-        assert_eq!(c.routes.len(), 2); // two includes
-        assert_eq!(c.exclude.len(), 1); // one negate
+        assert_eq!(c.routes.len(), 2);
+        assert_eq!(c.exclude.len(), 1);
         assert_eq!(c.routes[0].net, "10.0.0.0".parse::<std::net::Ipv4Addr>().unwrap());
     }
 

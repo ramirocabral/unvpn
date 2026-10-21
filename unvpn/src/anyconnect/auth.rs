@@ -13,17 +13,15 @@
 //! implemented by openconnect `auth.c` (`xmlpost_*`, `parse_xml_response`,
 //! `process_auth_form`): `group_list` → `<group-select>`; `answer` /
 //! `new_password` / `whichpin` → `<password>`; `verify_*` dropped; everything else
-//! → `<name>value</name>` under `<auth>`. See docs/anyconnect-protocol-notes.md.
+//! → `<name>value</name>` under `<auth>`.
 
 use super::http::{self, Cookies, Endpoint};
 use super::xml::{self, Element};
 
 /// `<device-id>`: what the 64-bit Linux AnyConnect client reports.
 pub const DEVICE_ID: &str = "linux-64";
-/// Content type of the XML POSTs.
 pub const XML_CT: &str = "application/xml; charset=utf-8";
 
-/// Input kinds in a gateway form.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Kind {
     Text,
@@ -38,13 +36,11 @@ pub struct Field {
     pub name: String,
     pub label: String,
     pub kind: Kind,
-    /// Preset value (hidden fields).
     pub value: Option<String>,
     /// Only asked when the chosen group does secondary auth (`second-auth="1"`).
     pub second_auth: bool,
 }
 
-/// One entry of a `<select>` (the group dropdown).
 #[derive(Debug, Clone, Default)]
 pub struct Choice {
     pub value: String,
@@ -68,11 +64,9 @@ pub struct Select {
 }
 
 impl Select {
-    /// Index of the gateway's pre-selected choice (first one if none marked).
     pub fn default_index(&self) -> usize {
         self.choices.iter().position(|c| c.selected).unwrap_or(0)
     }
-    /// Find a choice by value or label (case-insensitive).
     pub fn find(&self, want: &str) -> Option<usize> {
         self.choices
             .iter()
@@ -128,7 +122,6 @@ pub struct Reply {
     /// The raw `<opaque …>…</opaque>` element, to echo back.
     pub opaque: Option<String>,
     pub session_token: Option<String>,
-    /// The gateway asked for a TLS client certificate.
     pub cert_requested: bool,
     /// The gateway wants a Cisco Secure Desktop / HostScan run.
     pub host_scan: bool,
@@ -138,7 +131,6 @@ pub struct Reply {
     pub outline: String,
 }
 
-/// Parse a `<config-auth>` document.
 pub fn parse_reply(doc: &str) -> Result<Reply, String> {
     let root = xml::parse(doc).map_err(|e| format!("bad XML from gateway: {e}"))?;
     if root.name != "config-auth" {
@@ -244,7 +236,7 @@ fn parse_form(form: &Element, f: &mut Form) {
                     "password" => Kind::Password,
                     "hidden" => Kind::Hidden,
                     "sso" => Kind::Sso,
-                    _ => continue, // submit/reset/unknown
+                    _ => continue,
                 };
                 f.fields.push(Field {
                     name: name.to_string(),
@@ -318,31 +310,24 @@ fn is_xml_name(s: &str) -> bool {
         && !s.starts_with(|c: char| c.is_ascii_digit() || c == '-' || c == '.')
 }
 
-// ─────────────────────────────── login driver ───────────────────────────────
-
 /// How the login asks the user for things it doesn't already have. The CLI
 /// implementation reads stdin and emits the `# AUTH-PROMPT:` markers the GUI
 /// understands; tests use a scripted one.
 pub trait Prompter {
-    /// The account password (first factor).
     fn password(&mut self) -> Result<String, String>;
     /// A follow-up secret: OTP / token code / challenge answer / new password.
     /// `kind` is the GUI prompt kind (`code`, `answer`, `newpass`).
     fn ask(&mut self, kind: &str, message: &str) -> Result<String, String>;
-    /// The SSO token for a SAML "sso-v2" login (from a web login).
     fn sso_token(&mut self, sso: &Sso) -> Result<String, String>;
-    /// Progress / informational output.
     fn info(&mut self, line: &str);
 }
 
-/// What the user asked for.
 pub struct Creds {
     pub user: String,
     pub password: Option<String>,
     pub group: Option<String>,
 }
 
-/// An authenticated (or authenticating) session with one gateway.
 pub struct Session {
     pub ep: Endpoint,
     /// Path the user aimed at (`/` or a group URL like `/SSOGROUP`).
@@ -351,7 +336,6 @@ pub struct Session {
     pub cookies: Cookies,
     /// The `webvpn` session token once authenticated.
     pub token: Option<String>,
-    /// Tunnel group the login ended up in (for display).
     pub group: Option<String>,
 }
 
@@ -360,7 +344,7 @@ impl Session {
         Session { ep, path, version, cookies: Cookies::default(), token: None, group: None }
     }
 
-    /// `https://host[:port]/path` — the `<group-access>` URL.
+    /// The `<group-access>` URL.
     pub fn group_access(&self, path: &str) -> String {
         format!("{}{}", self.ep.base_url(), path)
     }
@@ -407,7 +391,7 @@ impl Session {
         Err("too many redirects".into())
     }
 
-    /// Run the whole login dialogue. On success `self.token` holds the cookie.
+    /// On success `self.token` holds the cookie.
     pub fn login(&mut self, creds: &Creds, p: &mut dyn Prompter) -> Result<(), String> {
         let mut path = self.path.clone();
         let mut body = build_init(&self.version, &self.group_access(&path), creds.group.as_deref(), false);
@@ -424,7 +408,6 @@ impl Session {
                 opaque = reply.opaque.clone();
             }
 
-            // Done?
             let form_id = reply.form.as_ref().map(|f| f.auth_id.as_str()).unwrap_or("");
             let token = reply.session_token.clone().or_else(|| self.cookies.get("webvpn").map(str::to_string));
             if reply.kind == "complete" || form_id == "success" {
@@ -552,7 +535,6 @@ fn fill_form(
     let mut answers = Vec::new();
     let mut new_password: Option<String> = None;
     for f in &form.fields {
-        // Fields a group doesn't use are sent empty, never prompted.
         let ignored = choice.is_some_and(|c| c.noaaa || (!c.second_auth && f.second_auth));
         let value = if ignored {
             String::new()
@@ -655,7 +637,7 @@ mod tests {
         assert_eq!(r.kind, "auth-request");
         let f = r.form.unwrap();
         assert_eq!(f.auth_id, "main");
-        assert_eq!(f.action, None); // no action → POST again to the current URL
+        assert_eq!(f.action, None);
         assert_eq!(f.fields.len(), 2);
         assert_eq!(f.fields[0].kind, Kind::Text);
         assert_eq!(f.fields[1].kind, Kind::Password);
@@ -706,11 +688,10 @@ mod tests {
         assert!(s.contains(op));
         assert!(s.contains("<username>u&lt;1&gt;</username>"));
         assert!(s.contains("<password>p&amp;w</password>"));
-        assert!(s.contains("<password>123456</password>")); // answer → password
-        assert!(!s.contains("zzz")); // verify_* dropped
+        assert!(s.contains("<password>123456</password>"));
+        assert!(!s.contains("zzz"));
         assert!(!s.contains("bad name"));
         assert!(s.contains("<group-select>GROUP_A</group-select>"));
-        // The document we build must parse.
         assert_eq!(xml::parse(&s).unwrap().name, "config-auth");
     }
 

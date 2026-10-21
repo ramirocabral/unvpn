@@ -2,8 +2,8 @@
 //!
 //! F5 offers two framings on the byte stream, chosen by the `hdlc_framing` option:
 //!
-//!   * **F5** (non-HDLC, `encap_len = 6` here): one 4-byte header per packet,
-//!     verified against openconnect's `PPP_ENCAP_F5` and `ppp.c`:
+//!   * **F5** (non-HDLC): one 4-byte header per packet, verified against
+//!     openconnect's `PPP_ENCAP_F5` and `ppp.c`:
 //!     ```text
 //!       [u16 be 0xf500]            magic
 //!       [u16 be payload_len]       = len(PPP frame)
@@ -14,11 +14,10 @@
 //!     makes the MTU unpredictable; the TLS data plane still supports it.)
 //!
 //! The PPP frame itself is `FF 03` (address+control) + `[protocol]` (1 or 2 bytes)
-//! + payload. We always *send* `FF 03` + a 2-byte protocol (always accepted); on
+//! + payload, with ACFC/PFC compression for IP data (see [`PppConn::send`]); on
 //! receive we tolerate a missing `FF 03` and a PFC-compressed 1-byte protocol.
 //!
-//! The LCP/IPCP state machine mirrors the Fortinet back-end (same RFC1661/1332
-//! logic); only the on-the-wire framing differs.
+//! The LCP/IPCP state machine mirrors the Fortinet back-end; only the framing differs.
 
 use std::io::{Read, Write};
 use std::net::Ipv4Addr;
@@ -42,19 +41,15 @@ const ECHO_REQ: u8 = 9;
 const ECHO_REP: u8 = 10;
 const DISCARD_REQ: u8 = 11;
 
-// LCP option types.
 const LCP_OPT_MRU: u8 = 1;
 const LCP_OPT_MAGIC: u8 = 5;
 
-// IPCP option types.
 const IPCP_OPT_IP: u8 = 3;
 const IPCP_OPT_DNS1: u8 = 129;
 const IPCP_OPT_DNS2: u8 = 131;
 
-/// Default MRU we advertise.
 const DEFAULT_MRU: u16 = 1354;
 
-/// Which on-the-wire framing the tunnel uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Framing {
     /// F5 4-byte header `[0xf500][len]`.
@@ -63,7 +58,6 @@ pub enum Framing {
     Hdlc,
 }
 
-/// What IPCP negotiation produced.
 #[derive(Debug, Clone)]
 pub struct IpConfig {
     pub addr: Ipv4Addr,
@@ -74,10 +68,7 @@ pub struct IpConfig {
 
 pub use crate::forti::ppp::Transport;
 
-// ───────────────────────── buffered connection ──────────────────────────────
-
-/// A PPP connection over a byte stream (the TLS tunnel). Buffers input so partial
-/// TLS records never corrupt frame boundaries.
+/// Buffers input so partial TLS records never corrupt frame boundaries.
 pub struct PppConn<S> {
     stream: S,
     rbuf: Vec<u8>,
@@ -91,7 +82,6 @@ pub struct PppConn<S> {
     coalesce: bool,
 }
 
-/// A read returned no data (timeout / WouldBlock).
 pub const WOULDBLOCK: &str = "__wouldblock__";
 
 impl<S: Read + Write> PppConn<S> {
@@ -99,7 +89,6 @@ impl<S: Read + Write> PppConn<S> {
         PppConn { stream, rbuf: Vec::with_capacity(4096), framing, poll_fd: None, txbuf: Vec::new(), coalesce: true }
     }
 
-    /// One frame per write (record-oriented transports such as DTLS).
     pub fn set_record_mode(&mut self) {
         self.coalesce = false;
     }
@@ -108,7 +97,6 @@ impl<S: Read + Write> PppConn<S> {
         &mut self.stream
     }
 
-    /// Erase the transport type, keeping any buffered input.
     pub fn boxed(self) -> PppConn<Box<dyn Transport>>
     where
         S: 'static,
@@ -139,8 +127,6 @@ impl<S: Read + Write> PppConn<S> {
         self.rbuf.extend_from_slice(data);
     }
 
-    /// Send a PPP frame (protocol + payload) under the active framing.
-    ///
     /// Framing of the PPP header matches the real F5 data plane (cross-checked
     /// against openconnect and gof5): control protocols (LCP/IPCP/IP6CP, ≥0x0100)
     /// go out uncompressed as `FF 03` + 2-byte protocol, while IP data protocols
@@ -166,7 +152,6 @@ impl<S: Read + Write> PppConn<S> {
         Ok(())
     }
 
-    /// Write out the frames queued by `queue`.
     pub fn flush_tx(&mut self) -> Result<(), String> {
         if self.txbuf.is_empty() {
             return Ok(());
@@ -184,7 +169,7 @@ impl<S: Read + Write> PppConn<S> {
         Ok(())
     }
 
-    /// One frame under the active framing (see `send` for the header rules).
+    /// See `send` for the header rules.
     fn encode(&self, proto: u16, payload: &[u8]) -> Vec<u8> {
         let mut frame = Vec::with_capacity(4 + payload.len());
         if proto < 0x0100 {
@@ -208,8 +193,7 @@ impl<S: Read + Write> PppConn<S> {
         }
     }
 
-    /// Pull one complete frame from the buffer without doing I/O. Returns
-    /// `(protocol, payload)` with framing, `FF 03` and protocol field stripped.
+    /// One complete frame from the buffer, without I/O, as `(protocol, payload)`.
     pub fn take_frame(&mut self) -> Result<Option<(u16, Vec<u8>)>, String> {
         // A mid-stream HTTP status means the gateway refused the tunnel.
         if self.rbuf.len() >= 4 && &self.rbuf[0..4] == b"HTTP" {
@@ -238,7 +222,6 @@ impl<S: Read + Write> PppConn<S> {
         Ok(parse_ppp_frame(&frame))
     }
 
-    /// Non-HDLC: `[0xf500][len][frame]`.
     fn take_f5_frame(&mut self) -> Result<Option<Vec<u8>>, String> {
         if self.rbuf.len() < 4 {
             return Ok(None);
@@ -255,9 +238,7 @@ impl<S: Read + Write> PppConn<S> {
         Ok(Some(frame))
     }
 
-    /// HDLC: a `7e`-delimited, byte-stuffed frame with a trailing FCS-16.
     fn take_hdlc_frame(&mut self) -> Result<Option<Vec<u8>>, String> {
-        // Drop leading flags / nulls.
         let mut start = 0;
         while start < self.rbuf.len() && (self.rbuf[start] == HDLC_FLAG || self.rbuf[start] == 0) {
             start += 1;
@@ -265,9 +246,8 @@ impl<S: Read + Write> PppConn<S> {
         if start > 0 {
             self.rbuf.drain(..start);
         }
-        // Need a closing flag.
         let Some(end) = self.rbuf.iter().position(|&b| b == HDLC_FLAG) else {
-            return Ok(None); // frame not complete yet
+            return Ok(None);
         };
         let raw: Vec<u8> = self.rbuf.drain(..=end).take(end).collect();
         let unstuffed = hdlc_unstuff(&raw);
@@ -275,12 +255,12 @@ impl<S: Read + Write> PppConn<S> {
             // Too short to hold FF03/proto + FCS — skip (keepalive flag run, etc.).
             return Ok(Some(Vec::new()));
         }
-        // Strip the 2-byte FCS (not strictly verified here).
+        // Strip the 2-byte FCS (not verified).
         let frame = unstuffed[..unstuffed.len() - 2].to_vec();
         Ok(Some(frame))
     }
 
-    /// Do one `read` into the buffer. Maps timeout/WouldBlock to `Ok(0)`.
+    /// Maps timeout/WouldBlock to `Ok(0)`.
     pub fn fill(&mut self) -> Result<usize, String> {
         // One read while negotiating (blocking with a timeout); in the non-blocking
         // data phase, drain to WouldBlock — TLS keeps decrypted records in its own
@@ -307,8 +287,7 @@ impl<S: Read + Write> PppConn<S> {
         }
     }
 
-    /// Blocking receive of one frame (the socket must have a read timeout set).
-    /// Returns `Err(WOULDBLOCK)` on timeout with no complete frame.
+    /// The socket must have a read timeout set; returns `Err(WOULDBLOCK)` on timeout.
     pub fn recv_blocking(&mut self) -> Result<(u16, Vec<u8>), String> {
         loop {
             if let Some(f) = self.take_frame()? {
@@ -322,7 +301,6 @@ impl<S: Read + Write> PppConn<S> {
     }
 }
 
-/// Strip optional `FF 03` and a 1- or 2-byte protocol field from a PPP frame.
 /// A protocol's low-order bit is 1, so an odd first octet is a PFC-compressed
 /// single-byte protocol; an even one is the high byte of a 2-byte protocol.
 fn parse_ppp_frame(frame: &[u8]) -> Option<(u16, Vec<u8>)> {
@@ -334,7 +312,6 @@ fn parse_ppp_frame(frame: &[u8]) -> Option<(u16, Vec<u8>)> {
         return None;
     }
     if frame[off] & 1 == 1 {
-        // PFC-compressed single-byte protocol.
         let proto = frame[off] as u16;
         Some((proto, frame[off + 1..].to_vec()))
     } else {
@@ -346,9 +323,7 @@ fn parse_ppp_frame(frame: &[u8]) -> Option<(u16, Vec<u8>)> {
     }
 }
 
-// ───────────────────────────── HDLC (RFC1662) ───────────────────────────────
-
-/// Compute the RFC1662 PPP FCS-16 over `data` (initial value 0xFFFF, poly 0x8408).
+/// RFC1662 PPP FCS-16 (initial value 0xFFFF, poly 0x8408).
 fn fcs16(data: &[u8]) -> u16 {
     let mut fcs: u16 = 0xffff;
     for &b in data {
@@ -364,9 +339,8 @@ fn fcs16(data: &[u8]) -> u16 {
     fcs
 }
 
-/// Wrap a raw PPP frame in HDLC: append the complemented FCS (little-endian), then
-/// byte-stuff and bracket with `7e` flags. Worst-case escaping (all < 0x20 plus
-/// `7e`/`7d`) — always accepted by the peer, independent of the negotiated ACCM.
+/// FCS is appended complemented, little-endian. Worst-case escaping (all < 0x20
+/// plus `7e`/`7d`) is always accepted by the peer, independent of the negotiated ACCM.
 fn hdlc_encode(frame: &[u8]) -> Vec<u8> {
     let fcs = fcs16(frame) ^ 0xffff;
     let mut body = frame.to_vec();
@@ -387,7 +361,6 @@ fn hdlc_encode(frame: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Reverse HDLC byte-stuffing (`7d XX` → `XX ^ 0x20`).
 fn hdlc_unstuff(raw: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(raw.len());
     let mut esc = false;
@@ -403,8 +376,6 @@ fn hdlc_unstuff(raw: &[u8]) -> Vec<u8> {
     }
     out
 }
-
-// ───────────────────────── control packet build ─────────────────────────────
 
 fn ctrl(code: u8, id: u8, options: &[u8]) -> Vec<u8> {
     let len = 4 + options.len();
@@ -454,11 +425,8 @@ fn iter_opts(body: &[u8]) -> Vec<(u8, Vec<u8>)> {
     out
 }
 
-// ─────────────────────────── negotiation ────────────────────────────────────
-
-/// Run LCP then IPCP to completion. `seed_ip` (from the `X-VPN-client-IP` response
-/// header) is requested first; the gateway normally ACKs it. The socket must have
-/// a read timeout set.
+/// `seed_ip` (from the `X-VPN-client-IP` response header) is requested first; the
+/// gateway normally ACKs it. The socket must have a read timeout set.
 pub fn negotiate<S: Read + Write>(conn: &mut PppConn<S>, seed_ip: Option<Ipv4Addr>) -> Result<IpConfig, String> {
     let magic: [u8; 4] = crate::ike::crypto::random(4).try_into().unwrap_or([1, 2, 3, 4]);
     let peer_mru = lcp_phase(conn, &magic)?;
@@ -467,12 +435,11 @@ pub fn negotiate<S: Read + Write>(conn: &mut PppConn<S>, seed_ip: Option<Ipv4Add
     Ok(ipc)
 }
 
-/// The MRU option in a peer's LCP Configure-Request body, if any.
 fn mru_option(body: &[u8]) -> Option<u16> {
     iter_opts(body).into_iter().find(|(t, v)| *t == LCP_OPT_MRU && v.len() == 2).map(|(_, v)| u16::from_be_bytes([v[0], v[1]]))
 }
 
-/// LCP to completion. Returns the gateway's MRU (from its Configure-Request).
+/// Returns the gateway's MRU (from its Configure-Request).
 fn lcp_phase<S: Read + Write>(conn: &mut PppConn<S>, magic: &[u8; 4]) -> Result<Option<u16>, String> {
     let mut our_opts = Vec::new();
     our_opts.extend_from_slice(&opt(LCP_OPT_MRU, &DEFAULT_MRU.to_be_bytes()));
@@ -497,7 +464,6 @@ fn lcp_phase<S: Read + Write>(conn: &mut PppConn<S>, magic: &[u8; 4]) -> Result<
                     }
                     CONF_ACK => our_acked = true,
                     CONF_NAK | CONF_REJ => {
-                        // Drop whatever the peer rejected; re-request just the MRU.
                         id = id.wrapping_add(1);
                         our_opts = opt(LCP_OPT_MRU, &DEFAULT_MRU.to_be_bytes());
                         conn.send(PPP_LCP, &ctrl(CONF_REQ, id, &our_opts))?;
@@ -571,7 +537,6 @@ fn ipcp_phase<S: Read + Write>(conn: &mut PppConn<S>, seed_ip: Ipv4Addr) -> Resu
                         conn.send(PPP_IPCP, &ctrl(CONF_REQ, id, &build_req(want_ip, dns1, dns2)))?;
                     }
                     CONF_REJ => {
-                        // Peer rejected DNS options (or others): re-request IP only.
                         id = id.wrapping_add(1);
                         conn.send(PPP_IPCP, &ctrl(CONF_REQ, id, &opt(IPCP_OPT_IP, &want_ip.octets())))?;
                     }
@@ -621,27 +586,23 @@ fn ipcp_phase<S: Read + Write>(conn: &mut PppConn<S>, seed_ip: Ipv4Addr) -> Resu
     Ok(IpConfig { addr: want_ip, dns, peer_mru: None })
 }
 
-/// Build an LCP Echo-Request body — used for dead-peer detection (openconnect's
-/// `KA_DPD`): the gateway replies with an Echo-Reply, proving the link is alive.
+/// Dead-peer detection (openconnect's `KA_DPD`).
 pub fn echo_request(id: u8) -> Vec<u8> {
     ctrl(ECHO_REQ, id, &[0, 0, 0, 0])
 }
 
-/// Build an LCP Discard-Request — openconnect's keepalive packet (`KA_KEEPALIVE`).
-/// The peer silently discards it; its only purpose is to keep the link active so the
-/// gateway's idle-session timer does not fire (which was tearing idle F5 tunnels down
-/// after a couple of minutes). Carries the 4-byte Magic-Number field per RFC 1661.
+/// openconnect's keepalive packet (`KA_KEEPALIVE`): keeps the gateway's idle-session
+/// timer from firing (it tore idle F5 tunnels down after a couple of minutes).
+/// Carries the 4-byte Magic-Number field per RFC 1661.
 pub fn discard_request(id: u8) -> Vec<u8> {
     ctrl(DISCARD_REQ, id, &[0, 0, 0, 0])
 }
 
-/// Build an LCP Terminate-Request for a clean shutdown.
 pub fn terminate_request(id: u8) -> Vec<u8> {
     ctrl(TERM_REQ, id, &[])
 }
 
-/// Service an inbound LCP control frame during the data phase (reply to echo and
-/// terminate). Returns `Ok(true)` if the peer asked to terminate.
+/// Data-phase LCP handling. Returns `Ok(true)` if the peer asked to terminate.
 pub fn handle_lcp_in<S: Read + Write>(conn: &mut PppConn<S>, payload: &[u8]) -> Result<bool, String> {
     if let Some(c) = parse_ctrl(payload) {
         match c.code {
@@ -666,7 +627,7 @@ mod tests {
         let mut c = PppConn::new(Cursor::new(Vec::<u8>::new()), Framing::F5);
         c.send(PPP_IPV4, b"\x45\x00ping").unwrap();
         let framed = c.get_ref().get_ref().clone();
-        assert_eq!(&framed[0..2], &[0xf5, 0x00]); // magic
+        assert_eq!(&framed[0..2], &[0xf5, 0x00]);
         let mut r = PppConn::new(Cursor::new(Vec::<u8>::new()), Framing::F5);
         r.rbuf.extend_from_slice(&framed);
         let (proto, payload) = r.take_frame().unwrap().unwrap();
@@ -685,7 +646,7 @@ mod tests {
     #[test]
     fn f5_partial_waits() {
         let mut r = PppConn::new(Cursor::new(Vec::<u8>::new()), Framing::F5);
-        r.rbuf.extend_from_slice(&[0xf5, 0x00, 0x00, 100, 0xff, 0x03]); // claims 100, has few
+        r.rbuf.extend_from_slice(&[0xf5, 0x00, 0x00, 100, 0xff, 0x03]);
         assert!(r.take_frame().unwrap().is_none());
     }
 
@@ -705,7 +666,7 @@ mod tests {
 
     #[test]
     fn hdlc_fcs_residual_is_good() {
-        // Receiver residual over frame+FCS must equal PPPGOODFCS16 (0xf0b8).
+        // Receiver residual over frame+FCS must equal PPPGOODFCS16.
         let frame = b"\xff\x03\xc0\x21\x01\x01\x00\x04";
         let fcs = fcs16(frame) ^ 0xffff;
         let mut with_fcs = frame.to_vec();
@@ -716,7 +677,6 @@ mod tests {
 
     #[test]
     fn pfc_compressed_proto() {
-        // FF03 omitted, single-byte proto 0x21 (IPv4).
         let frame = [0x21u8, 0x45, 0x00];
         let (proto, payload) = parse_ppp_frame(&frame).unwrap();
         assert_eq!(proto, 0x21);
@@ -725,8 +685,7 @@ mod tests {
 
     #[test]
     fn f5_data_frame_is_pfc_compressed() {
-        // Cross-checked vs gof5 / F5's own client: IP data is [0xf500][len][0x21][ip],
-        // ACFC+PFC compressed (no FF 03, 1-byte protocol).
+        // Cross-checked vs gof5 / F5's own client: IP data is [0xf500][len][0x21][ip].
         let mut c = PppConn::new(Cursor::new(Vec::<u8>::new()), Framing::F5);
         c.send(PPP_IPV4, b"\x45\x00\x00\x14").unwrap();
         let f = c.get_ref().get_ref().clone();
@@ -738,7 +697,6 @@ mod tests {
 
     #[test]
     fn f5_control_frame_is_uncompressed() {
-        // LCP/IPCP stay uncompressed: [0xf500][len][FF 03][C0 21][body].
         let mut c = PppConn::new(Cursor::new(Vec::<u8>::new()), Framing::F5);
         c.send(PPP_LCP, b"\x01\x01\x00\x04").unwrap();
         let f = c.get_ref().get_ref().clone();

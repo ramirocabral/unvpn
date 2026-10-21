@@ -1,7 +1,6 @@
 //! IKEv1 numeric registries (RFC 2407/2408/2409) plus the Check Point
-//! proprietary extensions this client speaks. Reverse-engineered from the
-//! Endpoint Security VPN E84.30 Main Mode capture (tests: `mm.bin`) and mapped
-//! against the `isakmp` crate.
+//! proprietary extensions, reverse-engineered from the Endpoint Security VPN
+//! E84.30 Main Mode capture (tests: `mm.bin`).
 //!
 //! The Phase-1 proposal Check Point uses (decoded from the real gateway):
 //! AES-CBC/256, SHA2-256, DH group 2, auth method 0xfadd (Hybrid), 28800s.
@@ -29,17 +28,14 @@ macro_rules! reg {
     };
 }
 
-// --- Wire sizes / version ----------------------------------------------------
 pub const ISAKMP_HEADER_LEN: usize = 28;
 pub const PAYLOAD_HEADER_LEN: usize = 4;
 pub const IKEV1_VERSION: u8 = 0x10;
 
-// --- Header flags ------------------------------------------------------------
 pub const FLAG_ENCRYPTION: u8 = 0b0000_0001;
 pub const FLAG_COMMIT: u8 = 0b0000_0010;
 pub const FLAG_AUTHENTICATION: u8 = 0b0000_0100;
 
-// --- Vendor IDs --------------------------------------------------------------
 pub const VID_CHECKPOINT: &[u8] = &[
     0xde, 0xfb, 0x99, 0xe6, 0x9a, 0x9f, 0x1f, 0x6e, 0x06, 0xf1, 0x50, 0x06, 0xb1, 0xf1, 0x66, 0xae,
 ];
@@ -47,7 +43,7 @@ pub const VID_IPSEC_NAT_T: &[u8] = &[
     0x90, 0xcb, 0x80, 0x91, 0x3e, 0xbb, 0x69, 0x6e, 0x08, 0x63, 0x81, 0xb5, 0xec, 0x42, 0x7b, 0x1f,
 ];
 
-// --- Phase-1 IKE SA transform attribute values (RFC 2409 Appendix A) ---------
+// Phase-1 IKE SA transform attribute values (RFC 2409 Appendix A).
 pub const IKE_ENC_AES_CBC: u16 = 7;
 pub const IKE_ENC_3DES: u16 = 5;
 pub const IKE_HASH_MD5: u16 = 1;
@@ -55,8 +51,8 @@ pub const IKE_HASH_SHA1: u16 = 2;
 pub const IKE_HASH_SHA256: u16 = 4;
 pub const IKE_HASH_SHA384: u16 = 5;
 pub const IKE_HASH_SHA512: u16 = 6;
-pub const IKE_GROUP_MODP1024: u16 = 2; // Oakley group 2
-pub const IKE_GROUP_MODP2048: u16 = 14; // Oakley group 14
+pub const IKE_GROUP_MODP1024: u16 = 2;
+pub const IKE_GROUP_MODP2048: u16 = 14;
 pub const IKE_AUTH_HYBRID_INIT_RSA: u16 = 64221; // 0xfadd — Check Point hybrid
 pub const IKE_LIFE_SECONDS: u16 = 1;
 
@@ -164,7 +160,7 @@ reg! {
     }
 }
 
-// --- ESP (Phase 2 / Quick Mode) attribute values (RFC 2407) ---
+// ESP (Phase 2 / Quick Mode) attribute values (RFC 2407).
 pub const ESP_AUTH_HMAC_SHA96: u16 = 2;
 pub const ESP_AUTH_HMAC_SHA256: u16 = 5;
 pub const ESP_AUTH_HMAC_SHA160: u16 = 7;

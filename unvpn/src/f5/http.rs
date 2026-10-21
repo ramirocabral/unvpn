@@ -1,19 +1,12 @@
-//! Minimal HTTPS/1.1 client for the F5 BIG-IP APM SSL-VPN control channel.
+//! Minimal HTTPS/1.1 client for the F5 BIG-IP APM control channel.
 //!
-//! Same shape as the Fortinet back-end's `http` (native-tls + a trivial cookie
-//! jar), with one addition F5 needs: [`request_follow`], which chases 3xx
-//! redirects — the APM logon flow is a chain of `GET /` → `302 /my.policy` →
-//! form POST → `302 …` steps, and the session is only established once both the
-//! `MRHSession` and `F5_ST` cookies are set.
+//! The APM logon flow is a chain of `GET /` → `302 /my.policy` → form POST →
+//! `302 …` steps (hence [`request_follow`]); the session is only established once
+//! both the `MRHSession` and `F5_ST` cookies are set. After `GET /myvpn?…` the same
+//! TLS stream ([`connect_tls`] + [`build_request`]) carries PPP.
 //!
-//!  - [`request`] / [`request_follow`]: one-shot `Connection: close` requests with
-//!    a shared cookie jar — the whole auth + profile/options dance.
-//!  - [`connect_tls`] + [`build_request`]: a live TLS stream the tunnel layer keeps
-//!    open — after `GET /myvpn?…` the same stream carries PPP.
-//!
-//! Certificates: like the Check Point / Fortinet probes and openconnect's default,
-//! we accept the gateway cert (corporate CAs are often not in the system store).
-//! Pinning via `--trusted-cert <sha256>` is a later hardening step.
+//! Certificates: like openconnect's default, the gateway cert is accepted
+//! (corporate CAs are often not in the system store).
 
 use native_tls::{TlsConnector, TlsStream};
 use std::collections::BTreeMap;
@@ -21,15 +14,14 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
 
-/// The exact User-Agent the official F5 client sends — recovered from the shipped
-/// `f5vpn.exe` (APM clients 7.2.5.x; string verified in the binary). Some APM access
-/// policies branch on "F5 Networks Client" in the UA, so we mimic it for maximum
-/// interop (openconnect uses its own UA and also works, but this is the safe choice).
+/// The exact User-Agent of the official F5 client (verified in the shipped
+/// `f5vpn.exe`, APM clients 7.2.5.x). Some APM access policies branch on
+/// "F5 Networks Client" in the UA.
 pub const DEFAULT_USER_AGENT: &str =
     "Mozilla/5.0 (compatible; MSIE 10.0; Windows NT 6.1; Trident/6.0; F5 Networks Client)";
 
-/// A trivial cookie jar: name → value. Enough for `MRHSession` / `F5_ST`; we ignore
-/// attributes (Path/Domain/Expires) — one gateway, one session.
+/// Name → value only; attributes (Path/Domain/Expires) are ignored — one gateway,
+/// one session.
 #[derive(Default, Clone)]
 pub struct Cookies(pub BTreeMap<String, String>);
 
@@ -40,20 +32,18 @@ impl Cookies {
     pub fn get(&self, name: &str) -> Option<&str> {
         self.0.get(name).map(|s| s.as_str())
     }
-    /// Render the `Cookie:` header value (`a=1; b=2`), or `None` if empty.
     pub fn header(&self) -> Option<String> {
         if self.0.is_empty() {
             return None;
         }
         Some(self.0.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join("; "))
     }
-    /// Absorb a `Set-Cookie` header value.
     fn absorb(&mut self, set_cookie: &str) {
         let pair = set_cookie.split(';').next().unwrap_or("").trim();
         if let Some((k, v)) = pair.split_once('=') {
             let (k, v) = (k.trim(), v.trim());
             if !k.is_empty() {
-                // An empty value (NAME=;) / "deleted" is the server clearing it — honor that.
+                // An empty value (NAME=;) or "deleted" is the server clearing it.
                 if v.is_empty() || v == "deleted" {
                     self.0.remove(k);
                 } else {
@@ -64,7 +54,6 @@ impl Cookies {
     }
 }
 
-/// A parsed HTTP response.
 pub struct Response {
     pub status: u16,
     pub headers: Vec<(String, String)>,
@@ -86,7 +75,6 @@ impl Response {
     }
 }
 
-/// Open a TLS stream to the gateway. Blocking, with read/write timeouts.
 pub fn connect_tls(host: &str, port: u16, timeout: Duration) -> Result<TlsStream<TcpStream>, String> {
     let connector = TlsConnector::builder()
         .danger_accept_invalid_certs(true)
@@ -100,8 +88,7 @@ pub fn connect_tls(host: &str, port: u16, timeout: Duration) -> Result<TlsStream
     connector.connect(host, tcp).map_err(|e| format!("TLS to {host}: {e}"))
 }
 
-/// TCP connect with a timeout per address (a plain `connect` to a dead gateway
-/// hangs ~2 min), trying each resolved address in turn like `TcpStream::connect`.
+/// Timeout per address: a plain `connect` to a dead gateway hangs ~2 min.
 fn connect_tcp(host: &str, port: u16, timeout: Duration) -> Result<TcpStream, String> {
     use std::net::ToSocketAddrs;
     let addrs = (host, port).to_socket_addrs().map_err(|e| format!("resolve {host}: {e}"))?;
@@ -115,8 +102,7 @@ fn connect_tcp(host: &str, port: u16, timeout: Duration) -> Result<TcpStream, St
     Err(last)
 }
 
-/// Build a raw HTTP/1.1 request. `extra` holds additional header lines
-/// ("Name: value"); `body` is the already-encoded body (empty for GET).
+/// `extra` holds additional header lines ("Name: value"); `body` is already encoded.
 pub fn build_request(
     method: &str,
     host: &str,
@@ -154,9 +140,7 @@ pub fn build_request(
     out
 }
 
-/// One-shot request: connect, send (`Connection: close`), parse the response, and
-/// update the cookie jar from any `Set-Cookie`. Body read by `Content-Length` or
-/// `Transfer-Encoding: chunked`, falling back to read-until-close.
+/// One-shot `Connection: close` request; updates the cookie jar from `Set-Cookie`.
 pub fn request(
     host: &str,
     port: u16,
@@ -240,10 +224,9 @@ pub fn request(
     Ok(Response { status, headers, body })
 }
 
-/// Like [`request`], but follow up to `max_redirects` same-host 3xx redirects,
-/// turning the method into GET after the first hop (`HTTP_REDIRECT_TO_GET`), and
-/// carrying the cookie jar across hops. Cross-host redirects are returned as-is
-/// (the caller decides — e.g. an external IdP for SAML, out of scope here).
+/// Like [`request`], but follow same-host 3xx redirects, switching to GET after the
+/// first hop (`HTTP_REDIRECT_TO_GET`). Cross-host redirects (e.g. an external SAML
+/// IdP) are returned as-is.
 pub fn request_follow(
     host: &str,
     port: u16,
@@ -264,10 +247,10 @@ pub fn request_follow(
             return Ok(resp);
         }
         let Some(loc) = resp.location() else {
-            return Ok(resp); // 3xx without Location — give it back
+            return Ok(resp);
         };
         let Some(next) = same_host_path(host, port, loc) else {
-            return Ok(resp); // cross-host (e.g. IdP) — hand back to caller
+            return Ok(resp);
         };
         cur_path = next;
         cur_method = "GET".to_string();
@@ -276,8 +259,7 @@ pub fn request_follow(
     Err("too many redirects".into())
 }
 
-/// Resolve a `Location` to a path on the same host, or `None` if it points
-/// elsewhere. Accepts absolute (`https://host[:port]/p`) and relative (`/p`, `p`).
+/// `None` if the `Location` points to another host.
 fn same_host_path(host: &str, port: u16, loc: &str) -> Option<String> {
     let loc = loc.trim();
     if let Some(rest) = loc.strip_prefix("https://").or_else(|| loc.strip_prefix("http://")) {
@@ -298,8 +280,6 @@ fn same_host_path(host: &str, port: u16, loc: &str) -> Option<String> {
         Some(format!("/{loc}"))
     }
 }
-
-// ───────────────────────────── parsing helpers ──────────────────────────────
 
 fn find_header_end(buf: &[u8]) -> Option<usize> {
     buf.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4)
@@ -326,9 +306,9 @@ fn parse_status_and_headers(head: &[u8]) -> Result<(u16, Vec<(String, String)>),
     Ok((status, headers))
 }
 
-/// De-chunk a complete buffer; returns None if the terminating 0-chunk isn't present
-/// yet. Checked arithmetic throughout: a chunk whose trailing CRLF hasn't arrived,
-/// or a bogus huge size, just means "not complete" — never a panic.
+/// `None` if the terminating 0-chunk isn't present yet. Checked arithmetic: a
+/// chunk whose trailing CRLF hasn't arrived, or a bogus huge size, just means
+/// "not complete" — never a panic.
 fn try_dechunk_complete(raw: &[u8]) -> Option<Vec<u8>> {
     let mut out = Vec::new();
     let mut i = 0;
@@ -339,14 +319,14 @@ fn try_dechunk_complete(raw: &[u8]) -> Option<Vec<u8>> {
         let size = usize::from_str_radix(size_str.split(';').next().unwrap_or("").trim(), 16).ok()?;
         i = line_end + 2;
         if size == 0 {
-            return Some(out); // terminating chunk
+            return Some(out);
         }
         let end = i.checked_add(size)?;
         if end.checked_add(2)? > raw.len() {
-            return None; // data or its CRLF still incomplete
+            return None;
         }
         out.extend_from_slice(&raw[i..end]);
-        i = end + 2; // skip data + CRLF
+        i = end + 2;
     }
 }
 
@@ -354,7 +334,6 @@ fn dechunk_buffer(raw: &[u8]) -> Vec<u8> {
     try_dechunk_complete(raw).unwrap_or_else(|| raw.to_vec())
 }
 
-/// URL-encode a value for `application/x-www-form-urlencoded` bodies.
 pub fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
@@ -394,7 +373,6 @@ mod tests {
             same_host_path("gw.example.com", 443, "https://gw.example.com:443/x?y=1").as_deref(),
             Some("/x?y=1")
         );
-        // cross-host → None (hand back to caller)
         assert_eq!(same_host_path("gw.example.com", 443, "https://idp.okta.com/sso"), None);
     }
 }

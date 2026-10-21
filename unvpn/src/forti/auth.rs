@@ -1,10 +1,9 @@
 //! Fortinet SSL-VPN authentication over HTTPS: password, then any second factor.
 //!
-//! Wire formats come from three first-party sources, cross-checked (see
-//! docs/forti-protocol-notes.md): the FortiClient 7.4 engine `/opt/forticlient/vpn`
-//! (its exact `printf` templates — what the native client sends), the FortiOS
-//! portal's own `/sslvpn/js/login.js` (what the gateway's web login sends; the
-//! reference for the ajax `ret=6` challenge/renew flow, which the engine doesn't
+//! Wire formats come from three first-party sources, cross-checked: the
+//! FortiClient 7.4 engine `/opt/forticlient/vpn` (its exact `printf` templates —
+//! what the native client sends), the FortiOS portal's own `/sslvpn/js/login.js`
+//! (what the gateway's web login sends; the reference for the ajax `ret=6` challenge/renew flow, which the engine doesn't
 //! speak), and openfortivpn/openconnect for interop quirks:
 //!
 //!   login:        username=<u>&credential=<pw>&realm=<r>&ajax=1&redir=%2Fremote%2Findex&just_logged_in=1
@@ -42,7 +41,6 @@ const AUTH_BUDGET_MAX: u64 = 300;
 /// `<form class=…`, so this never matches a plain "wrong password" page.
 const LEGACY_FORM: &str = "<form action=\"/remote/logincheck\" method=\"post\"";
 
-/// Everything needed to talk to one gateway, plus the accumulating cookie jar.
 #[derive(Clone)]
 pub struct Session {
     pub host: String,
@@ -62,7 +60,6 @@ pub struct Session {
     second_factor: bool,
 }
 
-/// What a second-factor step asks for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChallengeKind {
     /// ret=2: FortiToken code — or, with `tokeninfo=ftm_push`, a FortiToken Mobile push.
@@ -83,7 +80,6 @@ pub enum ChallengeKind {
     HtmlNewPassword,
 }
 
-/// A second-factor step the gateway returned, with every field a reply needs.
 #[derive(Debug, Clone)]
 pub struct Challenge {
     pub kind: ChallengeKind,
@@ -163,13 +159,9 @@ impl Challenge {
     }
 }
 
-/// Result of a login / challenge step.
 pub enum AuthOutcome {
-    /// `SVPNCOOKIE` acquired — authenticated.
     Authenticated,
-    /// Second factor required.
     Challenge(Challenge),
-    /// Failure, with the gateway's message if any.
     Failed(String),
 }
 
@@ -190,7 +182,6 @@ impl Session {
         }
     }
 
-    /// True once a non-empty `SVPNCOOKIE` is in the jar.
     pub fn svpncookie(&self) -> Option<&str> {
         self.cookies.get("SVPNCOOKIE").filter(|v| !v.is_empty())
     }
@@ -226,7 +217,6 @@ impl Session {
         r
     }
 
-    /// Step 1: username + password (+ realm).
     pub fn login(&mut self, password: &str) -> Result<AuthOutcome, String> {
         self.password = password.to_string();
         // Warm-up GET so the gateway sets any initial session cookie it expects
@@ -252,8 +242,7 @@ impl Session {
         Ok(self.interpret(&resp))
     }
 
-    /// Answer a token challenge (ret=2/3/4/5) with a code. `code2` is empty except
-    /// for clock drift.
+    /// Token challenge (ret=2/3/4/5). `code2` is empty except for clock drift.
     pub fn answer_code(&mut self, ch: &Challenge, code: &str, code2: &str) -> Result<AuthOutcome, String> {
         self.second_factor = true;
         let resp = self.post_logincheck(self.code_body(ch, code, code2))?;
@@ -305,8 +294,6 @@ impl Session {
         let resp = self.post_logincheck(self.skip_body(ch))?;
         Ok(self.interpret(&resp))
     }
-
-    // ── request bodies ──────────────────────────────────────────────────────
 
     /// Engine template 0xbf92a8. Code order for drift: see do_login.
     fn code_body(&self, ch: &Challenge, code: &str, code2: &str) -> String {
@@ -413,9 +400,6 @@ impl Session {
         }
     }
 
-    // ── response classification ─────────────────────────────────────────────
-
-    /// Classify a logincheck response.
     fn interpret(&mut self, resp: &http::Response) -> AuthOutcome {
         // The cookie jar already absorbed any Set-Cookie in http::request.
         if self.svpncookie().is_some() {
@@ -557,7 +541,6 @@ fn find_input(body: &str, name: &str) -> Option<String> {
     None
 }
 
-/// Extract an attribute value (quoted or bare) from a single HTML tag.
 fn attr_value(tag: &str, attr: &str) -> Option<String> {
     let tl = tag.to_ascii_lowercase();
     let key = format!("{}=", attr.to_ascii_lowercase());

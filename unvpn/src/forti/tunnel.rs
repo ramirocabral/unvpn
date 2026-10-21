@@ -27,7 +27,6 @@ const TUNNEL_PATH: &str = "/remote/sslvpn-tunnel";
 const TUN_MTU: u32 = 1400;
 /// Fortinet header (6) + `FF 03` + protocol (4) around each IP packet.
 const PPP_OVERHEAD: usize = 10;
-/// Reconnect attempts after a dropped link before giving up.
 const MAX_RECONNECT_TRIES: u32 = 4;
 /// Grace window for a fresh DTLS link to prove it forwards data before we fall back
 /// to TLS (bounds the blackhole on a gateway whose DTLS data plane is broken).
@@ -37,7 +36,6 @@ const CLTHELLO: &[u8] = b"GFtype\0clthello\0SVPNCOOKIE\0";
 
 type Link = ppp::PppConn<Box<dyn ppp::Transport>>;
 
-/// A negotiated PPP link, ready for the data loop.
 struct Up {
     conn: Link,
     fd: i32,
@@ -49,15 +47,12 @@ struct Up {
     gw: Option<Ipv4Addr>,
 }
 
-/// Full connect: authenticated `session` → live tunnel. Blocks until the stop
-/// flag is set (SIGTERM / `disconnect` on stdin). `no_dtls` forces the TLS link.
-/// `no_routes` brings the tunnel up but installs no routes/DNS (safe data-plane test).
+/// Blocks until the stop flag is set (SIGTERM / `disconnect` on stdin).
 pub fn run(session: &mut Session, no_dtls: bool, no_routes: bool) -> Result<(), String> {
     if session.svpncookie().is_none() {
         return Err("no SVPNCOOKIE — not authenticated".into());
     }
 
-    // 1) Tunnel configuration (IP/DNS/domain/routes).
     println!("# fetching tunnel config ({XML_PATH}) …");
     let resp = http::request(
         &session.host,
@@ -72,7 +67,6 @@ pub fn run(session: &mut Session, no_dtls: bool, no_routes: bool) -> Result<(), 
     if resp.status != 200 {
         return Err(format!("config request failed: HTTP {}", resp.status));
     }
-    // Optional raw-XML dump for debugging the parser (set UNVPN_FORTI_DUMP_XML=<path>).
     if let Ok(p) = std::env::var("UNVPN_FORTI_DUMP_XML") {
         let _ = std::fs::write(&p, &resp.body);
         println!("# (raw tunnel XML dumped to {p})");
@@ -83,22 +77,20 @@ pub fn run(session: &mut Session, no_dtls: bool, no_routes: bool) -> Result<(), 
         cfg.dtls, cfg.heartbeat, cfg.idle_timeout, cfg.dns, cfg.domains, cfg.routes.len(), cfg.exclude.len()
     );
 
-    // 2-3) Open the PPP link (DTLS first when offered) and negotiate LCP/IPCP.
     let mut want_dtls = cfg.dtls && !no_dtls;
     if cfg.dtls && no_dtls {
         println!("# --no-dtls: gateway offers DTLS but staying on TLS");
     }
     let mut up = open_link(session, want_dtls)?;
     let assigned = cfg.assigned_ip.unwrap_or(up.ipc.addr);
-    // Prefer DNS/domains from the XML config; fall back to IPCP-provided DNS.
     let mut dns = cfg.dns.clone();
     if dns.is_empty() {
         dns = up.ipc.dns.clone();
     }
     println!("# PPP up over {} — IP {assigned}  DNS {dns:?}  (IPCP gave {})", path(up.dtls), up.ipc.addr);
 
-    // 4) tun device + addressing. Distinct name from the Check Point back-end
-    //    ("unvpn0") so both tunnels can be up at once without colliding.
+    // Distinct name from the Check Point back-end ("unvpn0") so both tunnels can be
+    // up at once without colliding.
     let (mut tun_file, tun_name) = tun::open_tun("cpfg0")?;
     tun::ip(&["addr", "add", &format!("{assigned}/32"), "dev", &tun_name])?;
     tun::ip(&["link", "set", "dev", &tun_name, "up", "mtu", &up.mtu.to_string()])?;
@@ -112,7 +104,6 @@ pub fn run(session: &mut Session, no_dtls: bool, no_routes: bool) -> Result<(), 
         return Err("disconnect requested before the tunnel came up".into());
     }
 
-    // 5) Routing: pin the gateway via the original path, then install tunnel routes.
     let mut restore = sysnet::NetRestore::default();
     if no_routes {
         out!("# --no-routes: installing no routes/DNS (reach hosts with `ping -I {tun_name}`)");
@@ -122,11 +113,9 @@ pub fn run(session: &mut Session, no_dtls: bool, no_routes: bool) -> Result<(), 
             None => Some(resolve_v4(&session.host, session.port)?),
         };
         restore.routes = setup_routes(gw, &tun_name, &cfg);
-        // 6) DNS.
         restore.dns = sysnet::set_dns(&dns, &cfg.domains);
     }
 
-    // 7) Data loop, reconnecting (no re-auth) if the link drops.
     sysnet::spawn_stdin_disconnect(&FORTI_STOP);
     tun::set_nonblocking(&tun_file);
     let hb = if cfg.heartbeat > 0 { cfg.heartbeat as u64 } else { 10 };
@@ -173,14 +162,14 @@ pub fn run(session: &mut Session, no_dtls: bool, no_routes: bool) -> Result<(), 
                     }
                     up = new;
                     out!("# reconnected over {}", path(up.dtls));
-                    break; // back to data_loop on the fresh link
+                    break;
                 }
                 Err(e2) => out!("# reconnect attempt {attempt}/{MAX_RECONNECT_TRIES} failed: {e2}"),
             }
         }
     };
 
-    // 8) Teardown (NetRestore restores DNS and our routes when it drops).
+    // NetRestore restores DNS and our routes when it drops.
     out!("# disconnecting — terminating PPP, restoring DNS/routes …");
     let _ = up.conn.send(ppp::PPP_LCP, &ppp::terminate_request(0xfe));
     drop(restore);
@@ -206,8 +195,6 @@ fn sleep_interruptible(secs: u64) -> bool {
     false
 }
 
-/// Open and negotiate one PPP link: DTLS when `try_dtls` (falling back to TLS on any
-/// failure), else TLS.
 fn open_link(session: &Session, try_dtls: bool) -> Result<Up, String> {
     if try_dtls {
         if !gnutls::available() {
@@ -437,7 +424,6 @@ fn data_loop(
             conn.flush_tx()?;
         }
 
-        // tunnel → tun (drain all complete frames).
         if fds[1].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
             conn.fill()?;
             let rx_before = rx;
@@ -452,7 +438,7 @@ fn data_loop(
                     Ok(Some((ppp::PPP_LCP, payload))) => {
                         rx += 1;
                         if ppp::handle_lcp_in(conn, &payload)? {
-                            return Ok(()); // peer terminated
+                            return Ok(());
                         }
                     }
                     Ok(Some((_other, _))) => rx += 1, // IPCP mid-session etc. — ignore
@@ -488,7 +474,6 @@ fn data_loop(
     }
 }
 
-/// Resolve `host` to its first IPv4 address (for the gateway bypass route).
 fn resolve_v4(host: &str, port: u16) -> Result<Ipv4Addr, String> {
     use std::net::ToSocketAddrs;
     if let Ok(ip) = host.parse::<Ipv4Addr>() {
@@ -571,7 +556,6 @@ fn setup_routes(gw: Option<Ipv4Addr>, tun: &str, cfg: &config::TunnelConfig) -> 
     del_lines.into_iter().enumerate().filter(|(i, _)| !failed.contains(i)).map(|(_, d)| d).collect()
 }
 
-/// Parse `ip route get <ip>` to find the current `via`/`dev` for a destination.
 fn original_path(dst: Ipv4Addr) -> Option<(Option<String>, String)> {
     let out = std::process::Command::new("ip").args(["route", "get", &dst.to_string()]).output().ok()?;
     if !out.status.success() {

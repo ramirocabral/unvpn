@@ -13,8 +13,7 @@ pub enum Link {
 }
 
 impl Link {
-    /// Resolve `remote` (IPv4) and open the transport. Returns the link and the
-    /// server address (used to pin its route outside the tunnel).
+    /// Also returns the server address, used to pin its route outside the tunnel.
     pub fn open(remote: &Remote, timeout: Duration) -> Result<(Link, Ipv4Addr), String> {
         let ip = resolve_v4(&remote.host, remote.port)?;
         let addr = SocketAddr::V4(SocketAddrV4::new(ip, remote.port));
@@ -66,7 +65,6 @@ impl Link {
         }
     }
 
-    /// Drain everything readable into whole packets (non-blocking).
     pub fn recv_all(&mut self, out: &mut Vec<Vec<u8>>) -> Result<(), String> {
         match self {
             Link::Udp(s) => {
@@ -103,7 +101,6 @@ impl Link {
     }
 }
 
-/// Split complete `len16 | packet` frames off the front of `rx`.
 fn split_frames(rx: &mut Vec<u8>, out: &mut Vec<Vec<u8>>) {
     let mut p = 0;
     while rx.len() >= p + 2 {
@@ -141,6 +138,6 @@ mod tests {
         let mut out = Vec::new();
         split_frames(&mut rx, &mut out);
         assert_eq!(out, vec![b"ab".to_vec(), b"c".to_vec()]);
-        assert_eq!(rx, vec![0, 5, 1]); // partial frame kept
+        assert_eq!(rx, vec![0, 5, 1]);
     }
 }

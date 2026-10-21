@@ -5,8 +5,7 @@
 //! `tls-auth`/`tls-crypt` wrapping), data channel (AES-GCM / ChaCha20-Poly1305
 //! AEAD with P_DATA_V2, or legacy AES-CBC + HMAC), PUSH_REPLY configuration,
 //! renegotiation and reconnection. Written from the OpenVPN 2.6 sources (the
-//! wire protocol is documented only by the code). See
-//! docs/openvpn-protocol-notes.md.
+//! wire protocol is documented only by the code).
 //!
 //! Subcommand: `unvpn openvpn -c <profile.ovpn> [...]`
 //!   --probe      reset + TLS handshake only (no credentials): checks reachability,
@@ -97,7 +96,6 @@ fn run(a: &Args) -> Result<(), String> {
     let cfg = config::load(&a.config)?;
     let mut prompter = CliPrompter { code: a.code.clone() };
 
-    // Credentials for the key-method message (auth-user-pass profiles only).
     let creds = if cfg.auth_user_pass && a.action != Action::Probe {
         let user = a.user.clone().or_else(|| cfg.auth_user.clone()).ok_or("this profile uses auth-user-pass: give --user <name>")?;
         let mut pass = match a.password.clone().or_else(|| cfg.auth_pass.clone()) {
@@ -113,9 +111,7 @@ fn run(a: &Args) -> Result<(), String> {
         None
     };
 
-    // Client key: ask for the passphrase only when it's actually needed.
-    // `keypass` prompts (the GUI may answer them from the keyring); a wrong one is
-    // asked again, a few times, before giving up.
+    // `keypass` prompts may be answered by the GUI from the keyring.
     let mut key_pass = a.key_pass.clone();
     if key_pass.is_none() && tls::key_is_encrypted(&cfg) {
         key_pass = Some(prompter.ask("keypass", "Private key passphrase", false)?);
@@ -167,7 +163,6 @@ impl tunnel::Prompter for CliPrompter {
     }
 }
 
-/// Read one line from stdin, with echo off on a TTY.
 fn read_secret(prompt: &str) -> Option<String> {
     let fd = libc::STDIN_FILENO;
     let is_tty = unsafe { libc::isatty(fd) == 1 };

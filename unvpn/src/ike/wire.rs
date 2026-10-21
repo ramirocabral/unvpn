@@ -5,9 +5,6 @@
 
 use super::model::*;
 
-// ---------------------------------------------------------------------------
-// Small big-endian reader over a byte slice (avoids a byteorder dependency).
-// ---------------------------------------------------------------------------
 struct Reader<'a> {
     b: &'a [u8],
     i: usize,
@@ -59,9 +56,7 @@ impl<'a> Reader<'a> {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Data attribute TLV (RFC 2408 §3.3): short (value in the length field) or long.
-// ---------------------------------------------------------------------------
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AttrValue {
     Short(u16),
@@ -95,7 +90,7 @@ impl Attribute {
         }
     }
 
-    /// Read the attribute value as a u32 (SA lifetimes can be 2 or 4 bytes).
+    /// SA lifetimes can be 2 or 4 bytes.
     pub fn as_u32(&self) -> Option<u32> {
         match &self.value {
             AttrValue::Short(v) => Some(*v as u32),
@@ -149,9 +144,6 @@ fn parse_attributes(body: &[u8]) -> Result<Vec<Attribute>, String> {
     Ok(v)
 }
 
-// ---------------------------------------------------------------------------
-// SA payload nesting: SA -> Proposal(s) -> Transform(s) -> Attributes.
-// ---------------------------------------------------------------------------
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Transform {
     pub number: u8,
@@ -268,7 +260,6 @@ impl SaPayload {
     fn parse(body: &[u8]) -> Result<SaPayload, String> {
         let mut r = Reader::new(body);
         let doi = r.u32()?;
-        // Situation is a 4-octet field only for the IPSEC DOI (1).
         let situation = if doi == 1 { Some(r.u32()?) } else { None };
         let mut proposals = Vec::new();
         while r.rem() > 0 {
@@ -286,9 +277,6 @@ impl SaPayload {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Other payload bodies.
-// ---------------------------------------------------------------------------
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IdPayload {
     pub id_type: u8,
@@ -315,9 +303,6 @@ pub struct AttributesPayload {
     pub attributes: Vec<Attribute>,
 }
 
-// ---------------------------------------------------------------------------
-// Payload enum.
-// ---------------------------------------------------------------------------
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Payload {
     Sa(SaPayload),
@@ -453,9 +438,6 @@ impl Payload {
     }
 }
 
-// ---------------------------------------------------------------------------
-// ISAKMP message.
-// ---------------------------------------------------------------------------
 #[derive(Debug, Clone)]
 pub struct IsakmpMessage {
     pub initiator_spi: u64,
@@ -483,7 +465,6 @@ impl IsakmpMessage {
         (first, out)
     }
 
-    /// Parse a plaintext payload chain given the first payload's type.
     pub fn parse_payloads(first_type: u8, body: &[u8]) -> Result<Vec<Payload>, String> {
         let mut r = Reader::new(body);
         let mut payloads = Vec::new();
@@ -502,7 +483,6 @@ impl IsakmpMessage {
         Ok(payloads)
     }
 
-    /// Full serialization, header + plaintext payloads.
     pub fn encode(&self) -> Vec<u8> {
         let (first, body) = Self::encode_payloads(&self.payloads);
         let mut out = Vec::with_capacity(ISAKMP_HEADER_LEN + body.len());
@@ -518,7 +498,6 @@ impl IsakmpMessage {
         out
     }
 
-    /// Decode a plaintext message (header + payload chain).
     pub fn decode(data: &[u8]) -> Result<IsakmpMessage, String> {
         if data.len() < ISAKMP_HEADER_LEN {
             return Err("short ISAKMP header".into());
@@ -558,7 +537,6 @@ mod tests {
         let msg = IsakmpMessage::decode(MM).expect("decode mm.bin");
         assert_eq!(msg.exchange_type, u8::from(ExchangeType::IdentityProtection));
         assert_eq!(msg.message_id, 0);
-        // First payload is the SA.
         let sa = match &msg.payloads[0] {
             Payload::Sa(sa) => sa,
             other => panic!("expected SA, got {other:?}"),
@@ -581,13 +559,11 @@ mod tests {
         assert_eq!(attr(IkeAttributeType::KeyLength), Some(256));
         assert_eq!(attr(IkeAttributeType::LifeDuration), Some(28800));
 
-        // Byte-exact round-trip.
         assert_eq!(msg.encode(), MM, "re-encode must match the captured bytes");
     }
 
     #[test]
     fn roundtrip_synthetic_quick_mode() {
-        // SA with two transforms + a nonce, to exercise multi-transform nesting.
         let sa = Payload::Sa(SaPayload {
             doi: 1,
             situation: Some(1),

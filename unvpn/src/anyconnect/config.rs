@@ -12,8 +12,7 @@
 
 use std::net::Ipv4Addr;
 
-/// A split route (`addr/prefix`). IPv6 split routes are recognised but ignored
-/// (the data plane is IPv4-only, like the other back-ends).
+/// IPv6 split routes are recognised but ignored (the data plane is IPv4-only).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Route {
     pub net: Ipv4Addr,
@@ -26,7 +25,6 @@ impl Route {
     }
 }
 
-/// Everything parsed from the CONNECT reply.
 #[derive(Debug, Clone, Default)]
 pub struct TunnelConfig {
     pub address: Option<Ipv4Addr>,
@@ -38,7 +36,6 @@ pub struct TunnelConfig {
     pub split_dns: Vec<String>,
     pub split_include: Vec<Route>,
     pub split_exclude: Vec<Route>,
-    /// True once we know the tunnel carries the default route (no split-include).
     pub default_route: bool,
     pub banner: Option<String>,
 
@@ -51,7 +48,6 @@ pub struct TunnelConfig {
     pub session_timeout: u32,
     pub disconnect_timeout: u32,
 
-    // DTLS.
     pub dtls_port: u16,
     pub dtls_cipher: Option<String>,
     /// `X-DTLS12-CipherSuite`: the server's chosen DTLS 1.2 cipher. When set, the
@@ -65,14 +61,10 @@ pub struct TunnelConfig {
 }
 
 impl TunnelConfig {
-    /// Parse the `(name, value)` header pairs from the CONNECT response.
     pub fn from_headers(headers: &[(String, String)]) -> Self {
         let mut c = TunnelConfig::default();
         for (k, v) in headers {
             let v = v.trim();
-            // HTTP header names are case-insensitive; match on a lowercased suffix.
-            // Check the `X-DTLS12-` prefix before `X-DTLS-` (they don't actually
-            // overlap — "X-DTLS1" != "X-DTLS-" — but keep the modern one explicit).
             if let Some(name) = strip_ci(k, "X-DTLS12-") {
                 if name.eq_ignore_ascii_case("CipherSuite") {
                     c.dtls12_cipher = Some(v.to_string());
@@ -83,7 +75,6 @@ impl TunnelConfig {
                 c.apply_dtls(&name.to_ascii_lowercase(), v);
             }
         }
-        // Full tunnel unless the gateway narrowed it with split-includes.
         c.default_route = c.split_include.is_empty();
         c
     }
@@ -130,7 +121,6 @@ impl TunnelConfig {
         }
     }
 
-    /// Prefix length of the assigned address (from the netmask; /32 if absent).
     pub fn prefix(&self) -> u8 {
         self.netmask.map(|m| u32::from(m).count_ones() as u8).unwrap_or(32)
     }
@@ -179,8 +169,6 @@ fn push_route(v: &mut Vec<Route>, s: &str) {
     }
 }
 
-/// Decode a hex string (e.g. the 64-char DTLS session id) to bytes. Non-hex or an
-/// odd length yields an empty vec.
 fn decode_hex(s: &str) -> Vec<u8> {
     let s = s.trim();
     if s.len() % 2 != 0 {
@@ -293,8 +281,8 @@ mod tests {
     fn hex_decode() {
         assert_eq!(decode_hex("00ff10"), vec![0x00, 0xff, 0x10]);
         assert_eq!(decode_hex("DEAD"), vec![0xde, 0xad]);
-        assert!(decode_hex("abc").is_empty()); // odd length
-        assert!(decode_hex("zz").is_empty()); // non-hex
+        assert!(decode_hex("abc").is_empty());
+        assert!(decode_hex("zz").is_empty());
     }
 
     #[test]

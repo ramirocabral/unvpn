@@ -7,9 +7,6 @@
 //! - A stdin pump: ONE thread reads stdin for the whole process and hands lines
 //!   out through a channel, so the auth prompts (2FA code, SAML paste, push), and
 //!   later the tunnel's `disconnect` watcher, never race each other for a line.
-//!
-//! These are vendor-neutral; the Check Point (IKE/ESP) and Fortinet (SSL/PPP)
-//! data planes both build on them.
 
 use std::path::PathBuf;
 use std::ptr;
@@ -55,8 +52,6 @@ pub fn set_dns<A: std::fmt::Display + std::fmt::Debug>(dns: &[A], domains: &str)
     let already_ours = current.as_deref().is_some_and(|c| c.starts_with(DNS_MARKER));
 
     let backup = if already_ours {
-        // Leftover from a crashed/overlapping session — the file no longer holds the
-        // real original. Recover it from the sidecar (the first session saved it).
         out!("# (resolv.conf was already unvpn's — recovering the original from {DNS_SIDECAR})");
         read_dns_sidecar().unwrap_or(DnsBackup { symlink_target: None, content: None })
     } else {
@@ -64,7 +59,7 @@ pub fn set_dns<A: std::fmt::Display + std::fmt::Debug>(dns: &[A], domains: &str)
             symlink_target: if is_symlink { std::fs::read_link(RESOLV_CONF).ok() } else { None },
             content: current,
         };
-        write_dns_sidecar(&b); // persist the true original for crash recovery
+        write_dns_sidecar(&b);
         b
     };
 
@@ -77,7 +72,7 @@ pub fn set_dns<A: std::fmt::Display + std::fmt::Debug>(dns: &[A], domains: &str)
         content.push_str(&format!("nameserver {d}\n"));
     }
     if is_symlink {
-        let _ = std::fs::remove_file(RESOLV_CONF); // replace the symlink with our file
+        let _ = std::fs::remove_file(RESOLV_CONF);
     }
     match std::fs::write(RESOLV_CONF, content) {
         Ok(_) if search.is_empty() => out!("# DNS → {dns:?}"),
@@ -100,16 +95,14 @@ pub fn restore_dns(backup: Option<DnsBackup>) {
     out!("# DNS restored");
 }
 
-/// Persist the true original resolv.conf for crash recovery.
 fn write_dns_sidecar(b: &DnsBackup) {
-    let Some(body) = encode_sidecar(b) else { return }; // nothing worth persisting
+    let Some(body) = encode_sidecar(b) else { return };
     if let Some(dir) = std::path::Path::new(DNS_SIDECAR).parent() {
         let _ = std::fs::create_dir_all(dir);
     }
     let _ = std::fs::write(DNS_SIDECAR, body);
 }
 
-/// Read the crash-recovery sidecar back into a [`DnsBackup`].
 fn read_dns_sidecar() -> Option<DnsBackup> {
     decode_sidecar(&std::fs::read_to_string(DNS_SIDECAR).ok()?)
 }
@@ -124,7 +117,6 @@ fn encode_sidecar(b: &DnsBackup) -> Option<String> {
     }
 }
 
-/// Parse what [`encode_sidecar`] wrote.
 fn decode_sidecar(raw: &str) -> Option<DnsBackup> {
     if let Some(rest) = raw.strip_prefix("SYMLINK ") {
         let target = rest.lines().next().unwrap_or("").trim();
@@ -150,11 +142,9 @@ pub struct NetRestore {
 impl Drop for NetRestore {
     fn drop(&mut self) {
         restore_dns(self.dns.take());
-        let _ = crate::tun::ip_batch(&self.routes); // remove our routes in one shot
+        let _ = crate::tun::ip_batch(&self.routes);
     }
 }
-
-// ─────────────────────────── stop flag (signals + stdin) ────────────────────
 
 /// The single live stop flag. A tunnel runs one at a time, so one slot is enough;
 /// the C signal handler reads it without allocating.
@@ -163,7 +153,7 @@ static STOP_FLAG: AtomicPtr<AtomicBool> = AtomicPtr::new(ptr::null_mut());
 extern "C" fn on_stop_signal(_sig: libc::c_int) {
     let p = STOP_FLAG.load(Ordering::SeqCst);
     if !p.is_null() {
-        // Safe: the pointer is a `&'static AtomicBool` handed to install_stop_signals.
+        // SAFETY: the pointer is a `&'static AtomicBool` handed to install_stop_signals.
         unsafe { (*p).store(true, Ordering::SeqCst) };
     }
 }
@@ -191,23 +181,19 @@ pub fn spawn_stdin_disconnect(flag: &'static AtomicBool) {
             match stdin_next(None) {
                 StdinEvent::Line(l) if is_disconnect(&l) => break,
                 StdinEvent::Line(_) | StdinEvent::Timeout => continue,
-                StdinEvent::Eof => break, // EOF → disconnect
+                StdinEvent::Eof => break,
             }
         }
         flag.store(true, Ordering::SeqCst);
     });
 }
 
-// ─────────────────────────────── stdin pump ─────────────────────────────────
-
-/// One stdin event from the pump.
 #[derive(Debug, PartialEq)]
 pub enum StdinEvent {
     /// A line, without its trailing newline.
     Line(String),
     /// stdin closed (the GUI went away, or ^D on a TTY).
     Eof,
-    /// Nothing arrived within the timeout.
     Timeout,
 }
 
@@ -220,7 +206,6 @@ static STDIN_RX: OnceLock<Mutex<mpsc::Receiver<String>>> = OnceLock::new();
 /// gateway holds open) can abort without waiting for its next stdin read.
 static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 
-/// The GUI (or the TTY user) asked us to stop.
 pub fn stop_requested() -> bool {
     STOP_REQUESTED.load(Ordering::SeqCst)
 }
@@ -293,7 +278,6 @@ pub fn write_all_polling<W: std::io::Write>(w: &mut W, fd: Option<i32>, mut buf:
     Ok(())
 }
 
-/// The GUI's (or a TTY user's) cancel/teardown line.
 pub fn is_disconnect(line: &str) -> bool {
     line.trim().eq_ignore_ascii_case("disconnect")
 }

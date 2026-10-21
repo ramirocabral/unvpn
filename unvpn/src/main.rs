@@ -1,16 +1,6 @@
 //! unvpn — native Linux multi-vendor VPN client (Check Point, Fortinet, F5, AnyConnect, OpenVPN).
 //!
-//! Milestone 1: build and (optionally) send the CCC `ClientHello`, then parse
-//! the gateway's `login_options`. Reverse-engineered from Endpoint Security
-//! VPN E84.30. See ../docs/protocol-notes.md.
-//!
-//! Usage:
-//!   unvpn hello                      # print the ClientHello request (no network)
-//!   unvpn hello --gateway <host>     # same, shows the full HTTP request preview
-//!   unvpn hello --gateway <host> --send   # actually POST to the gateway (TLS/443)
-//!
-//! `--send` is the only action that touches the network. Without it, unvpn is
-//! purely local.
+//! Check Point is reverse-engineered from Endpoint Security VPN E84.30.
 
 /// `println!` that never panics. Once the GUI is gone our stdout is a broken pipe,
 /// and a panicking print on a teardown path would skip restoring DNS and routes.
@@ -64,7 +54,7 @@ fn cmd_deob(args: &[String]) {
     }
 }
 
-/// M3a: open the SSL data-plane tunnel and perform the `client_hello` /
+/// Open the SSL data-plane tunnel and perform the `client_hello` /
 /// `hello_reply` handshake to obtain the Office Mode IP + routes. Uses the
 /// `active_key` (obfuscated hex) from a prior `login` as the session cookie, so
 /// it can run against an existing 9h session without a fresh passcode.
@@ -159,7 +149,6 @@ fn cmd_tunnel(args: &[String]) {
     }
 }
 
-/// Send a CONTROL frame: [len][type=1][payload + NUL].
 fn send_control(tls: &mut impl Write, payload: &str) -> std::io::Result<()> {
     let mut body = payload.as_bytes().to_vec();
     body.push(0);
@@ -170,7 +159,6 @@ fn send_control(tls: &mut impl Write, payload: &str) -> std::io::Result<()> {
     tls.write_all(&frame)
 }
 
-/// Read one Slim frame: returns (packet_type, payload).
 fn read_frame(tls: &mut impl Read) -> std::io::Result<(u32, Vec<u8>)> {
     let mut hdr = [0u8; 8];
     tls.read_exact(&mut hdr)?;
@@ -203,13 +191,10 @@ fn ike_send_recv_mid(
                 return Ok(r);
             }
         }
-        // else: retransmit of an earlier message_id — skip without decrypting.
     }
     Err(format!("no reply with message_id {want_mid:#x}"))
 }
 
-/// Bring up the tun device + ESP-over-UDP(4500) forwarding for an established SA.
-/// Prints packet counters every 3s so the data path can be diagnosed.
 static TUNNEL_STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 extern "C" fn tunnel_sig_handler(_sig: libc::c_int) {
     TUNNEL_STOP.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -313,7 +298,7 @@ fn run_tunnel(
         loop {
             line.clear();
             match std::io::stdin().read_line(&mut line) {
-                Ok(0) => break, // EOF → disconnect
+                Ok(0) => break,
                 Ok(_) if line.trim().eq_ignore_ascii_case("disconnect") => break,
                 Ok(_) => continue,
                 Err(_) => break,
@@ -342,7 +327,6 @@ fn run_tunnel(
     let tout = Arc::new(AtomicU64::new(0));
     let derr = Arc::new(AtomicU64::new(0));
 
-    // Outbound: tun → ESP → socket.
     {
         let (sa, s, c1, c2) = (esp.clone(), sock.clone(), tin.clone(), eout.clone());
         let mut rd = tun_rd;
@@ -365,7 +349,6 @@ fn run_tunnel(
             }
         });
     }
-    // Inbound: socket → demux (ESP → tun, IKE → control thread).
     {
         let (sa, s, c1, c2, ce) = (esp.clone(), sock.clone(), uin.clone(), tout.clone(), derr.clone());
         let itx = ike_tx;
@@ -389,7 +372,7 @@ fn run_tunnel(
                     }
                     Ok(n) if n > 4 && buf[..4] == [0, 0, 0, 0] => {
                         if let Some(tx) = &itx {
-                            let _ = tx.send(buf[4..n].to_vec()); // IKE message
+                            let _ = tx.send(buf[4..n].to_vec());
                         }
                     }
                     Ok(_) => {}
@@ -429,7 +412,6 @@ fn run_tunnel(
             }
         });
     }
-    // IKE control thread: ESP SA rekey before the Phase-2 lifetime expires.
     if let (Some(session), Some(ike_rx)) = (session, ike_rx) {
         let (esp_c, sock_c) = (esp.clone(), sock.clone());
         std::thread::spawn(move || {
@@ -457,13 +439,6 @@ fn run_tunnel(
     Ok(()) // `_restore` puts DNS back as it drops
 }
 
-/// IKE control loop (runs while connected): renegotiates the ESP SA via a fresh
-/// Quick Mode under the existing IKE SA — no re-auth — before the Phase-2
-/// lifetime (3600s) expires, so long sessions don't drop. `UNVPN_REKEY_SECS`
-/// overrides the interval (for testing).
-/// When to rekey, given the Phase-2 lifetime (seconds). Rekey at 85% of it,
-/// keeping ≥60s margin before expiry. `UNVPN_REKEY_SECS` overrides (for testing).
-/// If the gateway didn't give a lifetime, assume a conservative 1200s.
 fn rekey_interval(lifetime_secs: u32) -> std::time::Duration {
     use std::time::Duration;
     if let Some(n) = std::env::var("UNVPN_REKEY_SECS")
@@ -477,11 +452,13 @@ fn rekey_interval(lifetime_secs: u32) -> std::time::Duration {
     Duration::from_secs(at)
 }
 
-/// Renew at the Office Mode lease minus a 300s leeway (min 60s).
 fn lease_renew_at(lease_secs: u32) -> std::time::Duration {
     std::time::Duration::from_secs(lease_secs.saturating_sub(300).max(60) as u64)
 }
 
+/// Runs while connected: renegotiates the ESP SA via a fresh Quick Mode under
+/// the existing IKE SA — no re-auth — before the Phase-2 lifetime expires, and
+/// renews the Office Mode lease, so long sessions don't drop.
 #[allow(clippy::too_many_arguments)]
 fn ike_control_loop(
     mut session: ike::session::Ikev1Session,
@@ -670,9 +647,8 @@ fn do_rekey(
                         );
                         break 'retx;
                     }
-                    // else: retransmit or unsolicited (e.g. config) — ignore, keep waiting
                 }
-                Err(RecvTimeoutError::Timeout) => break, // resend QM1
+                Err(RecvTimeoutError::Timeout) => break,
                 Err(RecvTimeoutError::Disconnected) => return Err("ike channel closed".into()),
             }
         }
@@ -744,7 +720,7 @@ fn save_session_file(
     std::fs::write(path, data).map_err(|e| e.to_string())
 }
 
-/// M4 debug: bring up the tunnel from a saved session file (no re-auth, so the
+/// Debug: bring up the tunnel from a saved session file (no re-auth, so the
 /// ESP data path can be iterated without burning a one-time passcode).
 fn cmd_tunnel_up(args: &[String]) {
     let mut path = None;
@@ -809,9 +785,6 @@ fn cmd_tunnel_up(args: &[String]) {
     }
 }
 
-/// M3 probe: send IKEv1 Main Mode msg 1 (SA proposal) and read the gateway's
-/// chosen transform. Tries plain UDP :500 then NAT-T :4500. Benign — no auth,
-/// no passcode — and tells us whether UDP is open or Visitor Mode is required.
 fn cmd_ike(args: &[String]) {
     let mut gateway: Option<String> = None;
     let mut user = String::new();
@@ -977,7 +950,6 @@ fn cmd_ike(args: &[String]) {
                     udp.send(&ack_msg)?;
                     println!("# SecurID AUTH SUCCEEDED via native IKE (Status=1).");
 
-                    // Office Mode: internal IP + DNS + domains.
                     let mac = ike::crypto::random(6);
                     let (om_mid, _om_id, om_pl) =
                         service::build_om_request(&session, &mac, std::net::Ipv4Addr::UNSPECIFIED);
@@ -1019,7 +991,6 @@ fn cmd_ike(args: &[String]) {
                         .unwrap_or(0);
                     println!("# Office Mode: IP {om_ip} / {om_mask}  DNS {dns:?}  domains \"{domains}\"  lease={lease_secs}s");
 
-                    // Quick Mode (Phase 2): negotiate the ESP SA.
                     let our_spi = ike::crypto::random_u32();
                     let qm_nonce = ike::crypto::random(32);
                     let qm_mid = ike::crypto::random_u32();
@@ -1065,7 +1036,6 @@ fn cmd_ike(args: &[String]) {
                         esp.transform_id, esp.auth_alg, esp.key_bits, esp.encap, esp.gateway_spi, our_spi, esp.lifetime_secs
                     );
 
-                    // QM3 ack + ESP key derivation.
                     let qm3 = service::build_qm_ack(&session, qm_mid, &qm_nonce, &esp.nonce_r);
                     udp.send(&service::encrypt_message(&mut session, u8::from(ExchangeType::Quick), qm_mid, &qm3)?)?;
                     let enc_len = if esp.key_bits > 0 { esp.key_bits / 8 } else { 24 };
@@ -1257,7 +1227,7 @@ fn cmd_hello(args: &[String]) {
     }
 }
 
-/// M2: authenticate over CCC. UserPass (empty password) → challenge loop
+/// Authenticate over CCC. UserPass (empty password) → challenge loop
 /// (SecurID passcode via MultiChallange) → session. The initial UserPass
 /// carries no passcode, so `--probe` validates the format and shows the real
 /// gateway challenge WITHOUT consuming a one-time passcode. `--verbose` dumps
@@ -1296,13 +1266,11 @@ fn cmd_login(args: &[String]) {
         std::process::exit(2);
     }
 
-    // Step 1 — UserPass: username + empty password + selected realm.
     let req = ccc::auth_userpass(new_request_id(), &user, &realm);
     println!("# UserPass request (user={user}, realm={realm}):");
     println!("{}\n", req.serialize());
     let (mut raw, mut resp) = post_ccc(&host, &req, verbose);
 
-    // Step 2 — drive the challenge loop until done / error.
     loop {
         let rc = resp
             .path(&["ResponseHeader", "return_code"])
@@ -1448,7 +1416,6 @@ fn post_ccc(host: &str, pkt: &ccc::Packet, verbose: bool) -> (String, ccc::Packe
     (raw, parsed)
 }
 
-/// The header block of an HTTP response (everything before the blank line).
 fn http_headers(resp: &str) -> &str {
     match resp.find("\r\n\r\n") {
         Some(i) => &resp[..i],
@@ -1456,7 +1423,6 @@ fn http_headers(resp: &str) -> &str {
     }
 }
 
-/// Extract a cookie value from `Set-Cookie` response headers, by name.
 fn extract_cookie(resp: &str, name: &str) -> Option<String> {
     let pat = format!("{name}=");
     for line in http_headers(resp).lines() {
@@ -1508,7 +1474,6 @@ fn post(host: &str, request: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
-/// Return the body part of an HTTP response (after the CRLFCRLF).
 fn split_http_body(resp: &str) -> &str {
     match resp.find("\r\n\r\n") {
         Some(i) => &resp[i + 4..],
@@ -1516,7 +1481,6 @@ fn split_http_body(resp: &str) -> &str {
     }
 }
 
-/// Truncate long blobs for console display.
 fn preview(s: &str) -> String {
     const MAX: usize = 1600;
     if s.len() <= MAX {

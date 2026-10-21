@@ -7,9 +7,7 @@
 //! `data-ciphers`, `auth`), server verification (`verify-x509-name`,
 //! `remote-cert-tls`), `auth-user-pass`, `static-challenge`, compression framing,
 //! timers, and the client-side routing knobs (`route-nopull`, `route`,
-//! `redirect-gateway`, `dhcp-option`). Everything else is ignored — a profile
-//! exported by an Access Server or NetworkManager carries plenty of noise
-//! (`persist-tun`, `verb`, `resolv-retry`, …) that has no meaning here.
+//! `redirect-gateway`, `dhcp-option`). Everything else is ignored.
 //!
 //! Directive syntax follows OpenVPN's: one directive per line, `#`/`;` comments,
 //! double/single quotes and backslash escapes group words.
@@ -64,7 +62,6 @@ pub enum X509Name {
 /// `comp-lzo`/`compress` expects the matching per-packet header byte).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Compress {
-    /// No framing at all (no `comp-lzo`/`compress` anywhere).
     None,
     /// `comp-lzo` / `compress lzo`: one leading byte, 0xFA = not compressed.
     Lzo,
@@ -112,7 +109,6 @@ pub struct Config {
     /// Client-side `route <net> [mask] [gw]` lines (raw words).
     pub routes: Vec<Vec<String>>,
     pub redirect_gateway: bool,
-    /// Client-side `dhcp-option` (raw words after the directive).
     pub dhcp_options: Vec<Vec<String>>,
     pub explicit_exit_notify: bool,
     pub tun_mtu: Option<u16>,
@@ -120,7 +116,6 @@ pub struct Config {
     pub unsupported: Vec<String>,
 }
 
-/// Parse a config file from disk; relative file references resolve against its directory.
 pub fn load(path: &Path) -> Result<Config, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
     let dir = path.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
@@ -143,7 +138,6 @@ pub fn parse(text: &str, dir: &Path) -> Result<Config, String> {
         if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
             continue;
         }
-        // Inline block: `<tag>` … `</tag>`.
         if let Some(tag) = line.strip_prefix('<').and_then(|l| l.strip_suffix('>')) {
             if tag.starts_with('/') {
                 continue;
@@ -155,7 +149,7 @@ pub fn parse(text: &str, dir: &Path) -> Result<Config, String> {
                 body.push('\n');
                 i += 1;
             }
-            i += 1; // skip the closing tag
+            i += 1;
             if tag == "connection" {
                 // A nested profile; we only need its remote(s).
                 let sub = parse(&body, dir)?;
@@ -252,7 +246,7 @@ pub fn parse(text: &str, dir: &Path) -> Result<Config, String> {
             "http-proxy" | "socks-proxy" | "fragment" | "pkcs11-providers" | "cryptoapicert" | "management-external-key" => {
                 cfg.unsupported.push(name.to_string())
             }
-            _ => {} // client-irrelevant or cosmetic
+            _ => {}
         }
     }
 
@@ -299,7 +293,7 @@ fn compress_kind(arg: Option<&str>) -> Compress {
     match arg {
         Some("stub-v2") | Some("lz4-v2") | Some("migrate") => Compress::StubV2,
         Some("lzo") => Compress::Lzo,
-        _ => Compress::Stub, // `compress`, `compress stub`, `compress lz4`
+        _ => Compress::Stub,
     }
 }
 
@@ -326,8 +320,6 @@ fn read_bytes(dir: &Path, f: Option<&str>) -> Result<Vec<u8>, String> {
     std::fs::read(&p).map_err(|e| format!("read {}: {e}", p.display()))
 }
 
-/// Split a directive line into words: whitespace-separated, with `"…"`/`'…'`
-/// quoting and backslash escapes (OpenVPN's rules), stopping at a comment.
 pub fn split_words(line: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();

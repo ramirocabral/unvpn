@@ -7,7 +7,6 @@
 //! does the handshakes, timers and crypto; we add the client side: wg-quick
 //! `.conf` profiles, addresses, routes (endpoint pinned outside a full tunnel),
 //! DNS, a handshake check before routes go in, stats, and a clean teardown.
-//! See docs/wireguard-notes.md.
 //!
 //! Subcommand: `unvpn wireguard -c <profile.conf> [...]`
 //!   --connect    bring up the tunnel (needs root)

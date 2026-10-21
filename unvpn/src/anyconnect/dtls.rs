@@ -19,8 +19,7 @@
 //! **libgnutls is loaded at runtime with `dlopen`, never link-time.** That keeps the
 //! engine a single distro-agnostic binary: it starts everywhere with no hard
 //! dependency, uses the DTLS fast path where libgnutls is present (nearly all
-//! distros), and silently stays on CSTP where it isn't. (A link-time dependency
-//! would stop the binary even *starting* on a host without libgnutls.)
+//! distros), and silently stays on CSTP where it isn't.
 
 use crate::gnutls::{DtlsSession, Resume};
 use std::ffi::c_int;
@@ -55,8 +54,7 @@ struct Params {
     prio: &'static str,
 }
 
-/// Resolve the gateway's cipher name to GnuTLS DTLS parameters. `dtls12` selects
-/// the modern (DTLS 1.2) table vs the classic (DTLS 1.0) one.
+/// `dtls12` selects the modern (DTLS 1.2) table vs the classic (DTLS 1.0) one.
 fn resolve(name: &str, dtls12: bool) -> Option<Params> {
     let p = |version, kx, cipher, mac, prio| Params { version, kx, cipher, mac, prio };
     Some(if dtls12 {
@@ -88,8 +86,6 @@ fn resolve(name: &str, dtls12: bool) -> Option<Params> {
     })
 }
 
-/// A live AnyConnect DTLS channel: `[type][payload]` records over a resumed session
-/// (the shared GnuTLS layer is in `crate::gnutls`).
 pub struct Dtls(DtlsSession);
 
 impl Dtls {
@@ -97,7 +93,7 @@ impl Dtls {
         self.0.fd()
     }
 
-    /// Send one `[type][payload]` datagram. UDP best-effort: `WouldBlock` is dropped.
+    /// UDP best-effort: `WouldBlock` is dropped.
     pub fn send(&self, ty: u8, payload: &[u8]) -> Result<(), String> {
         let mut pkt = Vec::with_capacity(1 + payload.len());
         pkt.push(ty);
@@ -105,7 +101,7 @@ impl Dtls {
         self.0.send(&pkt).map(|_| ())
     }
 
-    /// Receive one datagram as `(type, payload)`. `Ok(None)` when nothing is ready.
+    /// `Ok(None)` when nothing is ready.
     pub fn recv(&self) -> Result<Option<(u8, Vec<u8>)>, String> {
         let mut buf = [0u8; 2048];
         Ok(match self.0.recv(&mut buf)? {

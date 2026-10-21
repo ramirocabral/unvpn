@@ -117,28 +117,25 @@ pub struct Reliable {
     out: Vec<Outgoing>,
     expect: u32,
     ooo: BTreeMap<u32, (u8, Vec<u8>)>,
-    /// Received ids we still owe an ACK for.
     pub to_ack: Vec<u32>,
     /// On TCP the transport is reliable: never retransmit.
     pub no_retransmit: bool,
 }
 
 impl Reliable {
-    /// Queue a reliable control message; it'll go out via [`Self::due`].
     pub fn queue(&mut self, op: u8, payload: Vec<u8>) {
         let id = self.next_id;
         self.next_id += 1;
         self.out.push(Outgoing { id, op, payload, sent_at: None, rto: RTO_INITIAL });
     }
 
-    /// Process the peer's ACKs. Returns true if any of ours got acknowledged.
+    /// Returns true if any of ours got acknowledged.
     pub fn acked(&mut self, ids: &[u32]) -> bool {
         let before = self.out.len();
         self.out.retain(|o| !ids.contains(&o.id));
         self.out.len() != before
     }
 
-    /// Is message `id` of ours still unacknowledged?
     pub fn pending(&self, id: u32) -> bool {
         self.out.iter().any(|o| o.id == id)
     }
@@ -187,7 +184,6 @@ impl Reliable {
         self.to_ack.drain(..n).collect()
     }
 
-    /// When the next retransmit is due (for the poll timeout), if any.
     pub fn next_deadline(&self) -> Option<Instant> {
         if self.no_retransmit {
             return None;
@@ -226,10 +222,10 @@ mod tests {
     #[test]
     fn in_order_delivery_and_acks() {
         let mut r = Reliable::default();
-        assert!(r.receive(1, 4, b"b".to_vec()).is_empty()); // out of order: held
+        assert!(r.receive(1, 4, b"b".to_vec()).is_empty());
         let got = r.receive(0, 8, b"a".to_vec());
         assert_eq!(got, vec![(8, b"a".to_vec()), (4, b"b".to_vec())]);
-        assert!(r.receive(0, 8, b"a".to_vec()).is_empty()); // duplicate
+        assert!(r.receive(0, 8, b"a".to_vec()).is_empty());
         let acks = r.take_acks();
         assert_eq!(acks, vec![1, 0]);
     }
@@ -242,7 +238,7 @@ mod tests {
         assert_eq!(r.due(t0).len(), 1);
         assert!(r.due(t0).is_empty());
         let t1 = t0 + RTO_INITIAL;
-        assert_eq!(r.due(t1).len(), 1); // retransmitted
+        assert_eq!(r.due(t1).len(), 1);
         assert!(r.due(t1 + RTO_INITIAL).is_empty()); // backed off to 4 s
         assert!(r.acked(&[0]));
         assert!(!r.pending(0));
@@ -257,6 +253,6 @@ mod tests {
         let now = Instant::now();
         assert_eq!(r.due(now).len(), SEND_WINDOW);
         r.acked(&[0, 1]);
-        assert_eq!(r.due(now).len(), 2); // window slid
+        assert_eq!(r.due(now).len(), 2);
     }
 }

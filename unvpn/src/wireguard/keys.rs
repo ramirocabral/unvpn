@@ -2,7 +2,7 @@
 
 use openssl::pkey::{Id, PKey};
 
-/// Fresh X25519 key pair (private, public).
+/// Returns (private, public).
 pub fn generate() -> Result<([u8; 32], [u8; 32]), String> {
     let k = PKey::generate_x25519().map_err(|e| format!("x25519 keygen: {e}"))?;
     let mut sk = [0u8; 32];
@@ -10,7 +10,6 @@ pub fn generate() -> Result<([u8; 32], [u8; 32]), String> {
     Ok((sk, public(&sk)?))
 }
 
-/// Public key of an X25519 private key.
 pub fn public(private: &[u8; 32]) -> Result<[u8; 32], String> {
     let k = PKey::private_key_from_raw_bytes(private, Id::X25519).map_err(|e| format!("bad private key: {e}"))?;
     let mut pk = [0u8; 32];

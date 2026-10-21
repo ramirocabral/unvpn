@@ -1,13 +1,6 @@
-//! F5 BIG-IP APM SSL-VPN back-end for unvpn.
-//!
-//! Native, from-scratch client for the F5 APM "Network Access" SSL-VPN protocol
-//! (the one openconnect's `f5` backend speaks), reverse-engineered from the F5 VPN
-//! client plus openconnect prior art. See docs/f5-protocol-notes.md.
-//!
-//! Subcommand: `unvpn f5 -g <gw> -u <user> [...]`
-//!   --probe      non-destructive reachability + APM/logon detection (no creds)
-//!   --login      authenticate (password + optional OTP) and show the result
-//!   --connect    authenticate, then bring up the PPP tunnel (needs sudo)
+//! F5 BIG-IP APM "Network Access" SSL-VPN back-end (the protocol openconnect's `f5`
+//! backend speaks), reverse-engineered from the F5 VPN client plus openconnect prior
+//! art.
 
 pub mod auth;
 pub mod config;
@@ -19,7 +12,6 @@ use auth::{Outcome, Session};
 use std::io::Write;
 use std::time::Duration;
 
-/// Parsed `unvpn f5` arguments.
 struct Args {
     host: String,
     port: u16,
@@ -28,14 +20,13 @@ struct Args {
     code: Option<String>,
     action: Action,
     no_dtls: bool,
-    /// Bring the tunnel up (PPP + tun + IP) but install no routes and no DNS — a
-    /// minimal-footprint data-plane test that cannot disturb the host's networking.
-    /// Verify reachability with `ping -I f5vpn0 <internal-host>`.
+    /// Bring the tunnel up but install no routes and no DNS — a data-plane test
+    /// that cannot disturb the host's networking.
     no_routes: bool,
-    /// The `f5-vpn://…` URL for `Action::Launch` (from the webtop "Start" handoff).
+    /// The `f5-vpn://…` URL from the webtop "Start" handoff.
     launch_url: Option<String>,
-    /// Path to a status file to publish (so the GUI can see/stop a browser-launched
-    /// tunnel). Set by the scheme-handler wrapper on the `--launch` path.
+    /// Status file the GUI reads to see/stop a browser-launched tunnel. Set by the
+    /// scheme-handler wrapper on the `--launch` path.
     status_file: Option<String>,
 }
 
@@ -44,9 +35,8 @@ enum Action {
     Probe,
     Login,
     Connect,
-    /// Handle an `f5-vpn://` launch URL: exchange its one-time token for a session
-    /// and bring the tunnel up — the Linux equivalent of clicking "Start" in the
-    /// browser (which on Windows launches the native client via this URL scheme).
+    /// `f5-vpn://` launch URL: the Linux equivalent of the webtop "Start" button
+    /// (which on Windows launches the native client via this URL scheme).
     Launch,
 }
 
@@ -122,7 +112,7 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
         }
     }
     if action == Action::Launch {
-        // host/user come from the URL; nothing else is required here.
+        // host/user come from the URL.
         let host = host.unwrap_or_default();
         return Ok(Args { host, port, user, password, code, action, no_dtls, no_routes, launch_url, status_file });
     }
@@ -149,7 +139,7 @@ fn timeout() -> Duration {
     Duration::from_secs(20)
 }
 
-/// Non-destructive probe: confirm it's an F5 APM SSL-VPN portal. Sends no creds.
+/// Non-destructive probe: sends no credentials.
 fn probe(a: &Args) -> Result<(), String> {
     let mut cookies = http::Cookies::new();
     println!("# probing {}:{} …", a.host, a.port);
@@ -185,12 +175,10 @@ fn probe(a: &Args) -> Result<(), String> {
     Ok(())
 }
 
-/// Read one line from stdin (the GUI pipes secrets here; a TTY user types them).
-/// When stdin is a terminal, echo is turned off for the duration so the secret is
-/// not shown or left in scrollback — matching how a password prompt should behave.
+/// Read one secret line from stdin (the GUI pipes secrets here). On a TTY, echo is
+/// off for the duration.
 fn read_stdin_line(prompt: &str) -> Option<String> {
-    // Disable terminal echo if stdin is a TTY; restore it afterwards. Only a TTY
-    // gets the label: on a pipe it would glue itself to the next stderr line.
+    // Only a TTY gets the label: on a pipe it would glue itself to the next stderr line.
     let fd = libc::STDIN_FILENO;
     let is_tty = unsafe { libc::isatty(fd) == 1 };
     if is_tty {
@@ -232,7 +220,6 @@ fn read_stdin_line(prompt: &str) -> Option<String> {
 }
 
 /// Authenticate with password (+ optional OTP), walking the APM form chain.
-/// Returns the authenticated session. Shared by `--login` and `--connect`.
 fn do_login(a: &Args) -> Result<Session, String> {
     let mut s = Session::new(a.host.clone(), a.port, timeout());
     println!("# authenticating {} @ {}:{} …", a.user, a.host, a.port);
@@ -254,12 +241,11 @@ fn do_login(a: &Args) -> Result<Session, String> {
 
         let mut answers: Vec<(String, String)> = Vec::new();
 
-        // Username → the field that looks like a username (or the sole text field).
         if let Some(uname_field) = username_field(&form) {
             answers.push((uname_field, a.user.clone()));
         }
 
-        // Secret → password on the first round, OTP afterwards.
+        // Password on the first round, OTP afterwards.
         let pw_fields = form.password_fields();
         if !pw_fields.is_empty() {
             let secret = if !password_sent {
@@ -273,9 +259,7 @@ fn do_login(a: &Args) -> Result<Session, String> {
                 match &a.code {
                     Some(c) => c.clone(),
                     None => {
-                        // Second factor: let the front-end collect it. The AUTH-PROMPT
-                        // marker drives the GUI's prompt card (and is harmless on a TTY,
-                        // where read_stdin_line also prints its own label). The code is
+                        // The AUTH-PROMPT marker drives the GUI's prompt card. The code is
                         // often emailed/SMS and doesn't exist until the password is in.
                         let msg = if form.banner.is_empty() { "One-time passcode" } else { form.banner.as_str() };
                         println!("# AUTH-PROMPT: code: {}", msg.replace(['\n', '\r'], " "));
@@ -287,7 +271,7 @@ fn do_login(a: &Args) -> Result<Session, String> {
                 answers.push((form.fields[idx].name.clone(), secret.clone()));
             }
         } else if round > 1 {
-            // A non-password follow-up form (e.g. group confirmation): submit defaults.
+            // Non-password follow-up form (e.g. group confirmation): submit defaults.
             println!("# submitting intermediate form (no secret field) …");
         }
 
@@ -306,7 +290,7 @@ fn do_login(a: &Args) -> Result<Session, String> {
     Err("authentication did not complete after 6 form steps".into())
 }
 
-/// Authenticate and bring up the PPP tunnel. Needs root.
+/// Needs root.
 fn connect(a: &Args) -> Result<(), String> {
     let mut session = do_login(a)?;
     tunnel::run(
@@ -315,10 +299,9 @@ fn connect(a: &Args) -> Result<(), String> {
     )
 }
 
-/// Handle an `f5-vpn://…` launch URL (the webtop "Start" handoff): exchange the
-/// one-time token for a session, then bring the tunnel up. No password is needed —
-/// the browser already authenticated and minted the token. Stdin is not watched
-/// (the OS launches this detached); stop with SIGTERM.
+/// Webtop "Start" handoff: the browser already authenticated and minted a one-time
+/// token, so no password is needed. Stdin is not watched (the OS launches this
+/// detached); stop with SIGTERM.
 fn launch(a: &Args) -> Result<(), String> {
     let url = a.launch_url.as_deref().ok_or("launch requires an f5-vpn:// URL")?;
     let p = parse_launch_url(url)?;
@@ -337,7 +320,7 @@ fn launch(a: &Args) -> Result<(), String> {
     )
 }
 
-/// Parsed pieces of an `f5-vpn://host/path?server=&port=&otc=&token=…` launch URL.
+/// `f5-vpn://host/path?server=&port=&otc=&token=…`
 struct LaunchUrl {
     host: String,
     port: u16,
@@ -345,9 +328,8 @@ struct LaunchUrl {
     resource: Option<String>,
 }
 
-/// Parse an `f5-vpn://` launch URL. The gateway is the `server` query parameter
-/// (not the URL authority); the handoff credential is `otc` (falling back to
-/// `token`). Values are percent-decoded.
+/// The gateway is the `server` query parameter (not the URL authority); the handoff
+/// credential is `otc` (falling back to `token`).
 fn parse_launch_url(url: &str) -> Result<LaunchUrl, String> {
     let rest = url
         .strip_prefix("f5-vpn://")
@@ -384,7 +366,6 @@ fn parse_launch_url(url: &str) -> Result<LaunchUrl, String> {
     Ok(LaunchUrl { host, port, token, resource })
 }
 
-/// Minimal percent-decoder for launch-URL values (`%XX` and `+` → space).
 fn percent_decode(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
@@ -422,16 +403,13 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// True if the form has a field that looks like a username entry.
 fn form_has_username(form: &auth::LoginForm) -> bool {
     username_field(form).is_some()
 }
 
-/// Pick the field to put the username in: a text field whose name/looks like a user
-/// field, else the single text field if there's exactly one.
+/// A text field whose name looks like a user field, else the sole text field.
 fn username_field(form: &auth::LoginForm) -> Option<String> {
     let texts = form.text_fields();
-    // Prefer a name containing "user" / "logon" / "email".
     for &i in &texts {
         let n = form.fields[i].name.to_ascii_lowercase();
         if n.contains("user") || n.contains("logon") || n.contains("email") || n.contains("uname") {
@@ -454,7 +432,7 @@ mod tests {
         assert_eq!(percent_decode("a%2Fb"), "a/b");
         assert_eq!(percent_decode("%2FCommon%2FNetwork_Access"), "/Common/Network_Access");
         assert_eq!(percent_decode("a+b"), "a b");
-        assert_eq!(percent_decode("%zz"), "%zz"); // malformed left intact
+        assert_eq!(percent_decode("%zz"), "%zz");
     }
 
     #[test]
@@ -466,7 +444,7 @@ mod tests {
         assert_eq!(p.host, "vpn-f5.example.com");
         assert_eq!(p.port, 443);
         assert_eq!(p.resource.as_deref(), Some("/Common/Network_Access"));
-        // otc takes precedence over token (matches the shipped client).
+        // otc takes precedence over token, as in the shipped client.
         assert_eq!(p.token, "CCCC");
     }
 
@@ -479,8 +457,8 @@ mod tests {
 
     #[test]
     fn launch_url_requires_server_and_token() {
-        assert!(parse_launch_url("f5-vpn://x/?otc=CCCC").is_err()); // no server
-        assert!(parse_launch_url("f5-vpn://x/?server=gw").is_err()); // no token/otc
-        assert!(parse_launch_url("https://x/?server=gw&otc=c").is_err()); // wrong scheme
+        assert!(parse_launch_url("f5-vpn://x/?otc=CCCC").is_err());
+        assert!(parse_launch_url("f5-vpn://x/?server=gw").is_err());
+        assert!(parse_launch_url("https://x/?server=gw&otc=c").is_err());
     }
 }

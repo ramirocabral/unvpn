@@ -50,7 +50,6 @@ impl Net {
         Ok(Net { addr, prefix })
     }
 
-    /// The same prefix with the host bits cleared.
     pub fn network(&self) -> Net {
         Net { addr: mask(self.addr, self.prefix), prefix: self.prefix }
     }
@@ -119,9 +118,8 @@ pub struct PeerCfg {
 pub struct Config {
     pub interface: Interface,
     pub peers: Vec<PeerCfg>,
-    /// Hook commands we refused to run (`PostUp = …`), for a warning.
+    /// Hook commands we refused to run (`PostUp = …`).
     pub ignored_hooks: Vec<String>,
-    /// Keys we don't know.
     pub unsupported: Vec<String>,
 }
 

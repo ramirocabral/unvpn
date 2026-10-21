@@ -9,8 +9,7 @@
 //!    keeps open — after `GET /remote/sslvpn-tunnel` the same stream carries PPP.
 //!
 //! Certificates: like the Check Point probe and openfortivpn's default, we accept
-//! the gateway cert (corporate CAs are often not in the system store). Pinning via
-//! a `--trusted-cert <sha256>` is a later hardening step.
+//! the gateway cert (corporate CAs are often not in the system store).
 
 use native_tls::{TlsConnector, TlsStream};
 use std::collections::BTreeMap;
@@ -21,8 +20,7 @@ use std::time::Duration;
 
 pub const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 SV1";
 
-/// A trivial cookie jar: name → value. Enough for `SVPNCOOKIE` and friends; we
-/// ignore attributes (Path/Domain/Expires) — one gateway, one session.
+/// Attributes (Path/Domain/Expires) are ignored — one gateway, one session.
 #[derive(Default, Clone)]
 pub struct Cookies(pub BTreeMap<String, String>);
 
@@ -33,14 +31,12 @@ impl Cookies {
     pub fn get(&self, name: &str) -> Option<&str> {
         self.0.get(name).map(|s| s.as_str())
     }
-    /// Render the `Cookie:` header value (`a=1; b=2`), or `None` if empty.
     pub fn header(&self) -> Option<String> {
         if self.0.is_empty() {
             return None;
         }
         Some(self.0.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join("; "))
     }
-    /// Absorb a `Set-Cookie` header value.
     fn absorb(&mut self, set_cookie: &str) {
         let pair = set_cookie.split(';').next().unwrap_or("").trim();
         if let Some((k, v)) = pair.split_once('=') {
@@ -53,7 +49,6 @@ impl Cookies {
     }
 }
 
-/// A parsed HTTP response.
 pub struct Response {
     pub status: u16,
     pub headers: Vec<(String, String)>,
@@ -70,13 +65,11 @@ impl Response {
     pub fn body_str(&self) -> std::borrow::Cow<'_, str> {
         String::from_utf8_lossy(&self.body)
     }
-    /// `Location:` header (for 3xx redirects, e.g. SAML → IdP).
     pub fn location(&self) -> Option<&str> {
         self.header("location")
     }
 }
 
-/// Open a TLS stream to the gateway. Blocking, with read/write timeouts.
 pub fn connect_tls(host: &str, port: u16, timeout: Duration) -> Result<TlsStream<TcpStream>, String> {
     let connector = TlsConnector::builder()
         .danger_accept_invalid_certs(true)
@@ -105,8 +98,7 @@ fn connect_tcp(host: &str, port: u16, timeout: Duration) -> Result<TcpStream, St
     Err(last)
 }
 
-/// Build a raw HTTP/1.1 request. `extra` holds additional header lines
-/// ("Name: value"); `body` is the already-encoded body (empty for GET).
+/// `extra` holds additional header lines ("Name: value"); `body` is already encoded.
 pub fn build_request(
     method: &str,
     host: &str,
@@ -135,7 +127,6 @@ pub fn build_request(
         req.push_str("Content-Type: application/x-www-form-urlencoded\r\n");
     }
     req.push_str(&format!("Content-Length: {}\r\n", body.len()));
-    // Don't emit a second Connection header if the caller already set one.
     if !has_connection {
         req.push_str(if keep_alive { "Connection: keep-alive\r\n" } else { "Connection: close\r\n" });
     }
@@ -145,12 +136,10 @@ pub fn build_request(
     out
 }
 
-/// One-shot request: connect, send (`Connection: close`), parse the response, and
-/// update the cookie jar from any `Set-Cookie`. The body is read by
-/// `Content-Length` or `Transfer-Encoding: chunked` and only falls back to
+/// One-shot `Connection: close` request that updates the cookie jar. The body is
+/// read by `Content-Length` or chunked encoding and only falls back to
 /// read-until-close when neither is present — so a gateway that ignores our
 /// `Connection: close` and keeps the socket open doesn't hang us to a timeout.
-/// The robust path used for the entire authentication/config sequence.
 pub fn request(
     host: &str,
     port: u16,
@@ -218,7 +207,6 @@ pub fn request_cancellable(
     exchange(tls, host, method, path, cookies, &[], body)
 }
 
-/// Send one request on a fresh TLS stream and read the whole response.
 fn exchange(
     mut tls: TlsStream<TcpStream>,
     host: &str,
@@ -233,7 +221,6 @@ fn exchange(
     tls.flush().ok();
 
     let mut tmp = [0u8; 4096];
-    // Read until the end of the header block.
     let mut raw = Vec::new();
     let header_end = loop {
         if let Some(e) = find_header_end(&raw) {
@@ -284,12 +271,11 @@ fn exchange(
         }
         body.truncate(len);
     } else {
-        // No length and not chunked: the server must close to signal the end.
         loop {
             match tls.read(&mut tmp) {
                 Ok(0) => break,
                 Ok(n) => body.extend_from_slice(&tmp[..n]),
-                Err(_) => break, // timeout/close → return what we have (headers are enough)
+                Err(_) => break, // timeout: return what we have (headers are enough)
             }
         }
     }
@@ -302,8 +288,6 @@ fn exchange(
     Ok(Response { status, headers, body })
 }
 
-// ───────────────────────────── parsing helpers ──────────────────────────────
-
 fn find_header_end(buf: &[u8]) -> Option<usize> {
     buf.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4)
 }
@@ -312,7 +296,6 @@ fn parse_status_and_headers(head: &[u8]) -> Result<(u16, Vec<(String, String)>),
     let text = String::from_utf8_lossy(head);
     let mut lines = text.split("\r\n");
     let status_line = lines.next().ok_or("empty response")?;
-    // "HTTP/1.1 200 OK"
     let status = status_line
         .split_whitespace()
         .nth(1)
@@ -343,18 +326,17 @@ fn try_dechunk_complete(raw: &[u8]) -> Option<Vec<u8>> {
         let size = usize::from_str_radix(size_str.split(';').next().unwrap_or("").trim(), 16).ok()?;
         i = line_end + 2;
         if size == 0 {
-            return Some(out); // terminating chunk
+            return Some(out);
         }
         let end = i.checked_add(size)?;
         if end.checked_add(2)? > raw.len() {
-            return None; // data or its CRLF still incomplete
+            return None;
         }
         out.extend_from_slice(&raw[i..end]);
-        i = end + 2; // skip data + CRLF
+        i = end + 2;
     }
 }
 
-/// Best-effort de-chunk of whatever we have (used when the connection closed).
 fn dechunk_buffer(raw: &[u8]) -> Vec<u8> {
     try_dechunk_complete(raw).unwrap_or_else(|| raw.to_vec())
 }
@@ -380,7 +362,6 @@ pub fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// URL-encode a value for `application/x-www-form-urlencoded` bodies.
 pub fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
@@ -423,7 +404,7 @@ mod tests {
         listener.set_nonblocking(true).unwrap();
         let port = listener.local_addr().unwrap().port();
         let cancel = Cancel::default();
-        cancel.cancel(); // e.g. the user typed the code before the push connected
+        cancel.cancel();
         let mut jar = Cookies::new();
         let r = request_cancellable("127.0.0.1", port, "POST", "/x", &mut jar, b"", Duration::from_secs(2), &cancel);
         assert_eq!(r.err().as_deref(), Some("cancelled"));

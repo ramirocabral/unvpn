@@ -31,7 +31,6 @@ pub fn open_tun(name: &str) -> Result<(File, String), String> {
     let actual = match tunsetiff(&file, name) {
         Ok(actual) => actual,
         Err(e) if e.raw_os_error() == Some(libc::EBUSY) => {
-            // Name taken — ask the kernel to pick the next free `<base>N`.
             let base = name.trim_end_matches(|c: char| c.is_ascii_digit());
             let template = format!("{}%d", if base.is_empty() { "tun" } else { base });
             tunsetiff(&file, &template).map_err(|e| format!("TUNSETIFF (fallback {template}): {e}"))?
@@ -143,7 +142,6 @@ pub fn ip_batch_failed(lines: &[String]) -> Result<std::collections::HashSet<usi
     Ok(failed)
 }
 
-/// Run `ip <args>`, failing on a non-zero exit.
 pub fn ip(args: &[&str]) -> Result<(), String> {
     let out = Command::new("ip")
         .args(args)
@@ -160,7 +158,6 @@ pub fn ip(args: &[&str]) -> Result<(), String> {
     }
 }
 
-/// Netmask (e.g. 255.255.248.0) → prefix length (e.g. 21).
 pub fn mask_to_prefix(mask: Ipv4Addr) -> u8 {
     u32::from(mask).count_ones() as u8
 }
@@ -172,7 +169,7 @@ mod tests {
     #[test]
     fn only_ipv4_passes() {
         assert!(is_ipv4(&[0x45, 0x00, 0x00, 0x54]));
-        assert!(!is_ipv4(&[0x60, 0x00, 0x00, 0x00])); // IPv6 (RS/MLD from link-local autoconf)
+        assert!(!is_ipv4(&[0x60, 0x00, 0x00, 0x00]));
         assert!(!is_ipv4(&[]));
     }
 

@@ -10,7 +10,6 @@
 //! handled; a stray or mismatched closing tag closes the nearest matching open
 //! element instead of failing the whole parse.
 
-/// One XML element.
 #[derive(Debug, Clone, Default)]
 pub struct Element {
     pub name: String,
@@ -27,22 +26,18 @@ impl Element {
         self.attrs.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
     }
 
-    /// First direct child with this name.
     pub fn child(&self, name: &str) -> Option<&Element> {
         self.children.iter().find(|c| c.name == name)
     }
 
-    /// All direct children with this name.
     pub fn children_named<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a Element> + 'a {
         self.children.iter().filter(move |c| c.name == name)
     }
 
-    /// Trimmed direct text of the first child with this name, if non-empty.
     pub fn child_text(&self, name: &str) -> Option<String> {
         self.child(name).map(|c| c.text.trim().to_string()).filter(|s| !s.is_empty())
     }
 
-    /// All text in this element and its descendants (libxml2's `xmlNodeGetContent`).
     /// One-line structure for diagnostics — element names, `id`/`type`/`name`
     /// attributes and the length of any text, but no values (they may be secrets),
     /// except human-facing `message`/`error`/`title`/`banner` text.
@@ -68,6 +63,7 @@ impl Element {
         s
     }
 
+    /// All text in this element and its descendants (libxml2's `xmlNodeGetContent`).
     pub fn deep_text(&self) -> String {
         let mut out = self.text.clone();
         for c in &self.children {
@@ -77,7 +73,6 @@ impl Element {
     }
 }
 
-/// Parse `src` and return its root element.
 pub fn parse(src: &str) -> Result<Element, String> {
     let b = src.as_bytes();
     let mut i = 0usize;
@@ -94,7 +89,6 @@ pub fn parse(src: &str) -> Result<Element, String> {
             i = end;
             continue;
         }
-        // Markup.
         if starts(b, i, b"<!--") {
             i = find(b, i + 4, b"-->").map(|e| e + 3).unwrap_or(b.len());
         } else if starts(b, i, b"<![CDATA[") {
@@ -141,7 +135,6 @@ pub fn parse(src: &str) -> Result<Element, String> {
             i = end + 1;
         }
     }
-    // Close anything left open at EOF.
     while stack.len() > 1 {
         let mut done = stack.pop().unwrap_or_default();
         done.span.1 = b.len();
@@ -153,7 +146,6 @@ pub fn parse(src: &str) -> Result<Element, String> {
     doc.children.into_iter().next().ok_or_else(|| "no root element".to_string())
 }
 
-/// Escape text for an XML element body or attribute value.
 pub fn escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
@@ -169,7 +161,6 @@ pub fn escape(s: &str) -> String {
     out
 }
 
-/// Decode the predefined entities plus numeric character references.
 pub fn decode_entities(s: &str) -> String {
     if !s.contains('&') {
         return s.to_string();
@@ -268,7 +259,7 @@ fn parse_tag(inner: &str) -> (String, Vec<(String, String)>) {
             }
             continue;
         }
-        i += 1; // '='
+        i += 1;
         while i < b.len() && (b[i] as char).is_whitespace() {
             i += 1;
         }

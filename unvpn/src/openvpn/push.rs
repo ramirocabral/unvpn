@@ -15,7 +15,6 @@ pub enum Topology {
     Subnet,
 }
 
-/// A pushed or configured IPv4 route.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Route {
     pub net: Ipv4Addr,
@@ -50,12 +49,11 @@ pub struct PushConfig {
     pub tls_ekm: bool,
     pub auth_token: Option<String>,
     pub auth_token_user: Option<String>,
-    /// Options we parsed but ignore (for the log).
     pub ignored: Vec<String>,
 }
 
 impl PushConfig {
-    /// Merge one `PUSH_REPLY,…` message. Returns true when this was the last part.
+    /// Returns true when this was the last part.
     pub fn merge(&mut self, msg: &str) -> bool {
         let body = msg.strip_prefix("PUSH_REPLY").unwrap_or(msg).trim_start_matches(',');
         let mut last = true;

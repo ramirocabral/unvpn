@@ -23,8 +23,6 @@ use std::os::unix::io::AsRawFd;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-// ───────────────────────── GnuTLS: runtime-loaded FFI ───────────────────────
-
 type GnutlsSession = *mut c_void;
 type GnutlsCertCred = *mut c_void;
 
@@ -34,7 +32,6 @@ struct GnutlsDatum {
     size: c_uint,
 }
 
-/// The gnutls entry points we use, resolved from the shared object at runtime.
 #[allow(clippy::type_complexity)]
 struct Gnutls {
     global_init: unsafe extern "C" fn() -> c_int,
@@ -79,7 +76,6 @@ fn gnutls() -> Option<&'static Gnutls> {
     GNUTLS.get_or_init(load_gnutls).as_ref()
 }
 
-/// Whether the DTLS fast path is available on this host at all.
 pub fn available() -> bool {
     gnutls().is_some()
 }
@@ -135,14 +131,12 @@ fn load_gnutls() -> Option<Gnutls> {
     }
 }
 
-// gnutls_init flags.
 const GNUTLS_CLIENT: c_uint = 1 << 1;
 const GNUTLS_DATAGRAM: c_uint = 1 << 2;
 const GNUTLS_NONBLOCK: c_uint = 1 << 3;
 const GNUTLS_NO_DEFAULT_EXTENSIONS: c_uint = 1 << 4;
 const GNUTLS_CRD_CERTIFICATE: c_int = 1;
 const GNUTLS_COMP_NULL: c_int = 1;
-// Errors.
 const GNUTLS_E_AGAIN: c_int = -28;
 const GNUTLS_E_INTERRUPTED: c_int = -52;
 const GNUTLS_E_REHANDSHAKE: c_int = -37;
@@ -168,8 +162,6 @@ pub struct Resume<'a> {
     pub priority: &'a str,
 }
 
-/// One live DTLS session over a connected UDP socket (whose fd backs the GnuTLS
-/// transport). Freed — with a best-effort close_notify — on drop.
 pub struct DtlsSession {
     session: GnutlsSession,
     cred: GnutlsCertCred,
@@ -249,7 +241,6 @@ impl DtlsSession {
         Ok(s)
     }
 
-    /// UDP socket + an initialised (not yet handshaken) client session.
     fn new_raw(gw: IpAddr, port: u16) -> Result<Self, String> {
         let g = gnutls().ok_or("libgnutls not available on this host (DTLS off)")?;
         let bind = if gw.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" };
@@ -286,7 +277,6 @@ impl DtlsSession {
         Ok(())
     }
 
-    /// Drive the non-blocking handshake to completion, polling the fd between tries.
     fn handshake(&mut self, timeout: Duration) -> Result<(), String> {
         let g = self.g;
         let deadline = Instant::now() + timeout;

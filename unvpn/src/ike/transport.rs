@@ -1,6 +1,5 @@
-//! IKE transports. UDP (plain on :500, NAT-T on :4500 with the Non-ESP marker,
-//! RFC 3948). Visitor Mode (IKE/ESP over TLS:443) is a separate transport added
-//! later if UDP is blocked.
+//! IKE over UDP: plain on :500, NAT-T on :4500 with the Non-ESP marker
+//! (RFC 3948).
 
 use std::net::{IpAddr, Ipv4Addr, UdpSocket};
 use std::time::Duration;

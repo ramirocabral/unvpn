@@ -1,12 +1,9 @@
-//! unvpn-gui — a native Linux VPN client with a clean GTK4 / libadwaita UI and a
-//! system-tray icon. Supports Check Point, Fortinet (FortiClient), F5 BIG-IP APM,
-//! Cisco AnyConnect, OpenVPN and WireGuard back-ends, and saved connection **profiles** (switch between gateways
-//! without retyping). Passwords are kept in the system keyring (Secret Service);
-//! 2FA tokens are single-use and always asked for.
+//! unvpn-gui — GTK4 / libadwaita front-end with a system-tray icon. Passwords are
+//! kept in the system keyring (Secret Service); 2FA tokens are single-use and
+//! always asked for.
 //!
 //! The GUI runs as the user and drives the privileged `unvpn` engine as a
-//! subprocess (see `engine.rs`); the tray is in `tray.rs`, profiles in
-//! `profiles.rs`.
+//! subprocess (see `engine.rs`).
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -38,8 +35,6 @@ const CSS: &str = "
 .st-err { color: #e01b24; }
 ";
 
-// ───────────────────────── browser-launched F5 tunnel ──────────────────────
-
 /// An F5 tunnel started outside the GUI (by the `f5-vpn://` scheme handler), read
 /// from `~/.cache/unvpn-f5/tunnel.status`. The engine writes it; deleting it stops
 /// the tunnel (the root engine watches the file and tears down cleanly).
@@ -54,8 +49,6 @@ fn f5_status_path() -> Option<std::path::PathBuf> {
     Some(std::path::PathBuf::from(home).join(".cache/unvpn-f5/tunnel.status"))
 }
 
-/// Detect a live browser-launched F5 tunnel: parse the status file and confirm its
-/// process is still running. None if there's no such tunnel.
 fn detect_external_f5() -> Option<ExternalF5> {
     let content = std::fs::read_to_string(f5_status_path()?).ok()?;
     let (mut pid, mut gateway, mut ip, mut dns) = (0u32, String::new(), String::new(), String::new());
@@ -72,7 +65,7 @@ fn detect_external_f5() -> Option<ExternalF5> {
         }
     }
     if pid == 0 || !std::path::Path::new(&format!("/proc/{pid}")).exists() {
-        return None; // a stale file whose process is gone is not a live tunnel
+        return None;
     }
     Some(ExternalF5 { gateway, ip, dns })
 }
@@ -83,32 +76,23 @@ fn disconnect_external_f5() {
     }
 }
 
-// ─────────────────────────────────── App ───────────────────────────────────
-
-/// All the GUI state. Held in an `Rc` and cloned into signal handlers; mutable
-/// bits use interior mutability so handlers can take `&self`.
 struct App {
     window: adw::ApplicationWindow,
     toast: adw::ToastOverlay,
 
-    // header
     status_pill: gtk::Label,
 
-    // profiles
     profiles_group: adw::PreferencesGroup,
     profile_rows: RefCell<Vec<adw::ActionRow>>,
     profiles: RefCell<Vec<Profile>>,
 
-    // connection form
     form_group: adw::PreferencesGroup,
     name_row: adw::EntryRow,
     backend_row: adw::ComboRow,
     gateway_row: adw::EntryRow,
-    /// "Browse…" suffix of the gateway row — picks the .ovpn file (OpenVPN).
     browse_btn: gtk::Button,
     user_row: adw::EntryRow,
     password_row: adw::PasswordEntryRow,
-    /// OpenVPN: optional private-key passphrase (stored in the keyring on Save).
     key_pass_row: adw::PasswordEntryRow,
     remember_key_pass_row: adw::SwitchRow,
     token_row: adw::EntryRow,
@@ -117,32 +101,25 @@ struct App {
     remember_row: adw::SwitchRow,
     save_btn: gtk::Button,
 
-    // action
     connect_btn: gtk::Button,
 
-    // active-connection status
     status_group: adw::PreferencesGroup,
     ip_row: adw::ActionRow,
     dns_row: adw::ActionRow,
 
-    // browser-launched F5
     ext_group: adw::PreferencesGroup,
     ext_gw_row: adw::ActionRow,
     ext_ip_row: adw::ActionRow,
     ext_dns_row: adw::ActionRow,
 
-    // mid-login question
     prompt_group: adw::PreferencesGroup,
     prompt_rows: RefCell<Vec<gtk::Widget>>,
-    /// The embedded AnyConnect SSO window while a SAML login is in progress.
     #[cfg(feature = "webview")]
     sso_window: RefCell<Option<adw::Window>>,
 
-    // log
     log_buffer: gtk::TextBuffer,
     log_view: gtk::TextView,
 
-    // engine + tray
     vpn: RefCell<Vpn>,
     tray: RefCell<Option<ksni::Handle<tray::VpnTray>>>,
     tx: Tx,
@@ -153,19 +130,17 @@ struct App {
     /// OpenVPN: (profile, passphrase) typed in the prompt card with "Remember" on —
     /// written to the keyring once the tunnel is up, i.e. once it proved right.
     key_pass_to_store: RefCell<Option<(String, String)>>,
-    /// Name of the profile used for the current connection — shown on hover (header
-    /// status pill + tray tooltip). Shared with the tray thread.
+    /// Name of the profile used for the current connection. Shared with the tray thread.
     active_profile: Arc<Mutex<String>>,
     /// Set only when the user really quits (tray/menu "Quit"); otherwise closing the
     /// window just hides it to the tray (the tunnel keeps running).
     quitting: Cell<bool>,
-    /// Self-reference, so `&self` handlers can clone the owning `Rc` for callbacks.
+    /// Self-reference, so `&self` handlers can clone the owning `Rc` into callbacks.
     me: RefCell<Weak<App>>,
 }
 
 impl App {
     fn new(app: &adw::Application, tx: Tx) -> Rc<Self> {
-        // ---- header -----------------------------------------------------------
         let status_pill = gtk::Label::builder().css_classes(["statuspill", "st-off"]).build();
         let header = adw::HeaderBar::new();
         header.set_title_widget(Some(&adw::WindowTitle::new("unvpn", "")));
@@ -181,7 +156,6 @@ impl App {
             .build();
         header.pack_end(&menu_btn);
 
-        // ---- profiles ---------------------------------------------------------
         let add_btn = gtk::Button::builder()
             .icon_name("list-add-symbolic")
             .css_classes(["flat"])
@@ -190,7 +164,6 @@ impl App {
         let profiles_group = adw::PreferencesGroup::builder().title("Profiles").build();
         profiles_group.set_header_suffix(Some(&add_btn));
 
-        // ---- connection form --------------------------------------------------
         let name_row = adw::EntryRow::builder().title("Profile name").build();
 
         let backend_model = gtk::StringList::new(&["Check Point", "FortiClient", "F5", "AnyConnect (Cisco)", "OpenVPN", "WireGuard"]);
@@ -240,7 +213,6 @@ impl App {
         form_group.add(&token_row);
         form_group.add(&remember_row);
 
-        // ---- connect button ---------------------------------------------------
         let connect_btn = gtk::Button::builder()
             .label("Connect")
             .css_classes(["suggested-action", "pill"])
@@ -249,14 +221,12 @@ impl App {
             .build();
         connect_btn.set_height_request(40);
 
-        // ---- active-connection status ----------------------------------------
         let ip_row = adw::ActionRow::builder().title("Internal IP").css_classes(["property"]).build();
         let dns_row = adw::ActionRow::builder().title("DNS").css_classes(["property"]).build();
         let status_group = adw::PreferencesGroup::builder().title("Active connection").visible(false).build();
         status_group.add(&ip_row);
         status_group.add(&dns_row);
 
-        // ---- browser-launched F5 ---------------------------------------------
         let ext_gw_row = adw::ActionRow::builder().title("Gateway").css_classes(["property"]).build();
         let ext_ip_row = adw::ActionRow::builder().title("Internal IP").css_classes(["property"]).build();
         let ext_dns_row = adw::ActionRow::builder().title("DNS").css_classes(["property"]).build();
@@ -275,10 +245,8 @@ impl App {
         ext_group.add(&ext_ip_row);
         ext_group.add(&ext_dns_row);
 
-        // ---- mid-login question ----------------------------------------------
         let prompt_group = adw::PreferencesGroup::builder().visible(false).build();
 
-        // ---- log --------------------------------------------------------------
         let log_buffer = gtk::TextBuffer::builder().build();
         let log_view = gtk::TextView::builder()
             .buffer(&log_buffer)
@@ -301,7 +269,6 @@ impl App {
         let diag_group = adw::PreferencesGroup::builder().build();
         diag_group.add(&log_expander);
 
-        // ---- assemble ---------------------------------------------------------
         let content = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(18)
@@ -394,7 +361,6 @@ impl App {
         this
     }
 
-    /// Connect all signal handlers (needs the `Rc` to clone into closures).
     fn wire(app: &Rc<Self>, add_btn: &gtk::Button, ext_disconnect: &gtk::Button) {
         app.backend_row.connect_selected_notify(glib::clone!(#[strong] app, move |_| {
             app.update_form_visibility();
@@ -405,7 +371,6 @@ impl App {
             app.sync_ui();
         }));
 
-        // Re-evaluate the Connect button's "ready" state as the user types.
         app.gateway_row.connect_changed(glib::clone!(#[strong] app, move |_| {
             if app.backend() == Backend::OpenVpn {
                 app.update_form_visibility(); // auth-user-pass decides the credential rows
@@ -426,16 +391,15 @@ impl App {
             app.ext_group.set_visible(false);
         }));
 
-        // Closing the window keeps the app (and the tunnel) running in the tray, like a
-        // normal VPN client. The user quits only via the tray/menu "Quit". If there's no
-        // tray to return from, closing quits (otherwise the window would be unreachable).
+        // Closing the window keeps the app (and the tunnel) running in the tray; only
+        // "Quit" exits. Without a tray, closing quits (the window would be unreachable).
         app.window.connect_close_request(glib::clone!(#[strong] app, move |_| {
             if app.quitting.get() {
                 app.vpn.borrow_mut().shutdown();
-                return glib::Propagation::Proceed; // destroy the window → app exits
+                return glib::Propagation::Proceed;
             }
             if app.tray.borrow().is_some() {
-                app.window.set_visible(false); // minimize to tray, tunnel stays up
+                app.window.set_visible(false);
                 return glib::Propagation::Stop;
             }
             app.vpn.borrow_mut().shutdown();
@@ -443,17 +407,13 @@ impl App {
         }));
     }
 
-    // ── form helpers ───────────────────────────────────────────────────────
-
     fn backend(&self) -> Backend {
         Backend::from_index(self.backend_row.selected())
     }
-    /// SSO/SAML (browser) login selected, on a back-end that has one.
     fn sso(&self) -> bool {
         self.backend().has_sso() && self.sso_row.selected() == 1
     }
 
-    /// Show only the rows relevant to the selected back-end / auth method.
     fn update_form_visibility(&self) {
         let b = self.backend();
         let forti = b == Backend::Forti;
@@ -535,7 +495,6 @@ impl App {
         profiles::ovpn_needs_userpass(self.gateway_row.text().trim())
     }
 
-    /// File chooser for the OpenVPN / WireGuard profile; fills the gateway row with its path.
     fn pick_profile_file(&self) {
         let filter = gtk::FileFilter::new();
         let title = if self.backend() == Backend::WireGuard {
@@ -563,8 +522,6 @@ impl App {
             }
         });
     }
-
-    // ── profiles ───────────────────────────────────────────────────────────
 
     fn refresh_profiles_list(&self) {
         for row in self.profile_rows.borrow_mut().drain(..) {
@@ -651,13 +608,10 @@ impl App {
             self.name_row.grab_focus();
             return;
         }
-        // "Remember" only applies when the password field is in play (not SSO).
         let creds_in_play = !self.sso();
         let remember = self.remember_row.is_active() && creds_in_play;
         let backend = self.backend();
         let realm_field = self.realm_row.text().trim().to_string();
-        // OpenVPN key passphrase: optional — stored only if "remember" is on and it's
-        // filled; otherwise it's used for this session or asked on connect.
         let key_pass = if self.key_pass_row.is_visible() && self.remember_key_pass_row.is_active() {
             self.key_pass_row.text().to_string()
         } else {
@@ -684,7 +638,6 @@ impl App {
             remember_key_pass,
         };
 
-        // Keyring: store the password/PIN only if "remember" is on and non-empty.
         let pw = self.password_row.text().to_string();
         if remember && !pw.is_empty() {
             if !profiles::secret_set(&name, &pw) {
@@ -738,8 +691,6 @@ impl App {
         self.name_row.grab_focus();
     }
 
-    // ── connect / disconnect ────────────────────────────────────────────────
-
     fn on_connect_clicked(&self) {
         let st = self.vpn.borrow().state();
         match st {
@@ -757,7 +708,6 @@ impl App {
             self.toast("Missing details to connect");
             return;
         }
-        // Fresh slate for this attempt.
         self.log_buffer.set_text("");
         self.ip_row.set_subtitle("");
         self.dns_row.set_subtitle("");
@@ -775,8 +725,6 @@ impl App {
         let realm = self.realm_row.text().trim().to_string();
         let label = format!("connecting to {gw}");
 
-        // Remember which profile this connection is for (hover tooltip). Fall back to the
-        // gateway when connecting without a saved/named profile.
         *self.active_profile.lock().unwrap() = {
             let n = self.name_row.text().trim().to_string();
             if n.is_empty() { gw.clone() } else { n }
@@ -831,15 +779,13 @@ impl App {
             // Nothing to ask: the keys are in the profile.
             Backend::WireGuard => (vec!["wireguard".into(), "-c".into(), gw.clone(), "--connect".into()], vec![], None),
             Backend::AnyConnect => {
-                // realm_row doubles as the optional tunnel group for AnyConnect.
                 let mut args: Vec<String> = vec!["anyconnect".into(), "-g".into(), gw.clone()];
                 if !realm.is_empty() {
                     args.push("--group".into());
                     args.push(realm);
                 }
                 if self.sso() {
-                    // SAML: we open the gateway's login URL in the user's browser; the
-                    // token cookie is pasted into the `# AUTH-PROMPT: sso:` card.
+                    // The token cookie is answered via the `# AUTH-PROMPT: sso:` card.
                     args.push("--sso".into());
                     args.push("--connect".into());
                     (args, vec![], Some(anyconnect_saml_entry(&gw)))
@@ -847,8 +793,7 @@ impl App {
                     args.push("-u".into());
                     args.push(user);
                     args.push("--connect".into());
-                    // Password piped up front (like F5); a 2FA code, if any, is collected
-                    // interactively via `# AUTH-PROMPT: code:`.
+                    // A 2FA code, if any, is collected via `# AUTH-PROMPT: code:`.
                     (args, vec![self.password_row.text().to_string()], None)
                 }
             }
@@ -857,8 +802,6 @@ impl App {
         self.vpn.borrow_mut().connect(args, stdin_lines, label, saml);
         self.sync_ui();
     }
-
-    // ── engine events ────────────────────────────────────────────────────────
 
     fn handle_msg(&self, msg: UiMsg) {
         match msg {
@@ -916,7 +859,6 @@ impl App {
         self.log_view.scroll_to_iter(&mut b.end_iter(), 0.0, false, 0.0, 0.0);
     }
 
-    /// Reap the engine and poll for a browser-launched F5 tunnel (timer-driven).
     fn tick(&self) {
         if self.vpn.borrow_mut().poll_exit() {
             self.sync_ui();
@@ -932,8 +874,6 @@ impl App {
             None => self.ext_group.set_visible(false),
         }
     }
-
-    // ── AnyConnect SSO window ────────────────────────────────────────────────
 
     /// Show the SAML login in the embedded browser; when it reaches the final page,
     /// pipe the token cookie to the engine's pending `sso` prompt — no copy/paste.
@@ -983,8 +923,6 @@ impl App {
         false
     }
 
-    // ── mid-login question UI ────────────────────────────────────────────────
-
     fn show_prompt(&self, p: AuthPrompt) {
         self.clear_prompt();
 
@@ -1023,7 +961,6 @@ impl App {
         let new_password = p.kind == "newpass" || p.kind == "renew";
         let masked = new_password || matches!(p.kind.as_str(), "answer" | "sso" | "keypass");
 
-        // The input row: masked (password/challenge) vs visible (OTP code).
         let entry: gtk::Widget = if masked {
             adw::PasswordEntryRow::builder().title(hint).build().upcast()
         } else {
@@ -1053,7 +990,6 @@ impl App {
             self.prompt_rows.borrow_mut().push(r.clone().upcast());
         }
 
-        // Buttons row (Send + optional Skip for a renewable password).
         let btns = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
@@ -1072,7 +1008,6 @@ impl App {
         self.prompt_group.set_visible(true);
         entry.grab_focus();
 
-        // Wire actions. The entry widgets are captured directly (no field needed).
         let app = self.rc();
         let entry_for_send = entry.clone();
         let confirm_for_send = confirm.clone();
@@ -1115,15 +1050,14 @@ impl App {
                 app2.clear_prompt();
             });
         }
-        // Enter in the (visible) code field sends too.
         if let Ok(er) = entry.clone().downcast::<adw::EntryRow>() {
             let d = do_send.clone();
             er.connect_entry_activated(move |_| d());
         }
     }
 
-    /// Persist a key passphrase the user asked to remember in the prompt card (the
-    /// tunnel came up, so it was right): keyring + the profile's flag + the form row.
+    /// Persist a key passphrase the user asked to remember in the prompt card — only
+    /// once the tunnel came up, so it was right.
     fn store_key_pass(&self) {
         let Some((name, pass)) = self.key_pass_to_store.take() else { return };
         if !profiles::secret_set(&profiles::keypass_account(&name), &pass) {
@@ -1155,14 +1089,11 @@ impl App {
         self.prompt_group.set_visible(false);
     }
 
-    /// Read text from either an AdwEntryRow or an AdwPasswordEntryRow.
     fn editable_text(&self, w: &gtk::Widget) -> String {
         w.downcast_ref::<gtk::Editable>()
             .map(|e| e.text().to_string())
             .unwrap_or_default()
     }
-
-    // ── state → UI ────────────────────────────────────────────────────────────
 
     fn sync_ui(&self) {
         let state = self.vpn.borrow().state();
@@ -1181,7 +1112,6 @@ impl App {
             self.store_key_pass();
         }
 
-        // Hovering the status pill shows the active profile name while connected.
         if matches!(state, State::Connected) {
             let name = self.active_profile.lock().unwrap().clone();
             self.status_pill.set_tooltip_text((!name.is_empty()).then_some(name.as_str()));
@@ -1189,7 +1119,6 @@ impl App {
             self.status_pill.set_tooltip_text(None);
         }
 
-        // The SSO window only makes sense while a login is in progress.
         if state != State::Connecting {
             self.close_sso_window();
         }
@@ -1225,7 +1154,6 @@ impl App {
             }
         }
 
-        // Toast + tray refresh only on an actual state change.
         let changed = self.last_state.borrow().as_ref() != Some(&state);
         if changed {
             if let State::Error(e) = &state {
@@ -1242,7 +1170,6 @@ impl App {
         self.toast.add_toast(adw::Toast::new(msg));
     }
 
-    /// The owning `Rc<App>` (set once in [`App::new`]) — for cloning into callbacks.
     fn rc(&self) -> Rc<App> {
         self.me.borrow().upgrade().expect("App dropped while a handler ran")
     }
@@ -1267,7 +1194,6 @@ fn build_ui(app: &adw::Application) {
     let (tx, rx) = async_channel::unbounded::<UiMsg>();
     let state_app = App::new(app, tx);
 
-    // App actions for the primary menu.
     let about = gio::SimpleAction::new("about", None);
     about.connect_activate(glib::clone!(#[strong] state_app, move |_, _| {
         let dialog = adw::AboutDialog::builder()
@@ -1285,14 +1211,12 @@ fn build_ui(app: &adw::Application) {
 
     state_app.init_tray();
 
-    // Engine/tray events → UI.
     glib::spawn_future_local(glib::clone!(#[strong] state_app, async move {
         while let Ok(msg) = rx.recv().await {
             state_app.handle_msg(msg);
         }
     }));
 
-    // Reap the engine + detect a browser-launched tunnel.
     glib::timeout_add_local(Duration::from_millis(800), glib::clone!(#[strong] state_app, move || {
         state_app.tick();
         glib::ControlFlow::Continue

@@ -81,7 +81,6 @@ fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
     (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|e| e.to_string())).collect()
 }
 
-/// Map an OpenVPN `auth` name to an OpenSSL digest.
 pub fn digest(name: &str) -> Result<MessageDigest, String> {
     Ok(match name.to_ascii_uppercase().as_str() {
         "SHA1" | "SHA-1" => MessageDigest::sha1(),
@@ -147,9 +146,6 @@ pub fn openvpn_prf_keys(
     tls1_prf(&master, &seed, 256)
 }
 
-// ───────────────────────── control-channel wrapping ─────────────────────────
-
-/// How control packets are protected on the wire.
 pub enum Wrap {
     None,
     Auth { md: MessageDigest, out: PKey<Private>, inp: PKey<Private>, hlen: usize, pid: u32, time: u32 },
@@ -199,7 +195,7 @@ impl Wrap {
         }
     }
 
-    /// Wrap a control packet. `rest` = everything after op|sid (acks, msg id, payload).
+    /// `rest` = everything after op|sid (acks, msg id, payload).
     pub fn wrap(&mut self, op: u8, sid: &[u8; 8], rest: &[u8]) -> Vec<u8> {
         match self {
             Wrap::None => {
@@ -237,7 +233,6 @@ impl Wrap {
         }
     }
 
-    /// Verify/decrypt a control packet; returns `(op, sid, rest)`.
     pub fn unwrap(&self, pkt: &[u8]) -> Result<(u8, [u8; 8], Vec<u8>), String> {
         if pkt.len() < 9 {
             return Err("short control packet".into());
@@ -290,15 +285,13 @@ fn now_secs() -> u32 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as u32).unwrap_or(0)
 }
 
-// ───────────────────────────── data channel ─────────────────────────────
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CipherKind {
     Aead,
     Cbc,
 }
 
-/// Resolve an OpenVPN cipher name: (OpenSSL cipher, key length, mode).
+/// Returns (OpenSSL cipher, key length, mode).
 pub fn cipher_by_name(name: &str) -> Option<(&'static CipherRef, usize, CipherKind)> {
     Some(match name.to_ascii_uppercase().as_str() {
         "AES-128-GCM" => (Cipher::aes_128_gcm(), 16, CipherKind::Aead),
@@ -363,7 +356,7 @@ pub struct DataCrypto {
 const AEAD_TAG: usize = 16;
 
 impl DataCrypto {
-    /// Build from 256 bytes of key2 material. Client: encrypt = key 0, decrypt = key 1.
+    /// Client: encrypt = key 0, decrypt = key 1.
     pub fn new(key2: &Key2, cipher_name: &str, auth: &str) -> Result<DataCrypto, String> {
         let (cipher, klen, kind) =
             cipher_by_name(cipher_name).ok_or_else(|| format!("unsupported data cipher {cipher_name}"))?;
@@ -455,7 +448,6 @@ impl DataCrypto {
         }
     }
 
-    /// Decrypt a full data packet whose header is `hdr_len` bytes. Returns the payload.
     pub fn decrypt(&mut self, pkt: &[u8], hdr_len: usize, aad_hdr: bool) -> Result<Vec<u8>, String> {
         match self.kind {
             CipherKind::Aead => {
@@ -535,7 +527,6 @@ mod tests {
 
     #[test]
     fn prf_rfc2246_shape() {
-        // Deterministic and split-secret: XOR of two independent hashes.
         let a = tls1_prf(b"secret-secret", b"seed", 100);
         let b = tls1_prf(b"secret-secret", b"seed", 100);
         assert_eq!(a, b);
@@ -586,11 +577,10 @@ mod tests {
     fn tls_crypt_roundtrip() {
         let k = key2_seq();
         let mut client = Wrap::tls_crypt(&k).unwrap();
-        // The server's view: out = key 0, in = key 1 → build it by swapping.
         let server = Wrap::tls_crypt(&server_side(&k)).unwrap();
         let sid = [9u8; 8];
         let pkt = client.wrap(0x20, &sid, b"\x00\x00\x00\x00\x01hello");
-        assert_ne!(&pkt[pkt.len() - 5..], b"hello"); // encrypted
+        assert_ne!(&pkt[pkt.len() - 5..], b"hello");
         let (op, s, rest) = server.unwrap(&pkt).unwrap();
         assert_eq!((op, s, rest.as_slice()), (0x20, sid, &b"\x00\x00\x00\x00\x01hello"[..]));
     }
@@ -629,7 +619,7 @@ mod tests {
         assert!(r.check(1) && r.check(3) && r.check(2));
         assert!(!r.check(2) && !r.check(0));
         assert!(r.check(100));
-        assert!(!r.check(30)); // too old
+        assert!(!r.check(30));
         assert!(r.check(99));
     }
 }

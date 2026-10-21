@@ -1,5 +1,4 @@
 //! IKEv1 Main Mode message construction/parsing for the Check Point initiator.
-//! Transport-agnostic: the same messages ride UDP (NAT-T) or Visitor Mode (TLS).
 
 use std::net::Ipv4Addr;
 
@@ -7,7 +6,6 @@ use super::model::*;
 use super::session::Ikev1Session;
 use super::wire::*;
 
-/// The negotiated Phase-1 suite the gateway selected in msg 2.
 #[derive(Debug, Clone, Copy)]
 pub struct ChosenSuite {
     pub responder_spi: u64,
@@ -18,9 +16,7 @@ pub struct ChosenSuite {
     pub lifetime: u32,
 }
 
-/// Build Main Mode msg 1: the SA proposal (the single transform the Check Point
-/// gateway selects — AES-256-CBC / SHA-256 / DH group 2 / Hybrid / 28800s) plus
-/// the Check Point and NAT-T vendor IDs.
+/// Main Mode msg 1: the SA proposal plus the Check Point and NAT-T vendor IDs.
 pub fn build_sa_msg(session: &Ikev1Session, lifetime_secs: u32) -> IsakmpMessage {
     // Offer a transform matrix (enc × hash × DH group, all Check Point hybrid
     // auth) for the gateway to pick from. A single transform drew
@@ -87,7 +83,6 @@ pub fn sa_body(msg: &IsakmpMessage) -> Option<Vec<u8>> {
     msg.payloads.iter().find_map(|p| match p {
         Payload::Sa(_) => {
             let (_t, encoded) = IsakmpMessage::encode_payloads(std::slice::from_ref(p));
-            // strip the 4-byte generic payload header to get the body
             Some(encoded[PAYLOAD_HEADER_LEN..].to_vec())
         }
         _ => None,
@@ -194,7 +189,6 @@ pub fn find_nonce(msg: &IsakmpMessage) -> Option<Vec<u8>> {
     })
 }
 
-/// The gateway's NAT-D payloads (first = peer/self check, etc.), for NAT detection.
 pub fn find_natds(msg: &IsakmpMessage) -> Vec<Vec<u8>> {
     msg.payloads
         .iter()
@@ -293,7 +287,6 @@ pub fn encrypt_message(
     Ok(out)
 }
 
-/// Decrypt + parse an encrypted ISAKMP message received from the gateway.
 pub fn decrypt_message(session: &mut Ikev1Session, raw: &[u8]) -> Result<IsakmpMessage, String> {
     if raw.len() < ISAKMP_HEADER_LEN {
         return Err("short ISAKMP header".into());
@@ -367,8 +360,6 @@ pub fn make_hash(session: &Ikev1Session, message_id: u32, payloads: &[Payload]) 
     session.prf(&session.skeyid_a, &[&message_id.to_be_bytes(), &encoded])
 }
 
-/// Build a config-mode (Transaction) payload chain: HASH over the Attributes
-/// payload keyed with SKEYID_a, followed by the Attributes payload itself.
 pub fn build_config_payloads(
     session: &Ikev1Session,
     kind: u8,
@@ -405,7 +396,6 @@ pub fn get_long_attr(ap: &AttributesPayload, ty: ConfigAttributeType) -> Option<
     })
 }
 
-/// All long-valued attributes of a given type (e.g. multiple DNS servers).
 pub fn get_long_attrs(ap: &AttributesPayload, ty: ConfigAttributeType) -> Vec<Vec<u8>> {
     ap.attributes
         .iter()
@@ -436,10 +426,7 @@ pub fn challenge_attr_type(ap: &AttributesPayload) -> u16 {
     0
 }
 
-// --- Office Mode -----------------------------------------------------------
-
-/// Build the Office Mode config Request (asks for an internal IP, DNS, domains,
-/// CCC session id, lease). Returns (message_id, identifier, payloads).
+/// Office Mode config Request.
 pub fn build_om_request(
     session: &Ikev1Session,
     mac: &[u8],
@@ -475,8 +462,6 @@ pub fn build_om_request(
     );
     (message_id, identifier, payloads)
 }
-
-// --- Quick Mode (Phase 2, ESP SA) ------------------------------------------
 
 #[derive(Debug, Clone)]
 pub struct ChosenEsp {
@@ -595,7 +580,7 @@ pub fn parse_esp_proposal(msg: &IsakmpMessage) -> Result<ChosenEsp, String> {
     let auth_alg = attr(EspAttributeType::AuthenticationAlgorithm).ok_or("no ESP auth alg")?;
     let encap = attr(EspAttributeType::EncapsulationMode).unwrap_or(ESP_ENCAP_UDP_TUNNEL);
     let key_bits = attr(EspAttributeType::KeyLength).unwrap_or(0) as usize;
-    // Phase-2 lifetime the gateway settled on. LifeType 1 = seconds, 2 = KB.
+    // LifeType 1 = seconds, 2 = KB.
     let life_type = attr(EspAttributeType::LifeType).unwrap_or(1);
     let life_dur = transform
         .attributes
@@ -636,7 +621,6 @@ mod tests {
         let back = IsakmpMessage::decode(&bytes).unwrap();
         assert_eq!(back.encode(), bytes);
 
-        // Parsing our own proposal as if it were the response yields our suite.
         // parse_chosen_suite reads the first transform (SHA-512 / group 14 here).
         let suite = parse_chosen_suite(&back).unwrap();
         assert_eq!(suite.enc_alg, IKE_ENC_AES_CBC);
@@ -645,7 +629,7 @@ mod tests {
         assert_eq!(suite.key_bits, 256);
         assert_eq!(suite.lifetime, 28800);
 
-        // SAi_b is non-empty and begins with DOI=1, situation=1.
+        // SAi_b begins with DOI=1, situation=1.
         let body = sa_body(&msg).unwrap();
         assert_eq!(&body[0..8], &[0, 0, 0, 1, 0, 0, 0, 1]);
     }

@@ -52,7 +52,6 @@ pub struct PeerInfo {
     pub error: Option<String>,
 }
 
-/// Client credentials for TLS: certificate + key, plus extra CA certs from a PKCS#12.
 pub struct ClientId {
     pub cert: Option<X509>,
     pub chain: Vec<X509>,
@@ -60,9 +59,7 @@ pub struct ClientId {
     pub p12_ca: Vec<X509>,
 }
 
-/// Load the client certificate/key from the config. `key_pass` decrypts an
-/// encrypted PEM key or a password-protected PKCS#12 (the empty string is tried
-/// first for PKCS#12, the common case).
+/// For PKCS#12 the empty password is tried before `key_pass` (the common case).
 pub fn load_client_id(cfg: &Config, key_pass: Option<&str>) -> Result<ClientId, String> {
     let mut id = ClientId { cert: None, chain: Vec::new(), key: None, p12_ca: Vec::new() };
     if let Some(der) = &cfg.pkcs12 {
@@ -110,7 +107,7 @@ pub fn key_is_encrypted(cfg: &Config) -> bool {
     cfg.key.as_deref().is_some_and(|k| k.contains("ENCRYPTED"))
 }
 
-/// Build the shared SSL context. `peer` collects what verification saw.
+/// `peer` collects what verification saw.
 pub fn build_context(cfg: &Config, id: &ClientId, peer: Arc<Mutex<PeerInfo>>) -> Result<SslContext, String> {
     let mut b = SslContextBuilder::new(SslMethod::tls_client()).map_err(|e| e.to_string())?;
     // OpenVPN's default `tls-cert-profile legacy` = OpenSSL security level 1.

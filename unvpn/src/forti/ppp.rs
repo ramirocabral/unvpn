@@ -45,11 +45,9 @@ const TERM_ACK: u8 = 6;
 const ECHO_REQ: u8 = 9;
 const ECHO_REP: u8 = 10;
 
-// LCP option types.
 const LCP_OPT_MRU: u8 = 1;
 const LCP_OPT_MAGIC: u8 = 5;
 
-// IPCP option types.
 const IPCP_OPT_IP: u8 = 3;
 const IPCP_OPT_DNS1: u8 = 129;
 const IPCP_OPT_DNS2: u8 = 131;
@@ -57,7 +55,6 @@ const IPCP_OPT_DNS2: u8 = 131;
 /// Default MRU we advertise (≈10 bytes of PPP/encap overhead beyond TLS).
 const DEFAULT_MRU: u16 = 1354;
 
-/// What IPCP negotiation produced.
 #[derive(Debug, Clone)]
 pub struct IpConfig {
     pub addr: Ipv4Addr,
@@ -71,17 +68,13 @@ pub struct IpConfig {
 pub trait Transport: Read + Write {}
 impl<T: Read + Write> Transport for T {}
 
-// ───────────────────────── buffered connection ──────────────────────────────
-
-/// A PPP connection over a byte stream (the TLS tunnel). Buffers input so partial
-/// TLS records never corrupt frame boundaries.
+/// Buffers input so partial TLS records never corrupt frame boundaries.
 pub struct PppConn<S> {
     stream: S,
     rbuf: Vec<u8>,
     /// Socket fd to wait on when a non-blocking write would block. Set once the link
     /// is in the (non-blocking) data phase; then `fill` also drains to `WouldBlock`.
     poll_fd: Option<i32>,
-    /// Data frames queued by [`PppConn::queue`], written in one go by `flush_tx`.
     txbuf: Vec<u8>,
     /// Whether several frames may share one write (true for a byte stream like TLS;
     /// false for DTLS, where each record must carry exactly one frame).
@@ -130,8 +123,7 @@ impl<S: Read + Write> PppConn<S> {
         &self.stream
     }
 
-    /// Send a PPP frame (protocol + payload) wrapped in the 6-byte header, after any
-    /// queued data frames (so ordering is preserved).
+    /// Flushes queued data frames first, so ordering is preserved.
     pub fn send(&mut self, proto: u16, payload: &[u8]) -> Result<(), String> {
         self.flush_tx()?;
         let mut out = Vec::with_capacity(10 + payload.len());
@@ -153,7 +145,6 @@ impl<S: Read + Write> PppConn<S> {
         Ok(())
     }
 
-    /// Write out the frames queued by `queue`.
     pub fn flush_tx(&mut self) -> Result<(), String> {
         if self.txbuf.is_empty() {
             return Ok(());
@@ -178,12 +169,12 @@ impl<S: Read + Write> PppConn<S> {
             // The gateway answered with HTTP. On success some gateways send
             // `200 OK` then switch straight to PPP; on failure, an error status.
             let Some(end) = self.rbuf.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4) else {
-                return Ok(None); // headers not fully arrived yet
+                return Ok(None);
             };
             let head = String::from_utf8_lossy(&self.rbuf[..end]);
             let status = head.split_whitespace().nth(1).and_then(|s| s.parse::<u16>().ok()).unwrap_or(0);
             if status == 200 {
-                self.rbuf.drain(..end); // consume headers; PPP frames follow
+                self.rbuf.drain(..end);
             } else {
                 let first = head.lines().next().unwrap_or("").trim().to_string();
                 return Err(format!("tunnel refused (HTTP): {first}"));
@@ -201,7 +192,7 @@ impl<S: Read + Write> PppConn<S> {
                 return Err(format!("bad Fortinet control record (len={total})"));
             }
             if self.rbuf.len() < total {
-                return Ok(None); // wait for the whole control record
+                return Ok(None);
             }
             let rec: Vec<u8> = self.rbuf.drain(..total).skip(2).collect();
             return Ok(Some((FORTI_CTRL, rec)));
@@ -213,7 +204,7 @@ impl<S: Read + Write> PppConn<S> {
             ));
         }
         if self.rbuf.len() < 6 + frame_len {
-            return Ok(None); // incomplete — wait for more bytes
+            return Ok(None);
         }
         let frame: Vec<u8> = self.rbuf.drain(..6 + frame_len).skip(6).collect();
         let mut off = 0;
@@ -270,7 +261,6 @@ impl<S: Read + Write> PppConn<S> {
     }
 }
 
-/// Append one framed PPP packet (6-byte header + `FF 03` + protocol + payload).
 fn encode_frame(proto: u16, payload: &[u8], out: &mut Vec<u8>) {
     let frame_len = 4 + payload.len();
     out.extend_from_slice(&((frame_len + 6) as u16).to_be_bytes());
@@ -281,8 +271,6 @@ fn encode_frame(proto: u16, payload: &[u8], out: &mut Vec<u8>) {
     out.extend_from_slice(&proto.to_be_bytes());
     out.extend_from_slice(payload);
 }
-
-// ───────────────────────── control packet build ─────────────────────────────
 
 fn ctrl(code: u8, id: u8, options: &[u8]) -> Vec<u8> {
     let len = 4 + options.len();
@@ -332,8 +320,6 @@ fn iter_opts(body: &[u8]) -> Vec<(u8, Vec<u8>)> {
     out
 }
 
-// ─────────────────────────── negotiation ────────────────────────────────────
-
 /// Run LCP then IPCP to completion. The socket must have a read timeout set.
 pub fn negotiate<S: Read + Write>(conn: &mut PppConn<S>) -> Result<IpConfig, String> {
     let magic: [u8; 4] = crate::ike::crypto::random(4).try_into().unwrap_or([1, 2, 3, 4]);
@@ -343,12 +329,11 @@ pub fn negotiate<S: Read + Write>(conn: &mut PppConn<S>) -> Result<IpConfig, Str
     Ok(ipc)
 }
 
-/// The MRU option in a peer's LCP Configure-Request body, if any.
 fn mru_option(body: &[u8]) -> Option<u16> {
     iter_opts(body).into_iter().find(|(t, v)| *t == LCP_OPT_MRU && v.len() == 2).map(|(_, v)| u16::from_be_bytes([v[0], v[1]]))
 }
 
-/// LCP to completion. Returns the gateway's MRU (from its Configure-Request).
+/// Returns the gateway's MRU (from its Configure-Request).
 fn lcp_phase<S: Read + Write>(conn: &mut PppConn<S>, magic: &[u8; 4]) -> Result<Option<u16>, String> {
     let mut our_opts = Vec::new();
     our_opts.extend_from_slice(&opt(LCP_OPT_MRU, &DEFAULT_MRU.to_be_bytes()));
@@ -495,12 +480,11 @@ fn ipcp_phase<S: Read + Write>(conn: &mut PppConn<S>) -> Result<IpConfig, String
     Ok(IpConfig { addr: want_ip, dns, peer_mru: None })
 }
 
-/// Build an LCP Echo-Request body (magic 0 + no data) for keepalive.
+/// Magic 0, no data.
 pub fn echo_request(id: u8) -> Vec<u8> {
     ctrl(ECHO_REQ, id, &[0, 0, 0, 0])
 }
 
-/// Build an LCP Terminate-Request for a clean shutdown.
 pub fn terminate_request(id: u8) -> Vec<u8> {
     ctrl(TERM_REQ, id, &[])
 }
@@ -553,19 +537,15 @@ mod tests {
 
     #[test]
     fn framing_round_trip() {
-        // send() writes the 6-byte header + FF03 + proto + payload; take_frame() parses it.
         let mut c = PppConn::new(Cursor::new(Vec::<u8>::new()));
         c.send(PPP_IPV4, b"\x45\x00ping").unwrap();
         let framed = c.get_ref().get_ref().clone();
-        // header: total=4+6+... check magic bytes present
         assert_eq!(&framed[2..4], &[0x50, 0x50]);
-        // feed into a fresh conn's buffer and parse
         let mut r = PppConn::new(Cursor::new(Vec::<u8>::new()));
         r.rbuf.extend_from_slice(&framed);
         let (proto, payload) = r.take_frame().unwrap().unwrap();
         assert_eq!(proto, PPP_IPV4);
         assert_eq!(payload, b"\x45\x00ping");
-        // buffer fully consumed
         assert!(r.take_frame().unwrap().is_none());
     }
 
@@ -595,20 +575,18 @@ mod tests {
     #[test]
     fn fortinet_control_record_is_demuxed_not_a_framing_error() {
         let mut r = PppConn::new(Cursor::new(Vec::<u8>::new()));
-        // A heartbeat control record: [00 13]"GFtype\0svrhello-tun" (len 19) …
+        // A heartbeat control record: [00 13]"GFtype\0svrhello-tun" (len 19).
         let mut rec = vec![0x00u8, 0x00];
         rec.extend_from_slice(b"GFtype\0svrhello-tun");
         let n = rec.len() as u16;
         rec[..2].copy_from_slice(&n.to_be_bytes());
-        // … immediately followed by a normal PPP IPv4 frame.
         let mut c = PppConn::new(Cursor::new(Vec::<u8>::new()));
         c.send(PPP_IPV4, b"\x45data").unwrap();
         let ppp_frame = c.get_ref().get_ref().clone();
         r.rbuf.extend_from_slice(&rec);
         r.rbuf.extend_from_slice(&ppp_frame);
-        // The control record comes out as FORTI_CTRL (ignored), not an error …
         assert_eq!(r.take_frame().unwrap().unwrap().0, FORTI_CTRL);
-        // … and the stream stays in sync: the PPP frame parses right after it.
+        // The stream stays in sync: the PPP frame parses right after it.
         assert_eq!(r.take_frame().unwrap().unwrap(), (PPP_IPV4, b"\x45data".to_vec()));
         assert!(r.take_frame().unwrap().is_none());
     }
@@ -632,7 +610,7 @@ mod tests {
     #[test]
     fn partial_frame_waits() {
         let mut r = PppConn::new(Cursor::new(Vec::<u8>::new()));
-        // claims frame_len 100 but only a few bytes present → None (wait for more)
+        // claims frame_len 100 but only a few bytes present
         r.rbuf.extend_from_slice(&[0x00, 106, 0x50, 0x50, 0x00, 100, 0xff, 0x03]);
         assert!(r.take_frame().unwrap().is_none());
     }

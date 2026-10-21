@@ -34,7 +34,6 @@ pub struct AuthPrompt {
     pub message: String,
 }
 
-/// An engine stdout/stderr event, marshalled to the GTK main thread.
 pub enum EngineEvent {
     Log(String),
     Ip(String),
@@ -43,11 +42,9 @@ pub enum EngineEvent {
     /// AnyConnect SAML: show `login` in the embedded SSO window and, once
     /// `final_url` loads, answer the pending `sso` prompt with the `cookie` value.
     SsoBrowser { login: String, final_url: String, cookie: String },
-    /// The shared `state` changed (TUNNEL UP / failure / teardown) — re-sync the UI.
     StateChanged,
 }
 
-/// A command from the system tray, marshalled to the GTK main thread.
 pub enum TrayCmd {
     Show,
     Connect,
@@ -55,7 +52,6 @@ pub enum TrayCmd {
     Quit,
 }
 
-/// Everything the GTK main loop consumes from its single channel.
 pub enum UiMsg {
     Engine(EngineEvent),
     Tray(TrayCmd),
@@ -232,7 +228,6 @@ impl Vpn {
             }
         };
 
-        // Pipe inputs (password, token, …) as stdin lines; keep stdin for disconnect.
         if let Some(mut si) = child.stdin.take() {
             for line in &stdin_lines {
                 let _ = writeln!(si, "{line}");
@@ -241,7 +236,6 @@ impl Vpn {
             self.stdin = Some(si);
         }
 
-        // Pump stdout + stderr → UiMsg events.
         for (reader, is_err) in [
             (child.stdout.take().map(|o| Box::new(o) as Box<dyn std::io::Read + Send>), false),
             (child.stderr.take().map(|o| Box::new(o) as Box<dyn std::io::Read + Send>), true),
@@ -258,7 +252,7 @@ impl Vpn {
                 let mut saml_cookie: Option<String> = None;
                 for line in BufReader::new(r).lines().map_while(Result::ok) {
                     let clean = line.trim_start_matches(['#', ' ']).to_string();
-                    eprintln!("[engine] {clean}"); // mirror to our stderr for logs/debugging
+                    eprintln!("[engine] {clean}");
                     if gen.load(Ordering::SeqCst) != my_gen {
                         continue; // a previous connection's engine, still draining
                     }
@@ -296,10 +290,9 @@ impl Vpn {
                                 }
                             }
                         }
-                        // A mid-login question: carries gateway text — don't mine it for
-                        // IP/DNS/state. Suppressed while tearing down. (The engine asks
-                        // one at a time, blocking on stdin, so there's never more than
-                        // one outstanding — no sequencing needed.)
+                        // A mid-login question carries gateway text — don't mine it for
+                        // IP/DNS/state. The engine blocks on stdin per question, so there's
+                        // never more than one outstanding.
                         if let Some(p) = parse_auth_prompt(&clean) {
                             if *state.lock().unwrap() != State::Disconnecting {
                                 let _ = tx.try_send(UiMsg::Engine(EngineEvent::Prompt(p)));
@@ -395,8 +388,7 @@ impl Vpn {
         }
     }
 
-    /// Reap the engine if it exited; update the shared state. Returns true if the
-    /// state changed (the caller re-syncs the UI).
+    /// Reap the engine if it exited. Returns true if the state changed.
     pub fn poll_exit(&mut self) -> bool {
         if let Some(c) = self.child.as_mut() {
             if let Ok(Some(status)) = c.try_wait() {

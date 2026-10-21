@@ -19,7 +19,6 @@ static WG_STOP: AtomicBool = AtomicBool::new(false);
 const IF_NAME: &str = "cpwg0";
 /// wg-quick's default: 1500 minus the IPv6 + UDP + WireGuard overhead (80).
 const DEFAULT_MTU: u16 = 1420;
-/// How long to wait for the first handshake before giving up.
 const HANDSHAKE_WAIT: Duration = Duration::from_secs(30);
 /// Once one peer is up, how much longer to wait for the others.
 const OTHERS_WAIT: Duration = Duration::from_secs(5);
@@ -155,7 +154,6 @@ pub fn run(cfg: Config, opts: RunOpts) -> Result<(), String> {
     result
 }
 
-/// `host:port` (or `[v6]:port`) → the first resolved address.
 fn resolve(endpoint: &str) -> Result<SocketAddr, String> {
     endpoint
         .to_socket_addrs()
@@ -164,7 +162,6 @@ fn resolve(endpoint: &str) -> Result<SocketAddr, String> {
         .ok_or_else(|| "resolves to no address".to_string())
 }
 
-/// Short form of a public key for logs (`abcd…wxyz=`).
 fn short(k: &[u8; 32]) -> String {
     let s = keys::to_b64(k);
     format!("{}…{}", &s[..4], &s[s.len() - 5..])
@@ -240,8 +237,8 @@ fn wait_handshake(nl: &mut WgNetlink, ifname: &str, cfg: &Config, reachable: &[u
     }
 }
 
-/// Watch the interface until stopped: periodic stats, and a warning when a peer
-/// we keep sending to stops completing handshakes.
+/// Periodic stats, and a warning when a peer we keep sending to stops completing
+/// handshakes.
 fn monitor(nl: &mut WgNetlink, ifname: &str) -> Result<(), String> {
     let mut last_stats = Instant::now();
     let mut prev: Option<DeviceState> = None;

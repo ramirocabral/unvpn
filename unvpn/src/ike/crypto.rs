@@ -25,7 +25,6 @@ fn e<E: std::fmt::Display>(err: E) -> String {
     err.to_string()
 }
 
-/// Cryptographically secure random bytes (nonces, cookies, SPIs, IVs).
 pub fn random(n: usize) -> Vec<u8> {
     let mut b = vec![0u8; n];
     rand_bytes(&mut b).expect("openssl rand");
@@ -52,7 +51,6 @@ fn left_pad(data: &[u8], len: usize) -> Vec<u8> {
     }
 }
 
-/// IKEv1 crypto context for one negotiated Phase-1 suite.
 pub struct IkeCrypto {
     dh: Dh<openssl::pkey::Private>,
     digest: MessageDigest,
@@ -97,19 +95,16 @@ impl IkeCrypto {
         })
     }
 
-    /// Our DH public value g^x, left-padded to the group width.
     pub fn public_key(&self) -> Vec<u8> {
         left_pad(&self.dh.public_key().to_vec(), self.pub_len)
     }
 
-    /// The shared secret g^xy, left-padded to the group width.
     pub fn shared_secret(&self, peer: &[u8]) -> Result<Vec<u8>, String> {
         let peer = BigNum::from_slice(peer).map_err(e)?;
         let secret = self.dh.compute_key(&peer).map_err(e)?;
         Ok(left_pad(&secret, self.pub_len))
     }
 
-    /// PRF = HMAC over the negotiated digest, concatenating the data chunks.
     pub fn prf(&self, key: &[u8], data: &[&[u8]]) -> Vec<u8> {
         let pkey = PKey::hmac(key).expect("hmac key");
         let mut signer = Signer::new(self.digest, &pkey).expect("signer");
@@ -119,7 +114,6 @@ impl IkeCrypto {
         signer.sign_to_vec().expect("hmac sign")
     }
 
-    /// Plain digest over the concatenated chunks.
     pub fn hash(&self, data: &[&[u8]]) -> Vec<u8> {
         let mut h = Hasher::new(self.digest).expect("hasher");
         for d in data {
@@ -202,7 +196,6 @@ mod tests {
     #[test]
     fn prf_hmac_sha256_known_vector() {
         let c = crypto();
-        // RFC-style known answer: HMAC-SHA256("key", "The quick brown fox jumps over the lazy dog")
         let mac = c.prf(b"key", &[b"The quick brown fox jumps over the lazy dog"]);
         let hex: String = mac.iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(

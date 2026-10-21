@@ -4,7 +4,7 @@
 //! and mapped against the `isakmp` crate + its `cp-ikev1` example. Phase-1
 //! proposal: AES-CBC/256, SHA2-256, DH group 2, auth 0xfadd (Hybrid), 28800s.
 //! The SecurID challenge runs *inside* IKE (hybrid auth via ISAKMP-CFG
-//! Transaction attributes), reusing the PIN+tokencode format proven in M2.
+//! Transaction attributes).
 #![allow(dead_code)]
 
 pub mod crypto;

@@ -81,7 +81,6 @@ impl Ikev1Session {
         self.crypto().hash_len()
     }
 
-    /// Derive the full key schedule from the responder's KE + nonce.
     pub fn compute_keys(&mut self, responder_pubkey: &[u8], responder_nonce: &[u8]) -> Result<(), String> {
         self.responder_pubkey = responder_pubkey.to_vec();
         self.responder_nonce = responder_nonce.to_vec();
@@ -152,7 +151,6 @@ impl Ikev1Session {
         h
     }
 
-    /// Encrypt a payload chain for `message_id`, advancing the CBC IV chain.
     pub fn encrypt(&mut self, message_id: u32, data: &[u8]) -> Result<Vec<u8>, String> {
         let iv = self.retrieve_iv(message_id);
         let enc = self.crypto().encrypt(&self.skeyid_e, data, &iv)?;
@@ -161,7 +159,6 @@ impl Ikev1Session {
         Ok(enc)
     }
 
-    /// Decrypt a payload chain for `message_id`, advancing the CBC IV chain.
     pub fn decrypt(&mut self, message_id: u32, data: &[u8]) -> Result<Vec<u8>, String> {
         let iv = self.retrieve_iv(message_id);
         let dec = self.crypto().decrypt(&self.skeyid_e, data, &iv)?;
@@ -235,15 +232,12 @@ mod tests {
     use super::super::model::*;
     use super::*;
 
-    /// Build an initiator session and derive keys against a second DH keypair
-    /// standing in for the responder, exercising the full schedule.
     fn derived_session() -> Ikev1Session {
         let mut s = Ikev1Session::new();
         s.responder_spi = 0x0102030405060708;
         s.set_suite(IKE_GROUP_MODP1024, IKE_HASH_SHA256, IKE_ENC_AES_CBC, 256)
             .unwrap();
         s.set_sa_bytes(&[0xde, 0xad, 0xbe, 0xef]);
-        // Stand-in responder keypair.
         let peer = IkeCrypto::new(IKE_GROUP_MODP1024, IKE_HASH_SHA256, IKE_ENC_AES_CBC, 256).unwrap();
         s.compute_keys(&peer.public_key(), &random(32)).unwrap();
         s
@@ -264,7 +258,6 @@ mod tests {
     #[test]
     fn iv_chaining_and_cbc_roundtrip() {
         let mut enc_s = derived_session();
-        // Clone the key material into a decrypt session with the same IV0.
         let mut dec_s = Ikev1Session::new();
         dec_s.responder_spi = enc_s.responder_spi;
         dec_s.set_suite(IKE_GROUP_MODP1024, IKE_HASH_SHA256, IKE_ENC_AES_CBC, 256)
@@ -272,7 +265,7 @@ mod tests {
         dec_s.skeyid_e = enc_s.skeyid_e.clone();
         dec_s.iv.insert(0, enc_s.iv.get(&0).unwrap().clone());
 
-        let pt = [0x5au8; 48]; // 3 blocks
+        let pt = [0x5au8; 48];
         let ct = enc_s.encrypt(0, &pt).unwrap();
         let back = dec_s.decrypt(0, &ct).unwrap();
         assert_eq!(back, pt);
@@ -289,7 +282,6 @@ mod tests {
         let k2 = s.gen_esp_keymat(0x11223344, b"ni", b"nr", 36);
         assert_eq!(k1, k2);
         assert_eq!(k1.len(), 36);
-        // Different SPI → different keymat.
         assert_ne!(k1, s.gen_esp_keymat(0x55667788, b"ni", b"nr", 36));
     }
 }

@@ -37,14 +37,12 @@ const AUTH_ID_PATH: &str = "/remote/saml/auth_id?id=";
 const DEFAULT_SSO_PORT: u16 = 8020;
 const DEFAULT_AUTH_TIMEOUT: u64 = 300;
 
-/// The SSO-relevant attributes of `/remote/info`.
 #[derive(Debug, Default, PartialEq)]
 pub struct RemoteInfo {
     pub sso_port: Option<u16>,
     pub auth_timeout: Option<u64>,
 }
 
-/// How to run the browser leg.
 pub struct SamlOpts {
     /// Override the listener port (default: the gateway's `sso_port`).
     pub port: Option<u16>,
@@ -52,7 +50,6 @@ pub struct SamlOpts {
     pub open_browser: bool,
 }
 
-/// Fetch and parse `/remote/info`.
 pub fn remote_info(host: &str, port: u16) -> Result<RemoteInfo, String> {
     let mut cookies = http::Cookies::new();
     let resp = http::request(host, port, "GET", INFO_PATH, &mut cookies, &[], b"", Duration::from_secs(20))?;
@@ -93,7 +90,6 @@ fn xml_attr<'a>(s: &'a str, name: &str) -> Option<&'a str> {
     None
 }
 
-/// The SSO entry point the browser must open.
 pub fn start_url(host: &str, port: u16, realm: &str) -> String {
     if realm.is_empty() {
         format!("https://{host}:{port}/remote/saml/start?redirect=1")
@@ -114,7 +110,6 @@ pub fn idp_redirect(resp: &http::Response) -> Option<String> {
     None
 }
 
-/// Extract the target of `window.location='…'` / `location.href="…"`.
 fn js_redirect(body: &str) -> Option<String> {
     for key in ["window.location.href", "window.location", "location.href"] {
         let Some(i) = body.find(key) else { continue };
@@ -129,7 +124,6 @@ fn js_redirect(body: &str) -> Option<String> {
     None
 }
 
-/// Perform the SAML browser login and return an authenticated session.
 pub fn login(host: &str, port: u16, realm: &str, opts: &SamlOpts) -> Result<Session, String> {
     let info = remote_info(host, port).unwrap_or_else(|e| {
         println!("# /remote/info unavailable ({e}) — assuming defaults");
@@ -341,7 +335,6 @@ fn invoking_user() -> Option<DesktopUser> {
     Some(DesktopUser { name: cstr(pw.pw_name), uid, home: cstr(pw.pw_dir) })
 }
 
-/// First `wayland-N` socket in the user's runtime dir.
 fn wayland_socket(runtime_dir: &str) -> Option<String> {
     let mut names: Vec<String> = std::fs::read_dir(runtime_dir)
         .ok()?
@@ -352,7 +345,6 @@ fn wayland_socket(runtime_dir: &str) -> Option<String> {
     names.into_iter().next()
 }
 
-/// Extract a query parameter value from a request path like `/?id=abc&x=1`.
 fn query_param(path: &str, key: &str) -> Option<String> {
     let q = path.split_once('?')?.1;
     let q = q.split('#').next().unwrap_or(q);

@@ -12,7 +12,6 @@
 
 const GRID: f32 = 24.0;
 
-/// Light glyph colour used for the lock in the tray.
 const TRAY_GLYPH: [u8; 3] = [232, 232, 232];
 
 /// Distance from point to segment ab.
@@ -28,7 +27,6 @@ fn seg_dist(px: f32, py: f32, ax: f32, ay: f32, bx: f32, by: f32) -> f32 {
     ((px - cx).powi(2) + (py - cy).powi(2)).sqrt()
 }
 
-/// Rounded-rectangle membership (rounded-rect SDF).
 fn in_rrect(x: f32, y: f32, x0: f32, y0: f32, x1: f32, y1: f32, r: f32) -> bool {
     if x < x0 || x > x1 || y < y0 || y > y1 {
         return false;

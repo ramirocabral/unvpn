@@ -15,9 +15,7 @@
 //! We advertise no compression, so only DATA/DPD/KEEPALIVE/DISCONN matter.
 //!
 //! Framing and packet types follow the real client as implemented by
-//! openconnect `cstp.c`. DTLS acceleration is a later step — this path is
-//! TLS-only (like the F5 back-end's first cut); DTLS options are parsed but the
-//! data plane stays on CSTP, which every gateway supports.
+//! openconnect `cstp.c`.
 
 use super::auth::Session;
 use super::config::{self, TunnelConfig};
@@ -34,11 +32,11 @@ use std::time::{Duration, Instant};
 
 static AC_STOP: AtomicBool = AtomicBool::new(false);
 
+/// Distinct name so every back-end's tunnel can coexist.
 const TUN_NAME: &str = "cpac0";
 const TUNNEL_PATH: &str = "/CSCOSSLC/tunnel";
 const MAX_RECONNECT_TRIES: u32 = 10;
 
-// CSTP packet types.
 const AC_DATA: u8 = 0;
 const AC_DPD_OUT: u8 = 3;
 const AC_DPD_RESP: u8 = 4;
@@ -47,15 +45,12 @@ const AC_KEEPALIVE: u8 = 7;
 const AC_COMPRESSED: u8 = 8;
 const AC_TERM_SERVER: u8 = 9;
 
-/// Options for [`run`].
 pub struct RunOpts {
     pub no_routes: bool,
     pub watch_stdin: bool,
-    /// Reserved for the DTLS path; the data plane is CSTP-only for now.
     pub no_dtls: bool,
 }
 
-/// A live CSTP channel over one TLS stream (non-blocking, with its poll fd).
 struct Channel {
     tls: TlsStream<TcpStream>,
     fd: i32,
@@ -102,14 +97,13 @@ impl Channel {
         }
     }
 
-    /// Pull one complete frame `(type, payload)` from the rx buffer, if present.
     fn take_frame(&mut self) -> Result<Option<(u8, Vec<u8>)>, String> {
         take_frame(&mut self.rx)
     }
 }
 
-/// Split one complete CSTP frame off the front of `rx` (free function so the
-/// framing is unit-testable without a live TLS stream). `None` = incomplete.
+/// Free function so the framing is unit-testable without a live TLS stream.
+/// `None` = incomplete.
 fn take_frame(rx: &mut Vec<u8>) -> Result<Option<(u8, Vec<u8>)>, String> {
     if rx.len() < 8 {
         return Ok(None);
@@ -120,21 +114,20 @@ fn take_frame(rx: &mut Vec<u8>) -> Result<Option<(u8, Vec<u8>)>, String> {
     let len = u16::from_be_bytes([rx[4], rx[5]]) as usize;
     let ty = rx[6];
     if rx.len() < 8 + len {
-        return Ok(None); // wait for the rest
+        return Ok(None);
     }
     let payload = rx[8..8 + len].to_vec();
     rx.drain(..8 + len);
     Ok(Some((ty, payload)))
 }
 
-/// Full connect: authenticated `session` → live tunnel. Blocks until stop.
+/// Blocks until stop.
 pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
     let _ = opts.no_dtls;
     if session.token.is_none() && session.cookies.get("webvpn").is_none() {
         return Err("not authenticated (no webvpn cookie)".into());
     }
 
-    // 1) Open the tunnel and read the gateway config.
     println!("# opening CSTP tunnel (CONNECT {TUNNEL_PATH}) …");
     let (mut chan, cfg) = open_channel(session, None)?;
     let assigned = cfg.address.ok_or("gateway did not assign an IPv4 address")?;
@@ -150,7 +143,6 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
         println!("# banner: {}", super::auth::one_line(b));
     }
 
-    // 2) tun device (distinct name so every back-end's tunnel coexists).
     let (mut tun_file, tun_name) = tun::open_tun(TUN_NAME)?;
     tun::set_nonblocking(&tun_file);
     tun::ip(&["addr", "add", &format!("{assigned}/{}", cfg.prefix()), "dev", &tun_name])?;
@@ -165,7 +157,6 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
         return Err("disconnect requested before the tunnel came up".into());
     }
 
-    // 3) Routes + DNS (skipped in --no-routes).
     let mut restore = sysnet::NetRestore::default();
     if opts.no_routes {
         out!("# --no-routes: NOT installing routes or DNS.");
@@ -180,17 +171,16 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
         sysnet::spawn_stdin_disconnect(&AC_STOP);
     }
 
-    // 4) Liveness: use the gateway's DPD/keepalive, bounded so they stay frequent.
+    // The gateway's DPD/keepalive, bounded so they stay frequent.
     let dpd = clamp_secs(cfg.dpd, 30, 30, 90);
     let keepalive = clamp_secs(cfg.keepalive, 20, 20, 60);
     let ka = Liveness { dpd_secs: dpd, keepalive_secs: keepalive, dpd_dead_secs: (dpd * 2).max(90) };
     out!("# liveness: DPD {}s, keepalive {}s, dead-peer {}s", ka.dpd_secs, ka.keepalive_secs, ka.dpd_dead_secs);
     out!("# TUNNEL UP. (send 'disconnect' on stdin or SIGTERM to stop)");
 
-    // 4b) DTLS fast path (best-effort): data on UDP, CSTP kept for control + fallback.
+    // DTLS fast path (best-effort): data on UDP, CSTP kept for control + fallback.
     let mut dtls = try_dtls(session, &chan, &cfg, opts.no_dtls);
 
-    // 5) Data loop wrapped in transparent reconnection, like the F5 back-end.
     let mut fail_streak = 0u32;
     let final_result: Result<(), String> = 'session: loop {
         let outcome = data_loop(&mut chan, &mut dtls, &mut tun_file, &ka);
@@ -237,7 +227,7 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
         fail_streak = 0;
     };
 
-    // 6) Teardown: BYE frame, then logout, then NetRestore (DNS + routes) on drop.
+    // Teardown: BYE frame, then logout, then NetRestore (DNS + routes) on drop.
     out!("# disconnecting — sending BYE, restoring DNS/routes …");
     if let Some(d) = &dtls {
         let _ = d.send(AC_DISCONN, &[0xb0]);
@@ -250,9 +240,7 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
     final_result
 }
 
-/// Open (or re-open) the CSTP tunnel: `CONNECT /CSCOSSLC/tunnel`, parse the reply
-/// headers into a [`TunnelConfig`], and return a non-blocking channel ready for the
-/// poll loop. `want_addr` asks the gateway for the same IP on reconnect.
+/// `want_addr` asks the gateway for the same IP on reconnect.
 fn open_channel(session: &Session, want_addr: Option<Ipv4Addr>) -> Result<(Channel, TunnelConfig), String> {
     let token = session
         .token
@@ -303,7 +291,6 @@ fn open_channel(session: &Session, want_addr: Option<Ipv4Addr>) -> Result<(Chann
     }
     let cfg = config::TunnelConfig::from_headers(&resp.headers);
 
-    // Non-blocking for the poll loop; seed rx with any leftover body bytes.
     tls.get_ref().set_nonblocking(true).ok();
     Ok((Channel { tls, fd, rx: resp.body, dtls_master }, cfg))
 }
@@ -340,7 +327,6 @@ fn try_dtls(session: &Session, chan: &Channel, cfg: &TunnelConfig, no_dtls: bool
     }
 }
 
-/// Liveness timers for one data-loop run.
 struct Liveness {
     dpd_secs: u64,
     keepalive_secs: u64,
@@ -491,13 +477,11 @@ fn data_loop(
             }
         }
 
-        // CSTP DPD: prod the gateway if we've heard nothing for dpd_secs.
         if ka.dpd_secs > 0 && last_rx.elapsed().as_secs() >= ka.dpd_secs && last_dpd.elapsed().as_secs() >= ka.dpd_secs / 2 {
             chan.send(AC_DPD_OUT, &[])?;
             last_dpd = Instant::now();
             last_tx = Instant::now();
         }
-        // CSTP keepalive: if we haven't *sent* anything for keepalive_secs.
         if ka.keepalive_secs > 0 && last_tx.elapsed().as_secs() >= ka.keepalive_secs {
             chan.send(AC_KEEPALIVE, &[])?;
             last_tx = Instant::now();
@@ -514,7 +498,6 @@ fn data_loop(
                 *dtls = None;
             }
         }
-        // CSTP dead peer → reconnect.
         if last_rx.elapsed().as_secs() >= ka.dpd_dead_secs {
             return Err(format!("no data from gateway for {}s (dead peer)", last_rx.elapsed().as_secs()));
         }
@@ -574,7 +557,7 @@ fn setup_routes(gw: Option<Ipv4Addr>, tun: &str, cfg: &TunnelConfig) -> Vec<Stri
         del.push(format!("route del {net} {suffix}"));
     }
 
-    // 1) Keep the encrypted tunnel's own packets off the tun.
+    // Keep the encrypted tunnel's own packets off the tun.
     let mut pin: Option<(usize, String)> = None;
     if let Some((g, (via, dev))) = gw.and_then(|g| original_path(g).map(|p| (g, p))) {
         let suffix = via.map(|v| format!("via {v} dev {dev}")).unwrap_or_else(|| format!("dev {dev}"));
@@ -582,7 +565,6 @@ fn setup_routes(gw: Option<Ipv4Addr>, tun: &str, cfg: &TunnelConfig) -> Vec<Stri
         pair(&mut add, &mut del, format!("{g}/32"), &suffix);
     }
 
-    // 2) Split-exclude stays on the original path.
     for ex in &cfg.split_exclude {
         if let Some((via, dev)) = original_path(ex.net) {
             let suffix = via.map(|v| format!("via {v} dev {dev}")).unwrap_or_else(|| format!("dev {dev}"));
@@ -590,7 +572,6 @@ fn setup_routes(gw: Option<Ipv4Addr>, tun: &str, cfg: &TunnelConfig) -> Vec<Stri
         }
     }
 
-    // 3) Tunnel routes.
     let dev_suffix = format!("dev {tun}");
     if cfg.default_route {
         for net in ["0.0.0.0/1", "128.0.0.0/1"] {
@@ -664,20 +645,18 @@ mod tests {
 
     #[test]
     fn frames_split_from_buffer() {
-        // DATA "abc", then KEEPALIVE, then a partial frame.
         let mut wire = vec![b'S', b'T', b'F', 1, 0, 3, AC_DATA, 0, b'a', b'b', b'c'];
         wire.extend_from_slice(&[b'S', b'T', b'F', 1, 0, 0, AC_KEEPALIVE, 0]);
-        wire.extend_from_slice(&[b'S', b'T', b'F', 1, 0, 10, AC_DATA, 0, 1, 2]); // incomplete
+        wire.extend_from_slice(&[b'S', b'T', b'F', 1, 0, 10, AC_DATA, 0, 1, 2]);
         assert_eq!(take_frame(&mut wire).unwrap(), Some((AC_DATA, b"abc".to_vec())));
         assert_eq!(take_frame(&mut wire).unwrap(), Some((AC_KEEPALIVE, vec![])));
-        assert_eq!(take_frame(&mut wire).unwrap(), None); // partial: wait for more
-        assert_eq!(wire.len(), 10); // the partial frame is retained
+        assert_eq!(take_frame(&mut wire).unwrap(), None);
+        assert_eq!(wire.len(), 10);
     }
 
     #[test]
     fn frame_roundtrip_matches_header() {
-        // A frame we'd build (STF|1|len|type|0|payload) parses back to itself.
-        let payload = b"\x45\x00\x00\x1c".to_vec(); // a tiny IPv4 header
+        let payload = b"\x45\x00\x00\x1c".to_vec();
         let mut frame = vec![b'S', b'T', b'F', 1];
         frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
         frame.push(AC_DATA);
@@ -701,9 +680,9 @@ mod tests {
 
     #[test]
     fn clamp_intervals() {
-        assert_eq!(clamp_secs(0, 30, 30, 90), 30); // unset → fallback
-        assert_eq!(clamp_secs(5, 30, 30, 90), 30); // below min
-        assert_eq!(clamp_secs(300, 30, 30, 90), 90); // above max
+        assert_eq!(clamp_secs(0, 30, 30, 90), 30);
+        assert_eq!(clamp_secs(5, 30, 30, 90), 30);
+        assert_eq!(clamp_secs(300, 30, 30, 90), 90);
         assert_eq!(clamp_secs(45, 30, 30, 90), 45);
     }
 }

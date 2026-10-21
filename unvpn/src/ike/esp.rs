@@ -21,7 +21,6 @@ fn e<E: std::fmt::Display>(err: E) -> String {
     err.to_string()
 }
 
-/// One bidirectional ESP security association.
 pub struct EspSa {
     pub spi_in: u32,
     pub spi_out: u32,
@@ -105,7 +104,6 @@ impl EspSa {
         Ok(out)
     }
 
-    /// Wrap an inner IPv4 packet into an outbound ESP packet.
     pub fn encode(&self, inner_ip: &[u8]) -> Result<Vec<u8>, String> {
         let block = self.cipher.block_size();
         let seq = self.seq.fetch_add(1, Ordering::SeqCst);
@@ -129,12 +127,11 @@ impl EspSa {
         esp.extend_from_slice(&seq.to_be_bytes());
         esp.extend_from_slice(&iv);
         esp.extend_from_slice(&ct);
-        let icv = self.hmac(&self.auth_out, &esp); // over SPI|Seq|IV|ct
+        let icv = self.hmac(&self.auth_out, &esp);
         esp.extend_from_slice(&icv);
         Ok(esp)
     }
 
-    /// Unwrap an inbound ESP packet into the inner IPv4 packet.
     pub fn decode(&self, esp: &[u8]) -> Result<Vec<u8>, String> {
         if esp.len() < 8 + self.iv_len + self.icv_len {
             return Err("ESP packet too short".into());
@@ -167,7 +164,6 @@ mod tests {
 
     #[test]
     fn esp_3des_sha96_roundtrip() {
-        // Loopback SA: same keys/SPI both directions.
         let km = vec![7u8; 44]; // 24 enc + 20 auth
         let sa = EspSa::new(
             u8::from(TransformId::Esp3Des),
@@ -212,7 +208,7 @@ mod tests {
         let sa = EspSa::new(u8::from(TransformId::Esp3Des), ESP_AUTH_HMAC_SHA96, 0, 1, &km, 1, &km).unwrap();
         let mut esp = sa.encode(&[1, 2, 3, 4]).unwrap();
         let n = esp.len();
-        esp[n - 1] ^= 0xff; // corrupt ICV
+        esp[n - 1] ^= 0xff;
         assert!(sa.decode(&esp).is_err());
     }
 }

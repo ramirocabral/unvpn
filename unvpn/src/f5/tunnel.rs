@@ -1,14 +1,12 @@
-//! Bring up and run the F5 BIG-IP APM SSL-VPN data plane: fetch the VPN profile
-//! and tunnel options, open `GET /myvpn?…`, read the assigned IP from the response
-//! headers, negotiate PPP, configure `tun`/routes/DNS, then pump packets between
-//! the tun device and the tunnel with a single `poll(2)` loop.
+//! F5 BIG-IP APM data plane: VPN profile → tunnel options → `GET /myvpn?…` (assigned
+//! IP in the `X-VPN-client-IP` response header) → PPP over the same stream.
 //!
 //! When the gateway offers DTLS (`tunnel_dtls` + `tunnel_port_dtls`, non-HDLC) the
-//! channel is tried over DTLS first — openconnect's fast path, no TCP-over-TCP
-//! head-of-line blocking: an ordinary certificate DTLS handshake to the DTLS port,
-//! then the very same `GET /myvpn?…` sent as the first record ("HTTP over DTLS"),
-//! whose `HTTP/1.x 200` + `X-VPN-client-IP` answer comes back as a record, then PPP
-//! (F5 framing), one frame per record. Any failure falls back to TLS.
+//! channel is tried over DTLS first (openconnect's fast path, no TCP-over-TCP):
+//! an ordinary certificate DTLS handshake to the DTLS port, then the very same
+//! `GET /myvpn?…` sent as the first record ("HTTP over DTLS"), whose `HTTP/1.x 200`
+//! answer comes back as a record, then PPP (F5 framing), one frame per record.
+//! Any failure falls back to TLS.
 
 use super::auth::Session;
 use super::config::{self, F5Options};
@@ -28,19 +26,16 @@ static F5_STOP: AtomicBool = AtomicBool::new(false);
 const PROFILE_PATH: &str = "/vdesk/vpn/index.php3?outform=xml&client_version=2.0";
 const TUN_NAME: &str = "f5vpn0";
 const TUN_MTU: u32 = 1400;
-/// How many consecutive reconnect attempts before giving up (the APM session is
-/// probably dead and needs a fresh login). Spread over a short backoff.
+/// Past this the APM session is probably dead and needs a fresh login.
 const MAX_RECONNECT_TRIES: u32 = 10;
 /// Grace window for a fresh DTLS link to prove it forwards data before falling back
 /// to TLS (bounds the blackhole if the gateway's DTLS data plane is broken).
 const DTLS_TRIAL: Duration = Duration::from_secs(5);
 
-/// The PPP connection the data loop drives (over TLS or DTLS).
 type F5Conn = ppp::PppConn<Box<dyn ppp::Transport>>;
 /// PPP header around an IP packet: F5 4-byte header + (at most) `FF 03` + proto.
 const PPP_OVERHEAD: usize = 8;
 
-/// One open, negotiated data channel.
 struct Channel {
     conn: F5Conn,
     fd: i32,
@@ -52,13 +47,11 @@ struct Channel {
     dtls: bool,
 }
 
-/// Data-plane keepalive interval. F5's idle timer counts **data** packets, not LCP
-/// control, so the LCP keepalive alone doesn't stop the gateway idle-resetting the
-/// tunnel (~every 2 min on gw-f5). A small ICMP echo to an internal host every
-/// this-many seconds keeps the idle timer reset — comfortably inside that window.
+/// F5's idle timer counts **data** packets, not LCP control, so the LCP keepalive
+/// alone doesn't stop the gateway idle-resetting the tunnel (observed ~every 2 min).
+/// A small ICMP echo to an internal host this often keeps the idle timer reset.
 const DATA_KEEPALIVE_SECS: u64 = 45;
 
-/// Liveness timing + the data-plane keepalive target for one data-loop run.
 struct Keepalive {
     /// LCP Discard/Echo interval (keepalive + DPD).
     lcp_secs: u64,
@@ -66,33 +59,28 @@ struct Keepalive {
     dpd_dead_secs: u64,
     /// Data-plane keepalive interval (0 disables it).
     data_secs: u64,
-    /// Source address for the keepalive ICMP (our current tunnel IP).
+    /// Keepalive ICMP source: our current tunnel IP.
     src: Ipv4Addr,
-    /// Destination for the keepalive ICMP (first internal DNS); `None` disables it.
+    /// Keepalive ICMP destination (first internal DNS); `None` disables it.
     target: Option<Ipv4Addr>,
 }
 
-/// Options for [`run`].
 pub struct RunOpts {
-    /// Stay on TLS even when the gateway offers DTLS.
     pub no_dtls: bool,
-    /// Bring the tunnel up but install no routes/DNS (safe data-plane test).
+    /// Install no routes/DNS (safe data-plane test).
     pub no_routes: bool,
-    /// Watch stdin for `disconnect`/EOF (the GUI and a TTY user drive teardown this
-    /// way). Off for the `f5-vpn://` launch path, where stdin is `/dev/null` and an
-    /// immediate EOF would otherwise tear the tunnel straight back down — there we
-    /// stop on SIGTERM only.
+    /// Watch stdin for `disconnect`/EOF. Off for the `f5-vpn://` launch path, where
+    /// stdin is `/dev/null` and an immediate EOF would tear the tunnel straight back
+    /// down — there we stop on SIGTERM only.
     pub watch_stdin: bool,
-    /// Optional path to a status file the browser-launch path writes so the GUI can
-    /// detect and display this tunnel (pid/gateway/IP/DNS). Deleting the file is how
-    /// the GUI stops the tunnel: a watcher sets the stop flag when it disappears (the
-    /// GUI, running as the user, can't signal this root process directly). `None` for
-    /// the GUI-driven `--connect` path, which the GUI already controls via stdin.
+    /// Status file the browser-launch path writes so the GUI can detect this tunnel.
+    /// Deleting the file is how the GUI stops it (the GUI, running as the user, can't
+    /// signal this root process directly). `None` on `--connect`, which the GUI
+    /// controls via stdin.
     pub status_file: Option<String>,
 }
 
-/// Full connect: authenticated `session` → live tunnel. Blocks until the stop flag
-/// is set (SIGTERM / `disconnect` on stdin).
+/// Blocks until the stop flag is set (SIGTERM / `disconnect` on stdin).
 pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
     // A valid MRHSession is enough to drive the tunnel: the form-login path only
     // returns here once F5_ST is also set, and the `--launch` handoff path obtains
@@ -102,7 +90,6 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
     }
     let no_routes = opts.no_routes;
 
-    // 1) VPN profile → resource params.
     println!("# fetching VPN profile ({PROFILE_PATH}) …");
     let resp = http::request(
         &session.host, session.port, "GET", PROFILE_PATH,
@@ -115,7 +102,6 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
         .ok_or("no VPN resource found in profile (is a Network Access resource assigned?)")?;
     println!("# profile params: {params}");
 
-    // 2) Tunnel options (session id, ur_Z, framing, DNS, routes, DTLS).
     let opt_path = format!("/vdesk/vpn/connect.php3?{params}&outform=xml&client_version=2.0");
     let resp = http::request(
         &session.host, session.port, "GET", &opt_path,
@@ -141,7 +127,6 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
         return Err("gateway did not offer IPv4 (IPv6-only not yet supported)".into());
     }
 
-    // 3-5) Open the tunnel stream (GET /myvpn?…), read the assigned IP, negotiate PPP.
     let mut want_dtls = cfg.dtls && cfg.dtls_port > 0 && !opts.no_dtls;
     if want_dtls && cfg.hdlc {
         // openconnect: the two aren't meant to be combined — stay on TLS.
@@ -151,9 +136,8 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
     let Channel { mut conn, fd: mut sock_fd, ip: mut assigned, dns, gw: gw_peer, mtu, dtls: mut on_dtls } =
         open_channel(session, &cfg, want_dtls)?;
 
-    // 6) tun device + addressing (distinct name so CP/Forti/F5 tunnels coexist). The
-    // tun and its routes/DNS persist across reconnects — only the TLS/PPP channel is
-    // rebuilt when the tunnel drops.
+    // The tun and its routes/DNS persist across reconnects — only the TLS/PPP channel
+    // is rebuilt when the tunnel drops.
     let (mut tun_file, tun_name) = tun::open_tun(TUN_NAME)?;
     tun::ip(&["addr", "add", &format!("{assigned}/32"), "dev", &tun_name])?;
     tun::ip(&["link", "set", "dev", &tun_name, "up", "mtu", &mtu.to_string()])?;
@@ -169,9 +153,6 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
         return Err("disconnect requested before the tunnel came up".into());
     }
 
-    // 7) Routing + 8) DNS — skipped entirely in --no-routes mode so the test cannot
-    // disturb the host's live networking (verify the data plane with
-    // `ping -I <tun> <internal-host>`, which uses the interface, not the route table).
     let mut restore = sysnet::NetRestore::default();
     if no_routes {
         out!("# --no-routes: NOT installing routes or DNS.");
@@ -186,10 +167,8 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
         restore.dns = sysnet::set_dns(&dns, &cfg.domains);
     }
 
-    // 9) Data loop, wrapped in a reconnect loop. The F5 protocol expects the tunnel to
-    // drop (idle timeout, server reset, network blip) and the client to transparently
-    // reconnect — the gateway signals this with `autoreconnectifdropped`, and both
-    // openconnect and the shipped client do it. We rebuild just the TLS/PPP channel,
+    // The F5 protocol expects the tunnel to drop and the client to transparently
+    // reconnect (`autoreconnectifdropped`; openconnect and the shipped client do it),
     // reusing the same session (sess/Z + cookies) with no re-auth.
     if opts.watch_stdin {
         sysnet::spawn_stdin_disconnect(&F5_STOP);
@@ -200,8 +179,7 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
     let mut ka = Keepalive {
         lcp_secs,
         dpd_dead_secs: (lcp_secs * 3).max(90),
-        // Data-plane keepalive only makes sense with routes/DNS up and a reachable
-        // internal target; skip it in --no-routes mode.
+        // Needs routes up to reach the internal target.
         data_secs: if no_routes { 0 } else { DATA_KEEPALIVE_SECS },
         src: assigned,
         target: cfg.dns.first().copied(),
@@ -213,8 +191,6 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
         }
     }
 
-    // Publish a status file so the GUI can detect this browser-launched tunnel and
-    // offer a Disconnect (which deletes the file → the watcher below stops us).
     if let Some(ref sf) = opts.status_file {
         if write_status_file(sf, &session.host, assigned, &dns) {
             spawn_status_watch(sf.clone());
@@ -231,7 +207,7 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
     let final_result: Result<(), String> = 'session: loop {
         let outcome = data_loop(&mut conn, &mut tun_file, sock_fd, &ka, on_dtls);
         if F5_STOP.load(Ordering::SeqCst) {
-            break 'session Ok(()); // user / SIGTERM asked to stop — not a drop
+            break 'session Ok(());
         }
         let reason = match outcome {
             Ok(()) => "closed by peer".to_string(),
@@ -246,7 +222,6 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
             break 'session Err(format!("tunnel dropped ({reason}); auto-reconnect disabled by gateway"));
         }
 
-        // Rebuild the channel with a short backoff, keeping tun/routes/DNS in place.
         let mut reconnected = false;
         while fail_streak < MAX_RECONNECT_TRIES {
             if F5_STOP.load(Ordering::SeqCst) {
@@ -256,7 +231,7 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
             let delay = reconnect_delay(fail_streak);
             out!("# reconnecting in {delay}s (attempt {fail_streak}/{MAX_RECONNECT_TRIES}) …");
             if sleep_interruptible(delay) {
-                break 'session Ok(()); // stop requested during the wait
+                break 'session Ok(());
             }
             match open_channel(session, &cfg, want_dtls) {
                 Ok(Channel { conn: c, fd, ip: new_ip, mtu: new_mtu, dtls: d, .. }) => {
@@ -289,10 +264,10 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
                 "tunnel dropped ({reason}) and gave up after {MAX_RECONNECT_TRIES} reconnect attempts (session likely expired — reconnect)"
             ));
         }
-        fail_streak = 0; // a clean reconnect resets the budget
+        fail_streak = 0;
     };
 
-    // 10) Teardown (NetRestore restores DNS and our routes when it drops).
+    // NetRestore restores DNS and our routes when it drops.
     out!("# disconnecting — terminating PPP, restoring DNS/routes …");
     let _ = conn.send(ppp::PPP_LCP, &ppp::terminate_request(0xfe));
     drop(conn); // close the tunnel socket before asking the gateway to hang up
@@ -317,11 +292,9 @@ fn path(dtls: bool) -> &'static str {
     }
 }
 
-/// Open (or re-open) the data channel — DTLS first when `try_dtls`, falling back to
-/// TLS on any failure — read the gateway-assigned IP, negotiate PPP (LCP + IPCP), and
-/// hand back a connection ready for the poll loop (non-blocking, poll fd set).
-/// Reusable for the initial connect and for reconnection: it reuses the same session
-/// tokens with no re-auth.
+/// DTLS first when `try_dtls`, falling back to TLS on any failure. Returns a
+/// connection ready for the poll loop (non-blocking, poll fd set). Used for both the
+/// initial connect and reconnects (same session tokens, no re-auth).
 fn open_channel(session: &Session, cfg: &F5Options, try_dtls: bool) -> Result<Channel, String> {
     if try_dtls {
         if !gnutls::available() {
@@ -336,8 +309,8 @@ fn open_channel(session: &Session, cfg: &F5Options, try_dtls: bool) -> Result<Ch
     open_tls(session, cfg)
 }
 
-/// The `/myvpn` request (TLS and DTLS send the same bytes; no cookies — they could
-/// outgrow a datagram and aren't needed).
+/// TLS and DTLS send the same bytes; no cookies — they could outgrow a datagram and
+/// aren't needed.
 fn myvpn_request(session: &Session, cfg: &F5Options) -> Vec<u8> {
     let empty = http::Cookies::new();
     http::build_request("GET", &session.host, &build_myvpn_path(cfg), &empty, &[], b"", true)
@@ -410,7 +383,6 @@ enum Probe {
     Other,
 }
 
-/// Classify a record received while waiting for the `/myvpn` answer over DTLS.
 fn parse_dtls_probe(rec: &[u8]) -> Probe {
     if !rec.starts_with(b"HTTP/") {
         return Probe::Other;
@@ -437,7 +409,6 @@ fn open_tls(session: &Session, cfg: &F5Options) -> Result<Channel, String> {
     tls.write_all(&myvpn_request(session, cfg)).map_err(|e| format!("tunnel request: {e}"))?;
     tls.flush().ok();
 
-    // Read the HTTP response: expect 200/201, carrying X-VPN-client-IP.
     tls.get_ref().set_read_timeout(Some(Duration::from_secs(20))).ok();
     let (status, headers, leftover) = read_http_response(&mut tls)?;
     if status != 200 && status != 201 {
@@ -446,7 +417,6 @@ fn open_tls(session: &Session, cfg: &F5Options) -> Result<Channel, String> {
     let hip = header_ip(&headers);
     println!("# tunnel accepted (HTTP {status}); gateway-assigned IP {hip:?}");
 
-    // PPP negotiation (LCP + IPCP), seeded with the header IP.
     let framing = if cfg.hdlc { Framing::Hdlc } else { Framing::F5 };
     tls.get_ref().set_read_timeout(Some(Duration::from_secs(5))).ok();
     let sock_fd = tls.get_ref().as_raw_fd();
@@ -462,7 +432,6 @@ fn open_tls(session: &Session, cfg: &F5Options) -> Result<Channel, String> {
     Ok(finish(conn.boxed(), ipc, cfg, link))
 }
 
-/// Transport facts gathered while opening a channel.
 struct Link {
     fd: i32,
     /// IP from the `X-VPN-client-IP` header (authoritative over IPCP).
@@ -497,7 +466,6 @@ fn link_mtu(peer_mru: Option<u16>, record_mtu: Option<usize>) -> u32 {
     mtu
 }
 
-/// Backoff (seconds) for the Nth consecutive reconnect attempt.
 fn reconnect_delay(attempt: u32) -> u64 {
     match attempt {
         1 => 1,
@@ -507,19 +475,15 @@ fn reconnect_delay(attempt: u32) -> u64 {
     }
 }
 
-/// Write the external-tunnel status file the GUI reads to detect a browser-launched
-/// tunnel: pid (to confirm liveness) plus gateway/IP/DNS (to display). Best-effort;
-/// returns whether the write succeeded (so the caller only arms the delete-watcher
-/// when the file actually exists — a failed write must not look like a stop request).
+/// Returns whether the write succeeded, so the caller only arms the delete-watcher
+/// when the file exists — a failed write must not look like a stop request.
 fn write_status_file(path: &str, gateway: &str, ip: Ipv4Addr, dns: &[Ipv4Addr]) -> bool {
     let dns_s = dns.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(", ");
     let body = format!("pid={}\ngateway={}\nip={}\ndns={}\n", std::process::id(), gateway, ip, dns_s);
     std::fs::write(path, body).is_ok()
 }
 
-/// Watch the status file for deletion: the GUI (running as the user) stops a
-/// browser-launched tunnel by removing it, since it cannot signal this root process
-/// directly. When it disappears, raise the stop flag for a clean teardown.
+/// Raise the stop flag when the GUI deletes the status file.
 fn spawn_status_watch(path: String) {
     std::thread::spawn(move || loop {
         if F5_STOP.load(Ordering::SeqCst) {
@@ -533,8 +497,7 @@ fn spawn_status_watch(path: String) {
     });
 }
 
-/// Sleep up to `secs`, waking early if a stop is requested so `disconnect` stays
-/// responsive during a reconnect backoff. Returns true if a stop was requested.
+/// Returns true if a stop was requested.
 fn sleep_interruptible(secs: u64) -> bool {
     for _ in 0..(secs * 10) {
         if F5_STOP.load(Ordering::SeqCst) {
@@ -545,8 +508,7 @@ fn sleep_interruptible(secs: u64) -> bool {
     F5_STOP.load(Ordering::SeqCst)
 }
 
-/// Build the `/myvpn?…` path. Tokens are appended as openconnect does (sess/Z raw;
-/// hostname base64). Cookies are deliberately not sent on this request.
+/// Tokens are appended as openconnect does (sess/Z raw; hostname base64).
 fn build_myvpn_path(cfg: &F5Options) -> String {
     let yn = |b: bool| if b { "yes" } else { "no" };
     // `client_keepalive=yes` asks the gateway to run its side of the tunnel keepalive
@@ -563,9 +525,8 @@ fn build_myvpn_path(cfg: &F5Options) -> String {
     )
 }
 
-/// Read a full HTTP response (status line + headers) from a live stream, returning
-/// `(status, headers, leftover_body_bytes)`. The leftover is any bytes already read
-/// past the header terminator — the first PPP bytes of the tunnel.
+/// The leftover is any bytes already read past the header terminator — the first
+/// PPP bytes of the tunnel.
 fn read_http_response<S: Read>(s: &mut S) -> Result<(u16, Vec<(String, String)>, Vec<u8>), String> {
     let mut raw = Vec::new();
     let mut tmp = [0u8; 4096];
@@ -602,7 +563,7 @@ fn read_http_response<S: Read>(s: &mut S) -> Result<(u16, Vec<(String, String)>,
     Ok((status, headers, raw[header_end..].to_vec()))
 }
 
-/// The poll(2) packet pump. Returns Ok on clean stop, Err on tunnel failure.
+/// Returns Ok on clean stop, Err on tunnel failure.
 fn data_loop(
     conn: &mut F5Conn,
     tun_file: &mut std::fs::File,
@@ -644,7 +605,6 @@ fn data_loop(
             return Err(format!("poll: {e}"));
         }
 
-        // tun → tunnel: drain everything queued (bounded), sent as one batch.
         if fds[0].revents & libc::POLLIN != 0 {
             for _ in 0..64 {
                 match tun_file.read(&mut buf) {
@@ -662,7 +622,6 @@ fn data_loop(
             conn.flush_tx()?;
         }
 
-        // tunnel → tun (drain all complete frames).
         if fds[1].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
             conn.fill()?;
             let rx_before = rx;
@@ -677,7 +636,7 @@ fn data_loop(
                     Ok(Some((ppp::PPP_LCP, payload))) => {
                         rx += 1;
                         if ppp::handle_lcp_in(conn, &payload)? {
-                            return Ok(()); // peer terminated
+                            return Ok(());
                         }
                     }
                     Ok(Some((_other, _))) => rx += 1,
@@ -697,9 +656,8 @@ fn data_loop(
             }
         }
 
-        // On the heartbeat interval send both of openconnect's liveness packets: an
-        // LCP Discard-Request (keepalive) and an LCP Echo-Request (DPD — the reply
-        // proves the link is still up).
+        // Both of openconnect's liveness packets: Discard-Request (keepalive) and
+        // Echo-Request (DPD).
         if last_hb.elapsed().as_secs() >= ka.lcp_secs {
             echo_id = echo_id.wrapping_add(1);
             let _ = conn.send(ppp::PPP_LCP, &ppp::discard_request(echo_id));
@@ -707,9 +665,8 @@ fn data_loop(
             let _ = conn.send(ppp::PPP_LCP, &ppp::echo_request(echo_id));
             last_hb = Instant::now();
         }
-        // Data-plane keepalive: a small ICMP echo to an internal host. F5's idle timer
-        // counts data packets (not LCP control), so this — not the LCP keepalive above
-        // — is what actually stops the gateway idle-resetting the tunnel.
+        // F5's idle timer counts data packets (not LCP control), so this — not the LCP
+        // keepalive above — is what actually stops the gateway idle-resetting the tunnel.
         if ka.data_secs > 0 && last_data_ka.elapsed().as_secs() >= ka.data_secs {
             if let Some(dst) = ka.target {
                 ka_seq = ka_seq.wrapping_add(1);
@@ -718,9 +675,7 @@ fn data_loop(
             }
             last_data_ka = Instant::now();
         }
-        // Dead-peer detection: if the gateway has sent nothing for too long, treat the
-        // tunnel as dead so the caller reconnects — rather than waiting for the TCP
-        // reset, which can lag well behind the gateway going silent.
+        // Don't wait for the TCP reset, which can lag well behind the gateway going silent.
         if last_rx.elapsed().as_secs() >= dpd_dead {
             return Err(format!("no data from gateway for {}s (dead peer)", last_rx.elapsed().as_secs()));
         }
@@ -731,8 +686,6 @@ fn data_loop(
     }
 }
 
-/// Build a minimal IPv4 + ICMP echo-request packet, used as the data-plane keepalive
-/// that resets the gateway's (data-counting) idle timer. 8-byte ICMP payload.
 fn icmp_echo_packet(src: Ipv4Addr, dst: Ipv4Addr, seq: u16) -> Vec<u8> {
     // ICMP: type 8 (echo), code 0, checksum, id, seq, payload.
     let mut icmp = vec![8u8, 0, 0, 0, 0, 0, (seq >> 8) as u8, seq as u8];
@@ -762,7 +715,7 @@ fn icmp_echo_packet(src: Ipv4Addr, dst: Ipv4Addr, seq: u16) -> Vec<u8> {
     ip
 }
 
-/// The 16-bit one's-complement Internet checksum (RFC 1071).
+/// RFC 1071.
 fn inet_checksum(data: &[u8]) -> u16 {
     let mut sum: u32 = 0;
     let mut i = 0;
@@ -779,7 +732,6 @@ fn inet_checksum(data: &[u8]) -> u16 {
     !(sum as u16)
 }
 
-/// Resolve `host` to its first IPv4 address (for the gateway bypass route).
 fn resolve_v4(host: &str, port: u16) -> Result<Ipv4Addr, String> {
     use std::net::ToSocketAddrs;
     if let Ok(ip) = host.parse::<Ipv4Addr>() {
@@ -796,8 +748,7 @@ fn resolve_v4(host: &str, port: u16) -> Result<Ipv4Addr, String> {
 }
 
 /// Pin the gateway to its pre-VPN path, install exclude routes on that path, then
-/// add the tunnel routes (default route and/or split includes) via the tun — all in
-/// one `ip -batch`. Fills `del_lines` for a one-shot teardown.
+/// the tunnel routes — all in one `ip -batch`. Returns the teardown lines.
 fn setup_routes(gw: Option<Ipv4Addr>, tun: &str, cfg: &F5Options) -> Vec<String> {
     let mut add_lines: Vec<String> = Vec::new();
     let mut del_lines: Vec<String> = Vec::new();
@@ -806,7 +757,7 @@ fn setup_routes(gw: Option<Ipv4Addr>, tun: &str, cfg: &F5Options) -> Vec<String>
         del.push(format!("route del {net} {suffix}"));
     };
 
-    // 1) Keep the encrypted tunnel's own packets off the tun.
+    // Keep the encrypted tunnel's own packets off the tun.
     let mut pin: Option<(usize, String)> = None;
     if let Some((gw, (via, dev))) = gw.and_then(|g| original_path(g).map(|p| (g, p))) {
         let suffix = match &via {
@@ -817,7 +768,6 @@ fn setup_routes(gw: Option<Ipv4Addr>, tun: &str, cfg: &F5Options) -> Vec<String>
         pair(format!("{gw}/32"), &suffix, &mut add_lines, &mut del_lines);
     }
 
-    // 2) Exclude routes (split-exclude) stay on the original path.
     for ex in &cfg.exclude {
         if let Some((via, dev)) = original_path(ex.net) {
             let prefix = tun::mask_to_prefix(ex.mask);
@@ -829,7 +779,6 @@ fn setup_routes(gw: Option<Ipv4Addr>, tun: &str, cfg: &F5Options) -> Vec<String>
         }
     }
 
-    // 3) Tunnel routes.
     let dev_suffix = format!("dev {tun}");
     if cfg.default_route {
         for net in ["0.0.0.0/1", "128.0.0.0/1"] {
@@ -863,7 +812,7 @@ fn setup_routes(gw: Option<Ipv4Addr>, tun: &str, cfg: &F5Options) -> Vec<String>
     del_lines.into_iter().enumerate().filter(|(i, _)| !failed.contains(i)).map(|(_, d)| d).collect()
 }
 
-/// Parse `ip route get <ip>` to find the current `via`/`dev` for a destination.
+/// Current `via`/`dev` for a destination, from `ip route get`.
 fn original_path(dst: Ipv4Addr) -> Option<(Option<String>, String)> {
     let out = std::process::Command::new("ip").args(["route", "get", &dst.to_string()]).output().ok()?;
     if !out.status.success() {
@@ -877,7 +826,6 @@ fn original_path(dst: Ipv4Addr) -> Option<(Option<String>, String)> {
     Some((via, dev))
 }
 
-/// Local hostname for the `hostname=` tunnel parameter (base64 of this).
 fn local_hostname() -> String {
     std::fs::read_to_string("/proc/sys/kernel/hostname")
         .ok()
@@ -887,7 +835,6 @@ fn local_hostname() -> String {
         .unwrap_or_else(|| "localhost".to_string())
 }
 
-/// Standard base64 (with padding).
 fn base64(data: &[u8]) -> String {
     const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
@@ -927,18 +874,16 @@ mod tests {
         let src: Ipv4Addr = "10.80.176.167".parse().unwrap();
         let dst: Ipv4Addr = "10.60.175.134".parse().unwrap();
         let pkt = icmp_echo_packet(src, dst, 7);
-        // IPv4/5, proto ICMP, correct total length, addresses.
         assert_eq!(pkt[0], 0x45);
-        assert_eq!(pkt[9], 1); // protocol = ICMP
+        assert_eq!(pkt[9], 1);
         assert_eq!(u16::from_be_bytes([pkt[2], pkt[3]]) as usize, pkt.len());
         assert_eq!(&pkt[12..16], &src.octets());
         assert_eq!(&pkt[16..20], &dst.octets());
-        // ICMP echo request.
-        assert_eq!(pkt[20], 8); // type = echo request
-        assert_eq!(u16::from_be_bytes([pkt[26], pkt[27]]), 7); // seq
+        assert_eq!(pkt[20], 8);
+        assert_eq!(u16::from_be_bytes([pkt[26], pkt[27]]), 7);
         // A valid checksum makes the one's-complement sum of the covered bytes zero.
-        assert_eq!(inet_checksum(&pkt[..20]), 0); // IP header
-        assert_eq!(inet_checksum(&pkt[20..]), 0); // ICMP message
+        assert_eq!(inet_checksum(&pkt[..20]), 0);
+        assert_eq!(inet_checksum(&pkt[20..]), 0);
     }
 
     #[test]

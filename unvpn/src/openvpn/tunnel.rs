@@ -30,7 +30,6 @@ const OCC_EXIT: u8 = 6;
 const DEFAULT_CIPHERS: &str = "AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305";
 const VERSION: &str = "2.6.14";
 
-/// Interactive questions during authentication (implemented by the CLI/GUI front).
 pub trait Prompter {
     /// Ask for a secret / answer: `kind` is a GUI marker class (`password`,
     /// `code`, `keypass`, …), `message` the human text.
@@ -46,14 +45,12 @@ pub struct RunOpts {
     pub login_only: bool,
 }
 
-/// What a finished establish phase hands to the data plane.
 struct Established {
     engine: Engine,
     push: PushConfig,
     server: Ipv4Addr,
 }
 
-/// Failure modes of the establish phase that need special handling.
 enum EstablishError {
     /// AUTH_FAILED with a CRV1 dynamic challenge: answer, then reconnect.
     Challenge { state: String, user: String, text: String, echo: bool },
@@ -67,7 +64,7 @@ impl From<String> for EstablishError {
     }
 }
 
-/// Everything fixed for the whole run (re-used across reconnects).
+/// Re-used across reconnects.
 pub struct Prepared {
     pub cfg: Config,
     ctx: openssl::ssl::SslContext,
@@ -76,7 +73,6 @@ pub struct Prepared {
     pub creds: Option<Creds>,
 }
 
-/// Load keys/certs and build the TLS context. `key_pass` unlocks an encrypted key.
 pub fn prepare(cfg: Config, creds: Option<Creds>, key_pass: Option<&str>) -> Result<Prepared, String> {
     let id = tls::load_client_id(&cfg, key_pass)?;
     let peer = Arc::new(Mutex::new(PeerInfo::default()));
@@ -162,8 +158,7 @@ fn stopped() -> bool {
     OV_STOP.load(Ordering::SeqCst) || sysnet::stop_requested()
 }
 
-/// Bring up one session against `remote`: through to the final PUSH_REPLY with
-/// data keys installed. `creds` are what goes in the key-method message.
+/// Runs through the final PUSH_REPLY, with data keys installed.
 fn establish(p: &Prepared, remote: &Remote, creds: Option<Creds>, prompter: &mut dyn Prompter) -> Result<Established, EstablishError> {
     out!("# connecting to {}:{} ({}) …", remote.host, remote.port, remote.proto.as_str());
     let (link, server) = Link::open(remote, Duration::from_secs(15))?;
@@ -279,7 +274,6 @@ fn parse_auth_failed(r: &str) -> EstablishError {
     EstablishError::AuthFailed(if r.is_empty() { "credentials rejected".into() } else { r.to_string() })
 }
 
-/// After the last PUSH_REPLY: fix data parameters and derive the data keys.
 fn finish(p: &Prepared, mut eng: Engine, push: PushConfig, server: Ipv4Addr) -> Result<Established, String> {
     let cipher = push
         .cipher
@@ -305,8 +299,7 @@ fn finish(p: &Prepared, mut eng: Engine, push: PushConfig, server: Ipv4Addr) -> 
     Ok(Established { engine: eng, push, server })
 }
 
-/// Establish against the configured remotes in order (one pass), answering a
-/// CRV1 challenge if the server raises one.
+/// One pass over the remotes from `start_at`, answering a CRV1 challenge if raised.
 fn establish_any(p: &mut Prepared, prompter: &mut dyn Prompter, start_at: usize) -> Result<(Established, usize), String> {
     let n = p.cfg.remotes.len();
     let mut last_err = String::new();
@@ -338,7 +331,7 @@ fn establish_any(p: &mut Prepared, prompter: &mut dyn Prompter, start_at: usize)
     Err(last_err)
 }
 
-/// Full client run. Blocks until stopped (or `login_only` finishes).
+/// Blocks until stopped (or `login_only` finishes).
 pub fn run(mut p: Prepared, prompter: &mut dyn Prompter, opts: RunOpts) -> Result<(), String> {
     OV_STOP.store(false, Ordering::SeqCst);
     sysnet::install_stop_signals(&OV_STOP);
@@ -368,7 +361,6 @@ pub fn run(mut p: Prepared, prompter: &mut dyn Prompter, opts: RunOpts) -> Resul
     // This exact "— IP <ip>  DNS [..]" shape is what the GUI's log parser reads.
     out!("# OpenVPN up — IP {ifc_local}  DNS {:?}  (mtu {mtu})", dns);
 
-    // tun device.
     let (mut tun_file, tun_name) = tun::open_tun(TUN_NAME)?;
     tun::set_nonblocking(&tun_file);
     configure_addr(&tun_name, topology, ifc_local, ifc_peer, true)?;
@@ -571,13 +563,12 @@ fn frame_in(c: Compress, pkt: Vec<u8>) -> Option<Vec<u8>> {
     }
 }
 
-/// Wait until `fd` is readable or `ms` elapse.
 fn wait_readable(fd: i32, ms: i32) {
     let mut p = [libc::pollfd { fd, events: libc::POLLIN, revents: 0 }];
     unsafe { libc::poll(p.as_mut_ptr(), 1, ms) };
 }
 
-/// The packet pump. Ok on stop; Err → reconnect.
+/// Ok on stop; Err → reconnect.
 fn data_loop(
     eng: &mut Engine,
     tun_file: &mut std::fs::File,
@@ -616,7 +607,6 @@ fn data_loop(
             return Err(format!("poll: {e}"));
         }
 
-        // tun → server.
         if fds[0].revents & libc::POLLIN != 0 {
             for _ in 0..64 {
                 match tun_file.read(&mut buf) {
@@ -635,7 +625,6 @@ fn data_loop(
             }
         }
 
-        // server → tun (+ control packets).
         if fds[1].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
             pkts.clear();
             let r = eng.link.recv_all(&mut pkts);

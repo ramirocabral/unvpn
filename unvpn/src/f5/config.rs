@@ -8,8 +8,8 @@
 //!
 //! Unlike Fortinet (data in attributes), F5 puts everything in **element text**,
 //! with numbered tags (`DNS0`, `DNS1`, `LAN0`, `ExcludeSubnets0`, …). Field set and
-//! semantics follow openconnect's `f5.c`. Dependency-light: a tolerant leaf-text
-//! scanner, not a full XML parser.
+//! semantics follow openconnect's `f5.c`. Parsed with a tolerant leaf-text scanner,
+//! not a full XML parser.
 
 use std::net::Ipv4Addr;
 
@@ -33,10 +33,9 @@ pub struct F5Options {
     pub dtls_port: u16,
     pub dtls12: bool,
     pub idle_timeout: u32,
-    /// `autoreconnectifdropped<n>`: the gateway tells the client to transparently
-    /// reconnect the tunnel if it drops (idle timeout, network blip, server reset).
-    /// Defaults to `true` when the field is absent — the F5 protocol expects clients
-    /// to reconnect, and both openconnect and the shipped client always do.
+    /// `autoreconnectifdropped<n>`: reconnect the tunnel transparently if it drops.
+    /// Defaults to `true` when absent — the F5 protocol expects clients to reconnect,
+    /// and both openconnect and the shipped client always do.
     pub autoreconnect: bool,
     /// `UseDefaultGateway0`: full tunnel (default route) vs. split-only.
     pub default_route: bool,
@@ -45,14 +44,14 @@ pub struct F5Options {
     pub domains: String,
     /// Split-include routes (`LAN<n>`). With `default_route` these are additive.
     pub routes: Vec<Route>,
-    /// Split-exclude routes (`ExcludeSubnets<n>`).
+    /// `ExcludeSubnets<n>`
     pub exclude: Vec<Route>,
 }
 
-/// Extract the first VPN resource's `params` string from the profile XML.
-/// Returns `None` if there is no VPN favorite (e.g. a webtop-only portal).
+/// First VPN resource's `params` string; `None` if there is no VPN favorite (e.g. a
+/// webtop-only portal).
 pub fn parse_profile(xml: &str) -> Option<String> {
-    // Be strict enough to avoid non-VPN webtop favorites: require a VPN favorites block.
+    // Require a VPN favorites block to avoid picking non-VPN webtop favorites.
     if !xml.contains("type=\"VPN\"") && !xml.contains("type='VPN'") {
         // Some portals omit the attribute; fall back to any params that looks like a resource.
         return leaf_texts(xml)
@@ -63,13 +62,10 @@ pub fn parse_profile(xml: &str) -> Option<String> {
     leaf_texts(xml).into_iter().find(|(n, _)| n == "params").map(|(_, v)| v)
 }
 
-/// Parse the tunnel options XML. Tolerant: unknown elements ignored, missing
-/// fields defaulted. The caller sanity-checks the essentials (session id, ur_Z,
-/// at least one address family).
+/// Unknown elements are ignored and missing fields defaulted; the caller
+/// sanity-checks the essentials (session id, ur_Z, at least one address family).
 pub fn parse_options(xml: &str) -> F5Options {
     let mut o = F5Options::default();
-    // The protocol expects clients to reconnect on drop; default on unless the
-    // gateway explicitly sends `autoreconnectifdropped<n>=0`.
     o.autoreconnect = true;
     for (name, text) in leaf_texts(xml) {
         let text = text.trim();
@@ -84,19 +80,15 @@ pub fn parse_options(xml: &str) -> F5Options {
             "dtls_v1_2_supported" => o.dtls12 = bool_or_int(text) != 0,
             "idle_session_timeout" => o.idle_timeout = bool_or_int(text) as u32,
             "UseDefaultGateway0" => o.default_route = bool_or_int(text) != 0,
-            // `SplitTunneling0` is the toggle real APM policies actually send (the
-            // gw-f5 gateway sends this and omits `UseDefaultGateway0`): 1 = split
-            // (only LAN<n> routes), 0 = full tunnel (default route). Authoritative.
+            // `SplitTunneling0` is what real APM policies send (often omitting
+            // `UseDefaultGateway0`): 1 = split (only LAN<n> routes), 0 = full tunnel.
             "SplitTunneling0" => o.default_route = bool_or_int(text) == 0,
             _ => {
-                // `autoreconnectifdropped<n>` (case-insensitive; the gateway sends it
-                // lowercase with a `0` index, like the other numbered fields).
+                // Case-insensitive; the gateway sends it lowercase with a `0` index.
                 if name.to_ascii_lowercase().starts_with("autoreconnectifdropped") {
                     o.autoreconnect = bool_or_int(text) != 0;
                     continue;
                 }
-                // Numbered families: DNS<n>, DNS6_<n>, WINS<n>, DNSSuffix<n>, LAN<n>,
-                // LAN6_<n>, ExcludeSubnets<n>, ExcludeSubnets6_<n>.
                 if is_numbered(&name, "DNS") || is_numbered(&name, "DNS6_") {
                     push_ips(&mut o.dns, text);
                 } else if is_numbered(&name, "WINS") {
@@ -123,17 +115,14 @@ fn bool_or_int(s: &str) -> i64 {
     }
 }
 
-/// True if `name` is `prefix` followed by one or more digits (e.g. `DNS0`,
-/// `LAN12`). For underscore-style prefixes (`DNS6_`) the digits follow the prefix.
 fn is_numbered(name: &str, prefix: &str) -> bool {
     name.strip_prefix(prefix)
         .map(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
         .unwrap_or(false)
 }
 
-/// Append IPv4 addresses from a tag whose text may hold several, space- or
-/// comma-separated (F5 sends DNS both as separate `DNS<n>` tags and, sometimes,
-/// multiple values in one — gof5 splits each tag, so we do too). Dedups.
+/// F5 sends DNS both as separate `DNS<n>` tags and, sometimes, multiple space- or
+/// comma-separated values in one (gof5 splits each tag too).
 fn push_ips(dst: &mut Vec<Ipv4Addr>, text: &str) {
     for w in text.split(|c: char| c.is_whitespace() || c == ',').filter(|s| !s.is_empty()) {
         if let Ok(ip) = w.parse::<Ipv4Addr>() {
@@ -144,9 +133,8 @@ fn push_ips(dst: &mut Vec<Ipv4Addr>, text: &str) {
     }
 }
 
-/// Parse a list of `net/mask` route words (space- or comma-separated; mask dotted —
-/// the real F5 wire form, e.g. `10.0.0.0/255.0.0.0`, cross-checked with gof5 — or a
-/// CIDR prefix length) and append them.
+/// `net/mask` words, space- or comma-separated. The real F5 wire form uses a dotted
+/// mask (`10.0.0.0/255.0.0.0`, cross-checked with gof5); a prefix length is accepted too.
 fn push_routes(dst: &mut Vec<Route>, text: &str) {
     for word in text.split(|c: char| c.is_whitespace() || c == ',').filter(|s| !s.is_empty()) {
         let Some((net_s, mask_s)) = word.split_once('/') else {
@@ -159,7 +147,6 @@ fn push_routes(dst: &mut Vec<Route>, text: &str) {
     }
 }
 
-/// A netmask given either dotted (`255.255.0.0`) or as a prefix length (`16`).
 fn parse_mask(s: &str) -> Option<Ipv4Addr> {
     if let Ok(m) = s.parse::<Ipv4Addr>() {
         return Some(m);
@@ -183,12 +170,9 @@ fn push_domain(domains: &mut String, d: &str) {
     }
 }
 
-// ───────────────────────── leaf-text XML scanner ────────────────────────────
-
-/// Yield `(tag_name, text)` for every **leaf** element (one whose content is text,
-/// not child elements). Tolerant of attributes, self-closing tags, comments and
-/// the XML declaration. F5's option/profile documents are effectively flat lists
-/// of leaves under `<object>` / `<favorite>`, so this captures every value.
+/// `(tag_name, text)` for every leaf element (text content, no child elements).
+/// F5's option/profile documents are effectively flat lists of leaves under
+/// `<object>` / `<favorite>`, so this captures every value.
 fn leaf_texts(xml: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let bytes = xml.as_bytes();
@@ -198,7 +182,6 @@ fn leaf_texts(xml: &str) -> Vec<(String, String)> {
             i += 1;
             continue;
         }
-        // Skip comments / declarations / processing instructions / closing tags.
         if xml[i..].starts_with("<!--") {
             match xml[i..].find("-->") {
                 Some(e) => { i += e + 3; continue; }
@@ -211,7 +194,6 @@ fn leaf_texts(xml: &str) -> Vec<(String, String)> {
                 None => break,
             }
         }
-        // A start/empty tag.
         let Some(close_rel) = xml[i..].find('>') else { break };
         let tag_inner = &xml[i + 1..i + close_rel];
         let self_closing = tag_inner.ends_with('/');
@@ -230,7 +212,7 @@ fn leaf_texts(xml: &str) -> Vec<(String, String)> {
             let text = xml[content_start..next_lt].trim().to_string();
             out.push((name, text));
         }
-        // else: container element — leave i at content_start to descend into children.
+        // Otherwise a container: i stays at content_start to descend into children.
     }
     out
 }
@@ -293,7 +275,7 @@ mod tests {
             vec!["10.10.0.53".parse::<Ipv4Addr>().unwrap(), "10.10.0.54".parse::<Ipv4Addr>().unwrap()]
         );
         assert!(o.domains.contains("corp.example.com"));
-        assert_eq!(o.routes.len(), 2); // 10/8 (dotted) + 172.16/12 (prefix)
+        assert_eq!(o.routes.len(), 2);
         assert_eq!(o.routes[1].mask, "255.240.0.0".parse::<Ipv4Addr>().unwrap());
         assert_eq!(o.exclude.len(), 1);
     }
@@ -306,9 +288,9 @@ mod tests {
         assert_eq!(parse_mask("33"), None);
     }
 
-    /// Shape captured live from a real BIG-IP APM (vpn-f5.example.com): split
-    /// tunnel driven by `SplitTunneling0` with `UseDefaultGateway0` absent, DNS and
-    /// `net/dotted-mask` routes space-separated with a trailing space, empty exclude.
+    /// Shape captured live from a real BIG-IP APM: split tunnel driven by
+    /// `SplitTunneling0` with `UseDefaultGateway0` absent, DNS and `net/dotted-mask`
+    /// routes space-separated with a trailing space, empty exclude.
     #[test]
     fn options_real_world_split_tunnel() {
         let xml = r#"<?xml version="1.0"?>
@@ -331,7 +313,6 @@ mod tests {
 </favorite>"#;
         let o = parse_options(xml);
         assert!(o.ipv4 && !o.ipv6 && !o.hdlc && !o.dtls);
-        // SplitTunneling0=1 and no UseDefaultGateway0 → split (no default route).
         assert!(!o.default_route);
         assert_eq!(
             o.dns,
@@ -341,34 +322,25 @@ mod tests {
             ]
         );
         assert!(o.domains.contains("corp.example.net"));
-        // Four space-separated net/dotted-mask words, trailing space ignored.
         assert_eq!(o.routes.len(), 4);
         assert_eq!(o.routes[0].net, "10.0.0.0".parse::<Ipv4Addr>().unwrap());
         assert_eq!(o.routes[0].mask, "255.0.0.0".parse::<Ipv4Addr>().unwrap());
         assert_eq!(o.routes[1].mask, "255.255.248.0".parse::<Ipv4Addr>().unwrap());
         assert_eq!(o.routes[3].mask, "255.255.255.255".parse::<Ipv4Addr>().unwrap());
-        // Whitespace-only ExcludeSubnets0 → no excludes.
         assert_eq!(o.exclude.len(), 0);
     }
 
-    /// Full-tunnel policy: `SplitTunneling0=0` with no `UseDefaultGateway0` must set
-    /// the default route.
     #[test]
     fn options_split_tunneling_zero_is_full() {
         let xml = r#"<favorite><object><SplitTunneling0>0</SplitTunneling0></object></favorite>"#;
         assert!(parse_options(xml).default_route);
     }
 
-    /// `autoreconnectifdropped` defaults to on when absent, honours an explicit 0/1,
-    /// and is matched case-insensitively with its numeric index.
     #[test]
     fn options_autoreconnect() {
-        // Absent → default on (the OPTIONS fixture has no such field).
         assert!(parse_options(OPTIONS).autoreconnect);
-        // Explicit disable.
         let off = r#"<favorite><object><autoreconnectifdropped0>0</autoreconnectifdropped0></object></favorite>"#;
         assert!(!parse_options(off).autoreconnect);
-        // Explicit enable (and a capitalised variant).
         let on = r#"<favorite><object><AutoReconnectIfDropped0>1</AutoReconnectIfDropped0></object></favorite>"#;
         assert!(parse_options(on).autoreconnect);
     }

@@ -63,7 +63,6 @@ const WGALLOWEDIP_A_CIDR_MASK: u16 = 3;
 /// chunks the same way); the rest follow as UPDATE_ONLY messages.
 const ALLOWED_IPS_PER_MSG: usize = 1000;
 
-/// One peer as we configure it.
 pub struct PeerSet {
     pub public_key: [u8; 32],
     pub preshared_key: Option<[u8; 32]>,
@@ -73,7 +72,7 @@ pub struct PeerSet {
     pub keepalive: u16,
 }
 
-/// The device as we configure it (replaces all of its peers).
+/// Applying it replaces all of the device's peers.
 pub struct DeviceSet {
     pub private_key: [u8; 32],
     pub listen_port: Option<u16>,
@@ -81,7 +80,6 @@ pub struct DeviceSet {
     pub peers: Vec<PeerSet>,
 }
 
-/// One peer as the kernel reports it.
 #[derive(Clone, Debug, Default)]
 pub struct PeerState {
     pub public_key: [u8; 32],
@@ -99,9 +97,7 @@ pub struct DeviceState {
     pub peers: Vec<PeerState>,
 }
 
-// ───────────────────────────── message building ─────────────────────────────
-
-/// A netlink message under construction; nested attributes are a start/finish pair.
+/// Nested attributes are a `start`/`finish` pair.
 struct Msg {
     buf: Vec<u8>,
 }
@@ -338,9 +334,6 @@ fn parse_device_part(payload: &[u8], st: &mut DeviceState) {
     }
 }
 
-// ───────────────────────────────── socket ───────────────────────────────────
-
-/// A generic-netlink socket bound to the `wireguard` family.
 pub struct WgNetlink {
     fd: libc::c_int,
     family: u16,
@@ -354,8 +347,7 @@ impl Drop for WgNetlink {
 }
 
 impl WgNetlink {
-    /// Open the socket and resolve the family id. Fails when the kernel has no
-    /// WireGuard (module not loaded/available).
+    /// Fails when the kernel has no WireGuard (module not loaded/available).
     pub fn open() -> Result<WgNetlink, String> {
         let fd = unsafe { libc::socket(libc::AF_NETLINK, libc::SOCK_RAW | libc::SOCK_CLOEXEC, NETLINK_GENERIC) };
         if fd < 0 {
@@ -389,7 +381,6 @@ impl WgNetlink {
         Ok(s)
     }
 
-    /// Configure `ifname` (replacing all its peers).
     pub fn set_device(&mut self, ifname: &str, dev: &DeviceSet) -> Result<(), String> {
         for m in set_messages(self.family, ifname, dev, &mut self.seq) {
             self.transact(&m, |_| {})?;
@@ -397,7 +388,6 @@ impl WgNetlink {
         Ok(())
     }
 
-    /// Change one peer's persistent-keepalive interval (UPDATE_ONLY).
     pub fn set_keepalive(&mut self, ifname: &str, public_key: &[u8; 32], secs: u16) -> Result<(), String> {
         let mut m = Msg::new(self.family, NLM_F_REQUEST | NLM_F_ACK, next(&mut self.seq), WG_CMD_SET_DEVICE, WG_GENL_VERSION);
         m.str(WGDEVICE_A_IFNAME, ifname);
@@ -419,8 +409,8 @@ impl WgNetlink {
         Ok(st)
     }
 
-    /// Send one request and read replies until its ACK / DONE. `on_payload` gets
-    /// each data message's attributes (after the genl header).
+    /// Reads replies until the ACK / DONE. `on_payload` gets each data message's
+    /// attributes (after the genl header).
     fn transact(&mut self, req: &[u8], mut on_payload: impl FnMut(&[u8])) -> Result<(), String> {
         let seq = u32::from_ne_bytes(req[8..12].try_into().unwrap());
         let mut sa: libc::sockaddr_nl = unsafe { std::mem::zeroed() };
@@ -499,7 +489,6 @@ mod tests {
         assert_eq!(u16::from_ne_bytes([m[4], m[5]]), 0x22);
         assert_eq!(m[16], WG_CMD_SET_DEVICE);
 
-        // Walk it back: ifname, key, flags, port, fwmark, one peer with 2 allowed IPs.
         let top: Vec<(u16, &[u8])> = attrs(&m[20..]).collect();
         assert_eq!(top[0], (WGDEVICE_A_IFNAME, &b"wg-test\0"[..]));
         assert_eq!(top[1].1, &[1u8; 32][..]);
