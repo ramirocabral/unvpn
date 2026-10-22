@@ -14,6 +14,7 @@ macro_rules! out {
 mod anyconnect;
 mod ccc;
 mod forti;
+mod forti_ipsec;
 mod gnutls;
 mod f5;
 mod gp;
@@ -1148,6 +1149,7 @@ fn main() {
         Some("ike") => cmd_ike(&args[1..]),
         Some("tunnel-up") => cmd_tunnel_up(&args[1..]),
         Some("forti") => forti::cmd_forti(&args[1..]),
+        Some("forti-ipsec") | Some("fortiipsec") => forti_ipsec::cmd_forti_ipsec(&args[1..]),
         Some("f5") => f5::cmd_f5(&args[1..]),
         Some("anyconnect") => anyconnect::cmd_anyconnect(&args[1..]),
         Some("gp") | Some("globalprotect") => gp::cmd_gp(&args[1..]),

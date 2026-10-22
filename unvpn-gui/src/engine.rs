@@ -360,6 +360,7 @@ impl Vpn {
                     } else if clean.contains("AUTH FAILED")
                         || clean.starts_with("IKE failed")
                         || clean.starts_with("forti failed")
+                        || clean.starts_with("forti-ipsec failed")
                         || clean.starts_with("f5 failed")
                         || clean.starts_with("anyconnect failed")
                         || clean.starts_with("globalprotect failed")

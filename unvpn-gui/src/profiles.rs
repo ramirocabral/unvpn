@@ -25,6 +25,8 @@ pub enum Backend {
     OpenVpn,
     #[serde(rename = "wireguard")]
     WireGuard,
+    #[serde(rename = "fortiipsec", alias = "forti-ipsec")]
+    FortiIpsec,
 }
 
 impl Backend {
@@ -37,6 +39,7 @@ impl Backend {
             Backend::GlobalProtect => "GlobalProtect",
             Backend::OpenVpn => "OpenVPN",
             Backend::WireGuard => "WireGuard",
+            Backend::FortiIpsec => "FortiClient IPsec",
         }
     }
 
@@ -50,6 +53,7 @@ impl Backend {
             Backend::GlobalProtect => 4,
             Backend::OpenVpn => 5,
             Backend::WireGuard => 6,
+            Backend::FortiIpsec => 7,
         }
     }
 
@@ -76,6 +80,7 @@ impl Backend {
             4 => Backend::GlobalProtect,
             5 => Backend::OpenVpn,
             6 => Backend::WireGuard,
+            7 => Backend::FortiIpsec,
             _ => Backend::CheckPoint,
         }
     }

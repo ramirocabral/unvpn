@@ -166,7 +166,7 @@ impl App {
 
         let name_row = adw::EntryRow::builder().title("Profile name").build();
 
-        let backend_model = gtk::StringList::new(&["Check Point", "FortiClient", "F5", "AnyConnect (Cisco)", "GlobalProtect", "OpenVPN", "WireGuard"]);
+        let backend_model = gtk::StringList::new(&["Check Point", "FortiClient", "F5", "AnyConnect (Cisco)", "GlobalProtect", "OpenVPN", "WireGuard", "FortiClient IPsec"]);
         let backend_row = adw::ComboRow::builder().title("VPN client").model(&backend_model).build();
 
         let gateway_row = adw::EntryRow::builder().title("Gateway").build();
@@ -464,7 +464,7 @@ impl App {
         let gw = !self.gateway_row.text().trim().is_empty();
         match self.backend() {
             Backend::Forti | Backend::AnyConnect | Backend::GlobalProtect if self.sso() => gw,
-            Backend::Forti | Backend::F5 | Backend::AnyConnect | Backend::GlobalProtect => {
+            Backend::Forti | Backend::F5 | Backend::AnyConnect | Backend::GlobalProtect | Backend::FortiIpsec => {
                 gw && !self.user_row.text().trim().is_empty()
                     && !self.password_row.text().is_empty()
             }
@@ -752,6 +752,14 @@ impl App {
             }
             Backend::F5 => (
                 vec!["f5".into(), "-g".into(), gw.clone(), "-u".into(), user, "--connect".into()],
+                vec![self.password_row.text().to_string()],
+                None,
+            ),
+            // IKEv2 + EAP: password piped on stdin; the OTP/token is collected at
+            // runtime via `# AUTH-PROMPT: code:` (it doesn't exist until the password
+            // is accepted), exactly like Forti/F5.
+            Backend::FortiIpsec => (
+                vec!["forti-ipsec".into(), "-g".into(), gw.clone(), "-u".into(), user, "--connect".into()],
                 vec![self.password_row.text().to_string()],
                 None,
             ),

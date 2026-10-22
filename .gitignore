@@ -12,3 +12,6 @@ captures/
 *.swo
 *~
 .DS_Store
+
+# Confidential client docs — never commit (public repo)
+*.pdf
