@@ -227,7 +227,7 @@ fn authenticate(session: &mut Ikev2Session, udp: &IkeUdp, o: &Opts) -> Result<Ve
         ntype: model::NotifyType::InitialContact.into(),
         data: vec![],
     }));
-    first.extend(emssn::auth_payloads(&serial));
+    first.extend(emssn::auth_payloads(&serial, &o.user));
 
     let mut msg_id = session.next_msg_id; // 1
     let req = session.encrypt(model::ExchangeType::IkeAuth.into(), msg_id, &first);

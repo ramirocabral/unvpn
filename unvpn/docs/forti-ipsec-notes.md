@@ -87,12 +87,19 @@ PRF-SHA256 (FortiGate's common dialup default):
 
 ## Open items / roadmap (need a live gateway or onboarding)
 
-- **EMS serial** (`emssn.rs`): the two private Notify numeric types and the exact
-  `EMSSN=` payload framing are PROVISIONAL — pending decompilation of
-  `ikev2_add_adc_emssn` and a packet capture. `read_local_forticlient_emssn()` is a
+- **EMS serial** (`emssn.rs`): the payload is now RE-confirmed from `iked`'s
+  `.rodata` and disassembly — a single Notify **`0xF100` (FORTICLIENT_CONNECT)**
+  whose data is a `\n`-separated `KEY=value` text blob, fields in order `TVER` `UID`
+  `IP` `HOST` `OSVER` `REG_STATUS` `EMSID` `USER` `EMSSN`, with `TVER=7.4.3.5411`,
+  `HOST` from `gethostname(2)`, and `EMSSN=<serial>` the validated field. (Other
+  recovered private Notify types: `VPN_NETWORK_ID 0xF050`, `DEV_ID_NOTIFY 0xF103`,
+  `CLIENT_RESUME 0xF118` — the last confirmed as a real code immediate.) Still to
+  confirm with a capture: which exchange carries it (implemented in the first
+  IKE_AUTH request; could be IKE_SA_INIT) and whether `DEV_ID_NOTIFY` /
+  `VPN_NETWORK_ID` must accompany it. `read_local_forticlient_emssn()` is still a
   stub: once the box is EMS-registered, read the serial the real FortiClient holds
-  (`epctrl_ems_serial` in shm / the config DB) instead of guessing. Override today
-  via `--emssn` / `UNVPN_EMSSN`.
+  (`fct_get_emssn` → `epctrl_ems_serial` in shm / the config DB). Override today via
+  `--emssn` / `UNVPN_EMSSN`.
 - **AUTH-key selection under EAP**: MSK vs SK_pi — confirm against a capture which
   one FortiGate expects, and whether the gateway authenticates by cert or group PSK
   (then verify its AUTH instead of only logging).

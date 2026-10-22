@@ -217,17 +217,19 @@ reg! {
 pub const TS_IPV4_ADDR_RANGE: u8 = 7;
 pub const TS_IPV6_ADDR_RANGE: u8 = 8;
 
-/// FortiClient vendor ID (16-byte MD5 of its product string), sent in IKE_SA_INIT.
-/// Placeholder until confirmed by RE of iked's `ikev2_add_vid`; a wrong/absent VID
-/// is tolerated by FortiGate, so this does not gate the handshake.
-pub const VID_FORTINET: &[u8] = b"\x00FORTINET_FCT\x00\x00\x00";
+/// FortiClient private Notify message types, recovered from `iked`'s name/value
+/// table (`.rodata` @ ~0xbf6a40: `VPN_NETWORK_ID`→`0xF050`, `FORTICLIENT_CONNECT`→
+/// `0xF100`, `DEV_ID_NOTIFY`→`0xF103`, `CLIENT_RESUME`→`0xF118`; 0xF118 is also used
+/// as an immediate in the code, confirming these are the real wire values).
+pub const N_FORTINET_VPN_NETWORK_ID: u16 = 0xF050;
+/// Carries the FortiClient endpoint info blob, incl. the EMS serial the gateway
+/// validates. Payload = `\n`-separated `KEY=value` text (see emssn.rs).
+pub const N_FORTINET_FORTICLIENT_CONNECT: u16 = 0xF100;
+pub const N_FORTINET_DEV_ID_NOTIFY: u16 = 0xF103;
+pub const N_FORTINET_CLIENT_RESUME: u16 = 0xF118;
 
-/// FortiClient private Notify payloads carried in IKE_AUTH (from iked strings
-/// `FORTICLIENT_CONNECT`, `EMSSN=`, `fct_get_emssn`). The gateway validates the
-/// EMS serial here. Exact numeric Notify types are pending RE of
-/// `ikev2_add_forticlient_connect` / `ikev2_add_adc_emssn`; see emssn.rs.
-pub const FORTICLIENT_CONNECT_TAG: &[u8] = b"FORTICLIENT_CONNECT";
-pub const EMSSN_PREFIX: &[u8] = b"EMSSN=";
+/// The FortiClient version string `iked` 7.4.3 embeds as the `TVER=` field.
+pub const FORTICLIENT_TVER: &str = "7.4.3.5411";
 
 #[cfg(test)]
 mod tests {

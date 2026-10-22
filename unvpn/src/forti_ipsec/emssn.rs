@@ -1,41 +1,39 @@
-//! FortiClient-private IKE_AUTH payloads: `FORTICLIENT_CONNECT` and the EMS serial
-//! number (`EMSSN=…`). FortiGate dialup configured for EMS/ZTNA validates the EMS
-//! serial in-band — the `iked` binary carries the literal error "IPsec VPN login
-//! failed due to mismatched pre-shared key, client certificate, or EMS serial
-//! number" and the senders `ikev2_add_forticlient_connect` / `ikev2_add_adc_emssn`
-//! (`fct_get_emssn`, string `EMSSN=`).
+//! The FortiClient endpoint-info payload carried in IKE_AUTH, recovered from
+//! `/opt/forticlient/iked` (7.4.3) by RE:
 //!
-//! STATUS: the EMS serial is only obtainable by registering to the gateway's own
-//! EMS (an authorisation/onboarding step); it cannot be fabricated. This module
-//! presents a serial the operator already holds — read from the locally installed,
-//! EMS-registered FortiClient, or supplied via `--emssn` / `UNVPN_EMSSN`. The exact
-//! Notify numeric types and payload framing are PROVISIONAL (pending decompilation
-//! of `ikev2_add_adc_emssn`); the wire shape below is a best-effort placeholder and
-//! must be confirmed against a packet capture before it will satisfy a real gateway.
+//! - It is a **single Notify** of type **`0xF100` (FORTICLIENT_CONNECT)** — from
+//!   iked's name/type table in `.rodata` (`FORTICLIENT_CONNECT`→`0xF100`, alongside
+//!   `VPN_NETWORK_ID`→`0xF050`, `DEV_ID_NOTIFY`→`0xF103`, `CLIENT_RESUME`→`0xF118`;
+//!   0xF118 also appears as a code immediate, confirming the table's wire values).
+//! - Its data is a **`\n`-separated `KEY=value` text blob** built by the client
+//!   (decompiled from the string-assembly at ~0x48d2xx): the fields, in order, are
+//!   `TVER` `UID` `IP` `HOST` `OSVER` `REG_STATUS` `EMSID` `USER` `EMSSN`. `HOST`
+//!   comes from `gethostname(2)`, `TVER` is the FortiClient version (`7.4.3.5411`),
+//!   and **`EMSSN=<serial>`** is the EMS serial number the gateway validates
+//!   (iked error: "IPsec VPN login failed due to mismatched pre-shared key, client
+//!   certificate, or EMS serial number").
+//!
+//! The EMS serial is only issued by the gateway's EMS to a registered endpoint and
+//! cannot be fabricated. This module presents a serial the operator already holds
+//! (via `--emssn` / `UNVPN_EMSSN`, or — once implemented — read from a locally
+//! EMS-registered FortiClient). The other fields are informational; the gateway
+//! gates on `EMSSN`.
 
 #![allow(dead_code)]
 
-use super::model::{EMSSN_PREFIX, FORTICLIENT_CONNECT_TAG};
+use super::model::{FORTICLIENT_TVER, N_FORTINET_FORTICLIENT_CONNECT};
 use super::wire::{Notify, Payload};
-
-/// FortiClient private Notify message types (private-use range 40960-65535).
-/// PROVISIONAL values — not yet confirmed from iked.
-const N_FORTICLIENT_CONNECT: u16 = 40960;
-const N_EMSSN: u16 = 40961;
 
 /// Where to get the EMS serial the gateway expects.
 #[derive(Debug, Clone)]
 pub enum EmsSerial {
-    /// Supplied explicitly (flag/env).
     Explicit(String),
-    /// None — skip the FortiClient payloads (works against a FortiGate dialup that
-    /// does not enforce EMS/ZTNA).
     None,
 }
 
 impl EmsSerial {
-    /// Resolve from an explicit value, else the `UNVPN_EMSSN` env var, else try the
-    /// locally installed FortiClient's registered serial, else None.
+    /// Resolve from an explicit value, else `UNVPN_EMSSN`, else the locally installed
+    /// FortiClient's registered serial, else None.
     pub fn resolve(explicit: Option<&str>) -> EmsSerial {
         if let Some(s) = explicit.filter(|s| !s.is_empty()) {
             return EmsSerial::Explicit(s.to_string());
@@ -59,29 +57,93 @@ impl EmsSerial {
     }
 }
 
-/// Best-effort read of the EMS serial from a locally installed FortiClient that is
-/// already registered to the EMS. PROVISIONAL: the real location is iked's
-/// `fct_get_emssn` (shared memory / the config DB). Returns `None` for now; wired as
-/// the extension point so onboarding + RE can fill it in without touching callers.
+/// The FortiClient endpoint-info fields. Only `EMSSN` is validated by the gateway;
+/// the rest are filled best-effort (empty is accepted for the informational ones).
+#[derive(Debug, Clone)]
+pub struct ClientInfo {
+    pub tver: String,
+    pub uid: String,
+    pub ip: String,
+    pub host: String,
+    pub osver: String,
+    pub reg_status: String,
+    pub emsid: String,
+    pub user: String,
+    pub emssn: String,
+}
+
+impl ClientInfo {
+    pub fn new(user: &str, emssn: &str) -> Self {
+        ClientInfo {
+            tver: FORTICLIENT_TVER.to_string(),
+            uid: String::new(),
+            ip: String::new(),
+            host: hostname(),
+            osver: String::new(),
+            reg_status: "1".to_string(), // 1 = registered
+            emsid: String::new(),
+            user: user.to_string(),
+            emssn: emssn.to_string(),
+        }
+    }
+
+    /// The `\n`-separated `KEY=value` blob, in the field order iked emits.
+    pub fn blob(&self) -> Vec<u8> {
+        let fields = [
+            ("TVER", &self.tver),
+            ("UID", &self.uid),
+            ("IP", &self.ip),
+            ("HOST", &self.host),
+            ("OSVER", &self.osver),
+            ("REG_STATUS", &self.reg_status),
+            ("EMSID", &self.emsid),
+            ("USER", &self.user),
+            ("EMSSN", &self.emssn),
+        ];
+        let mut out = Vec::new();
+        for (k, v) in fields {
+            out.extend_from_slice(k.as_bytes());
+            out.push(b'=');
+            out.extend_from_slice(v.as_bytes());
+            out.push(b'\n');
+        }
+        out
+    }
+}
+
+/// `gethostname(2)`, matching iked's HOST= source. Falls back to "localhost".
+fn hostname() -> String {
+    let mut buf = [0u8; 256];
+    let r = unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
+    if r == 0 {
+        let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+        String::from_utf8_lossy(&buf[..end]).into_owned()
+    } else {
+        "localhost".to_string()
+    }
+}
+
+/// Best-effort read of the EMS serial from a locally installed, EMS-registered
+/// FortiClient. STUB: the real source is iked's `fct_get_emssn` (shm /
+/// `epctrl_ems_serial` in the config DB); not guessing a value that would fail the
+/// gateway. Filled once the box is registered + the field is located.
 fn read_local_forticlient_emssn() -> Option<String> {
-    // TODO(RE): read from /opt/forticlient config DB or shm (epctrl_ems_serial), or
-    // parse `forticlient ... ` CLI output, once the field is located and the box is
-    // EMS-registered. Intentionally not guessing a value that would fail the gateway.
     None
 }
 
-/// The FortiClient IKE_AUTH payloads to append, given the resolved serial. Empty
-/// when there is no serial (non-EMS-enforcing gateway).
-pub fn auth_payloads(serial: &EmsSerial) -> Vec<Payload> {
+/// The FortiClient IKE_AUTH Notify payload(s) for the given serial and user. Empty
+/// when there is no serial (a non-EMS-enforcing FortiGate ignores it).
+pub fn auth_payloads(serial: &EmsSerial, user: &str) -> Vec<Payload> {
     let Some(sn) = serial.as_str() else {
         return Vec::new();
     };
-    let mut emssn = EMSSN_PREFIX.to_vec();
-    emssn.extend_from_slice(sn.as_bytes());
-    vec![
-        Payload::Notify(Notify { protocol: 0, spi: vec![], ntype: N_FORTICLIENT_CONNECT, data: FORTICLIENT_CONNECT_TAG.to_vec() }),
-        Payload::Notify(Notify { protocol: 0, spi: vec![], ntype: N_EMSSN, data: emssn }),
-    ]
+    let info = ClientInfo::new(user, sn);
+    vec![Payload::Notify(Notify {
+        protocol: 0,
+        spi: vec![],
+        ntype: N_FORTINET_FORTICLIENT_CONNECT,
+        data: info.blob(),
+    })]
 }
 
 #[cfg(test)]
@@ -90,21 +152,33 @@ mod tests {
 
     #[test]
     fn no_serial_means_no_payloads() {
-        assert!(auth_payloads(&EmsSerial::None).is_empty());
+        assert!(auth_payloads(&EmsSerial::None, "user").is_empty());
     }
 
     #[test]
-    fn explicit_serial_builds_two_notifies_with_emssn_prefix() {
-        let ps = auth_payloads(&EmsSerial::Explicit("EMS1234567890".into()));
-        assert_eq!(ps.len(), 2);
-        match &ps[1] {
-            Payload::Notify(n) => {
-                assert_eq!(n.ntype, N_EMSSN);
-                assert!(n.data.starts_with(EMSSN_PREFIX));
-                assert!(n.data.ends_with(b"EMS1234567890"));
-            }
-            _ => panic!("expected EMSSN notify"),
-        }
+    fn forticlient_connect_notify_type_and_blob() {
+        let ps = auth_payloads(&EmsSerial::Explicit("FCTEMS0000123456".into()), "jdoe");
+        assert_eq!(ps.len(), 1);
+        let Payload::Notify(n) = &ps[0] else { panic!("expected Notify") };
+        assert_eq!(n.ntype, 0xF100);
+        assert_eq!(n.protocol, 0);
+        assert!(n.spi.is_empty());
+        let text = String::from_utf8(n.data.clone()).unwrap();
+        // Field order and separator match iked's assembly.
+        assert!(text.starts_with("TVER=7.4.3.5411\n"));
+        assert!(text.contains("\nUSER=jdoe\n"));
+        assert!(text.contains("\nEMSSN=FCTEMS0000123456\n"));
+        // TVER first, EMSSN last.
+        assert!(text.find("TVER=").unwrap() < text.find("EMSSN=").unwrap());
+        assert!(text.ends_with("EMSSN=FCTEMS0000123456\n"));
+    }
+
+    #[test]
+    fn blob_field_order_exact() {
+        let info = ClientInfo::new("u", "S");
+        let text = String::from_utf8(info.blob()).unwrap();
+        let order: Vec<&str> = text.lines().map(|l| l.split('=').next().unwrap()).collect();
+        assert_eq!(order, ["TVER", "UID", "IP", "HOST", "OSVER", "REG_STATUS", "EMSID", "USER", "EMSSN"]);
     }
 
     #[test]
