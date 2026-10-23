@@ -59,7 +59,8 @@ pub enum SsoWatch {
 
 pub enum TrayCmd {
     Show,
-    Connect,
+    /// A saved profile was picked in the tray menu.
+    ConnectProfile(String),
     Disconnect,
     Quit,
 }

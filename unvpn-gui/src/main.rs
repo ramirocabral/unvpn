@@ -119,9 +119,17 @@ struct App {
 
     log_buffer: gtk::TextBuffer,
     log_view: gtk::TextView,
+    log_expander: adw::ExpanderRow,
 
     vpn: RefCell<Vpn>,
-    tray: RefCell<Option<ksni::Handle<tray::VpnTray>>>,
+    tray: RefCell<Option<ksni::blocking::Handle<tray::VpnTray>>>,
+    /// Profile names shown in the tray menu. Shared with the tray thread.
+    tray_profiles: Arc<Mutex<Vec<String>>>,
+    /// The current connection was started from the tray menu: if it fails, the
+    /// window opens with the log expanded.
+    from_tray: Cell<bool>,
+    /// Tray: profile to connect once the current tunnel is down (switching).
+    pending_switch: RefCell<Option<String>>,
     tx: Tx,
     last_state: RefCell<Option<State>>,
     /// OpenVPN: passphrase to answer the engine's `keypass` prompt with, unasked
@@ -342,8 +350,12 @@ impl App {
             sso_window: RefCell::new(None),
             log_buffer,
             log_view,
+            log_expander,
             vpn: RefCell::new(Vpn::new(tx.clone())),
             tray: RefCell::new(None),
+            tray_profiles: Arc::new(Mutex::new(Vec::new())),
+            from_tray: Cell::new(false),
+            pending_switch: RefCell::new(None),
             tx,
             last_state: RefCell::new(None),
             pending_key_pass: RefCell::new(None),
@@ -520,6 +532,8 @@ impl App {
             self.profiles_group.remove(&row);
         }
         let profs = self.profiles.borrow();
+        *self.tray_profiles.lock().unwrap() = profs.iter().map(|p| p.name.clone()).collect();
+        self.update_tray();
         if profs.is_empty() {
             let row = adw::ActionRow::builder()
                 .title("No saved profiles")
@@ -686,7 +700,10 @@ impl App {
     fn on_connect_clicked(&self) {
         let st = self.vpn.borrow().state();
         match st {
-            State::Disconnected | State::Error(_) => self.start_connect(),
+            State::Disconnected | State::Error(_) => {
+                self.from_tray.set(false);
+                self.start_connect()
+            }
             State::Connecting | State::Connected => {
                 self.vpn.borrow_mut().disconnect();
                 self.sync_ui();
@@ -845,15 +862,76 @@ impl App {
 
     fn handle_tray(&self, cmd: TrayCmd) {
         match cmd {
-            TrayCmd::Show | TrayCmd::Connect => {
-                self.window.set_visible(true);
-                self.window.present();
-            }
+            TrayCmd::Show => self.show_window(),
+            TrayCmd::ConnectProfile(name) => self.connect_from_tray(&name),
             TrayCmd::Disconnect => {
+                self.pending_switch.replace(None);
                 self.vpn.borrow_mut().disconnect();
                 self.sync_ui();
             }
             TrayCmd::Quit => self.request_quit(),
+        }
+    }
+
+    fn show_window(&self) {
+        self.window.set_visible(true);
+        self.window.present();
+    }
+
+    /// Tray menu pick: connect that saved profile without the window. If something
+    /// is missing (a one-time token, a password that isn't remembered) the window
+    /// opens on the profile; a runtime prompt or a failure opens it too.
+    fn connect_from_tray(&self, name: &str) {
+        match self.vpn.borrow().state() {
+            State::Disconnected | State::Error(_) => {}
+            State::Disconnecting => {
+                self.pending_switch.replace(Some(name.to_string()));
+                return;
+            }
+            State::Connecting | State::Connected => {
+                if *self.active_profile.lock().unwrap() != name {
+                    self.pending_switch.replace(Some(name.to_string()));
+                }
+                self.vpn.borrow_mut().disconnect();
+                self.sync_ui();
+                return;
+            }
+        }
+        let Some(p) = self.profiles.borrow().iter().find(|p| p.name == name).cloned() else {
+            return;
+        };
+        self.load_profile(&p);
+        if !self.form_ready() {
+            self.show_window();
+            self.toast(&format!("“{name}” needs more details to connect"));
+            self.focus_missing_field();
+            return;
+        }
+        self.from_tray.set(true);
+        self.start_connect();
+    }
+
+    fn focus_missing_field(&self) {
+        let rows: [&gtk::Widget; 3] = [
+            self.user_row.upcast_ref(),
+            self.password_row.upcast_ref(),
+            self.token_row.upcast_ref(),
+        ];
+        if let Some(w) = rows.into_iter().find(|w| w.is_visible() && self.editable_text(w).trim().is_empty()) {
+            w.grab_focus();
+        }
+    }
+
+    /// A tray-started connection failed: bring the window up on the log.
+    fn reveal_log(&self) {
+        self.show_window();
+        self.log_expander.set_expanded(true);
+        self.log_view.scroll_to_iter(&mut self.log_buffer.end_iter(), 0.0, false, 0.0, 0.0);
+    }
+
+    fn update_tray(&self) {
+        if let Some(h) = self.tray.borrow().as_ref() {
+            h.update(|_| {});
         }
     }
 
@@ -954,6 +1032,10 @@ impl App {
                 self.append_log("→ saved key passphrase sent");
                 return;
             }
+        }
+        // The answer is typed in the window — bring it up if the tray started this.
+        if !self.window.is_visible() {
+            self.show_window();
         }
 
         let (title, hint) = match p.kind.as_str() {
@@ -1176,13 +1258,22 @@ impl App {
 
         let changed = self.last_state.borrow().as_ref() != Some(&state);
         if changed {
+            let down = matches!(state, State::Disconnected | State::Error(_));
+            let switch = if down { self.pending_switch.take() } else { None };
             if let State::Error(e) = &state {
                 self.toast(e);
+                if self.from_tray.get() && switch.is_none() {
+                    self.reveal_log();
+                }
             }
-            if let Some(h) = self.tray.borrow().as_ref() {
-                h.update(|_| {});
-            }
+            self.update_tray();
             *self.last_state.borrow_mut() = Some(state);
+            // Tray switch: the old tunnel is down, bring up the picked profile (off
+            // this call — connecting re-enters sync_ui).
+            if let Some(name) = switch {
+                let app = self.rc();
+                glib::idle_add_local_once(move || app.connect_from_tray(&name));
+            }
         }
     }
 
@@ -1199,18 +1290,28 @@ impl App {
             eprintln!("unvpn: no system tray detected — running as a normal window.");
             return;
         }
+        use ksni::blocking::TrayMethods;
         let tray = tray::VpnTray {
             state: self.vpn.borrow().state.clone(),
             tx: self.tx.clone(),
             profile: self.active_profile.clone(),
+            profiles: self.tray_profiles.clone(),
         };
-        let service = ksni::TrayService::new(tray);
-        *self.tray.borrow_mut() = Some(service.handle());
-        service.spawn();
+        match tray.spawn() {
+            Ok(h) => *self.tray.borrow_mut() = Some(h),
+            Err(e) => eprintln!("unvpn: tray unavailable ({e}) — running as a normal window."),
+        }
     }
 }
 
-fn build_ui(app: &adw::Application) {
+fn build_ui(app: &adw::Application, start_hidden: bool) {
+    // Single instance: launching again (e.g. from the app launcher while it sits in
+    // the tray) just brings the existing window back.
+    if let Some(w) = app.windows().first() {
+        w.set_visible(true);
+        w.present();
+        return;
+    }
     let (tx, rx) = async_channel::unbounded::<UiMsg>();
     let state_app = App::new(app, tx);
 
@@ -1225,7 +1326,7 @@ fn build_ui(app: &adw::Application) {
         dialog.present(Some(&state_app.window));
     }));
     let quit = gio::SimpleAction::new("quit", None);
-    quit.connect_activate(glib::clone!(#[strong] state_app, move |_, _| state_app.window.close()));
+    quit.connect_activate(glib::clone!(#[strong] state_app, move |_, _| state_app.request_quit()));
     app.add_action(&about);
     app.add_action(&quit);
 
@@ -1242,7 +1343,10 @@ fn build_ui(app: &adw::Application) {
         glib::ControlFlow::Continue
     }));
 
-    state_app.window.present();
+    // `--tray` (autostart): stay in the tray until picked — only if there is one.
+    if !(start_hidden && state_app.tray.borrow().is_some()) {
+        state_app.window.present();
+    }
 }
 
 fn install_css() {
@@ -1267,6 +1371,10 @@ fn main() -> glib::ExitCode {
         return glib::ExitCode::SUCCESS;
     }
 
+    // Our own flag; GApplication would reject it as an unknown option.
+    let start_hidden = args.iter().any(|a| a == "--tray");
+    let gtk_args: Vec<String> = args.into_iter().filter(|a| a != "--tray").collect();
+
     let app = adw::Application::builder().application_id(APP_ID).build();
     app.connect_startup(|_| {
         install_css();
@@ -1276,6 +1384,6 @@ fn main() -> glib::ExitCode {
         // on a light desktop can still override via the usual GTK settings.
         adw::StyleManager::default().set_color_scheme(adw::ColorScheme::PreferDark);
     });
-    app.connect_activate(build_ui);
-    app.run()
+    app.connect_activate(move |app| build_ui(app, start_hidden));
+    app.run_with_args(&gtk_args)
 }

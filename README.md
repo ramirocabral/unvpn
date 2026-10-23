@@ -26,7 +26,7 @@ Supported VPNs:
 
 - GTK4 / libadwaita app with saved connection profiles.
 - Passwords are stored in the system keyring.
-- Tray icon that shows the connection state.
+- Tray icon that shows the connection state. Click it to pick a saved profile and connect.
 
 ## Install
 
@@ -62,6 +62,12 @@ PREFIX=~/.local ./install.sh    # or just for your user
 Open **unvpn** from your app menu. Pick the VPN type, fill in the gateway and user, and
 click **Save** to keep it as a profile. Next time, click the play button next to the
 profile to connect.
+
+You can also connect from the tray: click the icon and pick a profile. If the profile
+needs something it doesn't have saved (a one-time code, a password you didn't save), the
+window opens so you can type it. If the connection fails, the window opens with the log.
+Closing the window keeps unvpn in the tray. To start it in the tray when you log in, run
+`unvpn-gui --tray` (for Sway: `exec unvpn-gui --tray`).
 
 ## Command line
 

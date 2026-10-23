@@ -8,7 +8,8 @@ description = "Native Linux VPN client GUI (Check Point / Fortinet / F5 / AnyCon
 gtk = { package = "gtk4", version = "0.11", features = ["v4_12"] }
 adw = { package = "libadwaita", version = "0.9", features = ["v1_5"] }
 async-channel = "2"
-ksni = "0.2"
+# 0.3: `MENU_ON_ACTIVATE` (ItemIsMenu) — a left click opens the profile menu.
+ksni = { version = "0.3", default-features = false, features = ["blocking", "async-io"] }
 dbus = "0.9"
 serde = { version = "1", features = ["derive"] }
 toml = "1"

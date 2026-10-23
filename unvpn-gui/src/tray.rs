@@ -12,6 +12,8 @@ pub struct VpnTray {
     pub tx: Tx,
     /// Active profile name (tooltip while connected); set by the GUI.
     pub profile: Arc<Mutex<String>>,
+    /// Saved profile names, in the GUI's order — one menu entry each.
+    pub profiles: Arc<Mutex<Vec<String>>>,
 }
 
 impl VpnTray {
@@ -21,6 +23,10 @@ impl VpnTray {
 }
 
 impl ksni::Tray for VpnTray {
+    // A left click opens the menu (pick a profile and connect, NetworkManager-style)
+    // instead of the window; "Show unvpn" is in the menu.
+    const MENU_ON_ACTIVATE: bool = true;
+
     fn id(&self) -> String {
         "unvpn".into()
     }
@@ -63,30 +69,65 @@ impl ksni::Tray for VpnTray {
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
         use ksni::menu::*;
         let state = self.state.lock().unwrap().clone();
-        let connected = matches!(state, State::Connected | State::Connecting);
-        let label = match state {
-            State::Connected | State::Connecting => "Disconnect",
-            State::Disconnecting => "Disconnecting…",
-            _ => "Connect…",
+        let active = self.profile.lock().unwrap().clone();
+        let up = matches!(state, State::Connected | State::Connecting);
+
+        let status = match &state {
+            State::Connected => format!("Connected — {active}"),
+            State::Connecting => format!("Connecting to {active}…"),
+            State::Disconnecting => "Disconnecting…".to_string(),
+            State::Error(_) => "Connection failed".to_string(),
+            State::Disconnected => "Disconnected".to_string(),
         };
-        vec![
+        let mut items: Vec<MenuItem<Self>> = vec![
+            StandardItem { label: status, enabled: false, ..Default::default() }.into(),
+            MenuItem::Separator,
+        ];
+
+        let profiles = self.profiles.lock().unwrap().clone();
+        if profiles.is_empty() {
+            items.push(
+                StandardItem { label: "No saved profiles".into(), enabled: false, ..Default::default() }.into(),
+            );
+        }
+        // Picking the active profile disconnects it; picking another one switches.
+        for name in profiles {
+            let checked = up && name == active;
+            items.push(
+                CheckmarkItem {
+                    // `_` marks an access key in dbusmenu labels; keep it literal.
+                    label: name.replace('_', "__"),
+                    checked,
+                    enabled: state != State::Disconnecting,
+                    activate: Box::new(move |t: &mut Self| {
+                        t.send(if checked { TrayCmd::Disconnect } else { TrayCmd::ConnectProfile(name.clone()) })
+                    }),
+                    ..Default::default()
+                }
+                .into(),
+            );
+        }
+
+        items.push(MenuItem::Separator);
+        if up {
+            items.push(
+                StandardItem {
+                    label: "Disconnect".into(),
+                    activate: Box::new(|t: &mut Self| t.send(TrayCmd::Disconnect)),
+                    ..Default::default()
+                }
+                .into(),
+            );
+        }
+        items.push(
             StandardItem {
                 label: "Show unvpn".into(),
                 activate: Box::new(|t: &mut Self| t.send(TrayCmd::Show)),
                 ..Default::default()
             }
             .into(),
-            MenuItem::Separator,
-            StandardItem {
-                label: label.into(),
-                enabled: state != State::Disconnecting,
-                activate: Box::new(move |t: &mut Self| {
-                    t.send(if connected { TrayCmd::Disconnect } else { TrayCmd::Connect })
-                }),
-                ..Default::default()
-            }
-            .into(),
-            MenuItem::Separator,
+        );
+        items.push(
             StandardItem {
                 label: "Quit".into(),
                 icon_name: "application-exit".into(),
@@ -94,7 +135,8 @@ impl ksni::Tray for VpnTray {
                 ..Default::default()
             }
             .into(),
-        ]
+        );
+        items
     }
 }
 
