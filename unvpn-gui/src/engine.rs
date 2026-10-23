@@ -40,8 +40,9 @@ pub enum EngineEvent {
     Dns(String),
     Prompt(AuthPrompt),
     /// SAML: show `login` in the embedded SSO window and answer the pending
-    /// `sso` prompt with what `watch` captures.
-    SsoBrowser { login: String, watch: SsoWatch },
+    /// `sso` prompt with what `watch` captures. `user_agent`, when set, overrides
+    /// the sign-in window's User-Agent (e.g. to present as Windows).
+    SsoBrowser { login: String, watch: SsoWatch, user_agent: Option<String> },
     StateChanged,
 }
 
@@ -55,6 +56,10 @@ pub enum SsoWatch {
     /// the flow (`saml-username` + `prelogin-cookie`/`portal-userauthcookie`), or
     /// as a navigation to `globalprotectcallback:`.
     GpHeaders,
+    /// Fortinet: nothing to scrape — the IdP redirects to `http://127.0.0.1:<port>`
+    /// and the engine's own loopback listener takes the token. The window just
+    /// hosts the login and closes when it reaches loopback (or the tunnel is up).
+    Loopback,
 }
 
 pub enum TrayCmd {
@@ -213,6 +218,7 @@ impl Vpn {
         stdin_lines: Vec<String>,
         label: String,
         saml_entry: Option<String>,
+        sso_user_agent: Option<String>,
     ) {
         if self.is_busy() {
             return;
@@ -257,6 +263,7 @@ impl Vpn {
             let state = self.state.clone();
             let gen = self.gen.clone();
             let saml_entry = saml_entry.clone();
+            let sso_user_agent = sso_user_agent.clone();
             let tx = self.tx.clone();
             std::thread::spawn(move || {
                 let mut saml_opened = false;
@@ -300,6 +307,7 @@ impl Vpn {
                                     let _ = tx.try_send(UiMsg::Engine(EngineEvent::SsoBrowser {
                                         login: url.to_string(),
                                         watch: SsoWatch::GpHeaders,
+                                        user_agent: sso_user_agent.clone(),
                                     }));
                                 } else if gp_https {
                                     let _ = Command::new("xdg-open").arg(url).spawn();
@@ -314,6 +322,18 @@ impl Vpn {
                                         let _ = tx.try_send(UiMsg::Engine(EngineEvent::SsoBrowser {
                                             login: url.to_string(),
                                             watch: SsoWatch::Cookie { final_url: f.clone(), cookie: c.clone() },
+                                            user_agent: sso_user_agent.clone(),
+                                        }));
+                                    }
+                                    // Fortinet (no cookie/headers to scrape): host the login in
+                                    // the embedded window only when a UA override is set — that's
+                                    // the whole point of routing it here instead of the browser.
+                                    // Otherwise keep the default: open the user's own browser.
+                                    _ if cfg!(feature = "webview") && sso_user_agent.is_some() => {
+                                        let _ = tx.try_send(UiMsg::Engine(EngineEvent::SsoBrowser {
+                                            login: url.to_string(),
+                                            watch: SsoWatch::Loopback,
+                                            user_agent: sso_user_agent.clone(),
                                         }));
                                     }
                                     _ => {

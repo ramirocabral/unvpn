@@ -68,6 +68,9 @@ pub struct Ikev2Session {
     pub nr: Vec<u8>,
     /// The IKE_SA_INIT request exactly as sent (RealMessage1 for AUTH).
     pub real_msg1: Vec<u8>,
+    /// The IKE_SA_INIT response exactly as received (RealMessage2), used to
+    /// verify the gateway's AUTH payload.
+    pub real_msg2: Vec<u8>,
     /// Message id for the next initiator exchange (IKE_AUTH starts at 1).
     pub next_msg_id: u32,
     /// ESP SPI we propose (gateway's SPI learned from its SA response).
@@ -96,6 +99,7 @@ impl Ikev2Session {
             ni: random(32),
             nr: Vec::new(),
             real_msg1: Vec::new(),
+            real_msg2: Vec::new(),
             next_msg_id: 1,
             esp_spi_i: esp_spi,
             esp_spi_r: 0,
@@ -157,6 +161,10 @@ impl Ikev2Session {
         let (hdr, rest) = wire::parse_header(raw)?;
         let payloads = wire::parse_payloads(hdr.first_payload, rest)?;
 
+        if std::env::var("UNVPN_VERBOSE").is_ok() {
+            dump_payloads("IKE_SA_INIT response", &payloads);
+        }
+
         // COOKIE request → caller resends IKE_SA_INIT with the cookie.
         if let Some(c) = find_notify(&payloads, NotifyType::Cookie.into()) {
             return Ok(SaInitOutcome::Cookie(c.to_vec()));
@@ -168,6 +176,10 @@ impl Ikev2Session {
         if find_notify(&payloads, NotifyType::NoProposalChosen.into()).is_some() {
             return Err("gateway rejected the IKE proposal (NO_PROPOSAL_CHOSEN)".into());
         }
+
+        // This is the real IKE_SA_INIT response (the COOKIE / INVALID_KE retries
+        // returned above): keep it verbatim as RealMessage2 for AUTH verification.
+        self.real_msg2 = raw.to_vec();
 
         self.spi_r = hdr.resp_spi;
         let ker = payloads.iter().find_map(|p| match p {
@@ -233,6 +245,19 @@ impl Ikev2Session {
     /// Initiator's signed octets for the AUTH payload.
     pub fn initiator_signed_octets(&self, idi_body: &[u8]) -> Vec<u8> {
         self.crypto().initiator_signed_octets(&self.real_msg1, &self.nr, &self.keys().sk_pi, idi_body)
+    }
+
+    /// The responder's signed octets (`RealMessage2 | Ni | prf(SK_pr, IDr')`),
+    /// which the gateway's AUTH payload is computed over.
+    pub fn responder_signed_octets(&self, idr_body: &[u8]) -> Vec<u8> {
+        self.crypto().responder_signed_octets(&self.real_msg2, &self.ni, &self.keys().sk_pr, idr_body)
+    }
+
+    /// Whether the gateway's shared-key (PSK) AUTH payload verifies against the
+    /// given group pre-shared key — i.e. the peer proves it holds the same PSK.
+    pub fn gateway_psk_auth_matches(&self, psk: &[u8], idr_body: &[u8], auth: &[u8]) -> bool {
+        let signed = self.responder_signed_octets(idr_body);
+        self.crypto().psk_auth(psk, &signed) == auth
     }
 
     /// Learn the gateway's ESP SPI from its CHILD SA proposal in the IKE_AUTH reply.
@@ -322,6 +347,93 @@ fn nat_hash(spi_i: &[u8; 8], spi_r: &[u8; 8], ip: Ipv4Addr, port: u16) -> Vec<u8
     h.finish().unwrap().to_vec()
 }
 
+/// Human-readable dump of a parsed payload chain, for `UNVPN_VERBOSE` exploration.
+/// Prints structure only (no key material); for a responder message the only
+/// secret-ish bytes are the public DH value and nonce, shown as lengths.
+pub fn dump_payloads(label: &str, payloads: &[Payload]) {
+    eprintln!("# [verbose] {label}: {} payload(s)", payloads.len());
+    for p in payloads {
+        match p {
+            Payload::Sa(props) => {
+                for pr in props {
+                    let proto = match pr.protocol { 1 => "IKE", 2 => "AH", 3 => "ESP", o => return_proto(o) };
+                    eprintln!("#   SA proposal #{} proto={proto} spi={}", pr.num, hex(&pr.spi));
+                    for t in &pr.transforms {
+                        eprintln!("#     transform {} = {}", xf_type(t.ttype), xf_name(t.ttype, t.id, t.key_len));
+                    }
+                }
+            }
+            Payload::Ke { group, data } => eprintln!("#   KE group={group} ({} bytes)", data.len()),
+            Payload::Nonce(n) => eprintln!("#   Nonce ({} bytes)", n.len()),
+            Payload::IdI { kind, data } => eprintln!("#   IDi kind={kind} {}", String::from_utf8_lossy(data)),
+            Payload::IdR { kind, data } => eprintln!("#   IDr kind={kind} {}", String::from_utf8_lossy(data)),
+            Payload::Cert { encoding, data } => eprintln!("#   CERT enc={encoding} ({} bytes)", data.len()),
+            Payload::CertReq { encoding, data } => eprintln!("#   CERTREQ enc={encoding} ({} bytes)", data.len()),
+            Payload::Auth { method, data } => eprintln!("#   AUTH method={method} ({} bytes)", data.len()),
+            Payload::Notify(n) => {
+                let name = notify_name(n.ntype);
+                eprintln!(
+                    "#   Notify {} (0x{:04x}){} proto={} spi={} data[{}]={}",
+                    name, n.ntype,
+                    if n.ntype >= 16384 { " status" } else { " ERROR" },
+                    n.protocol, hex(&n.spi), n.data.len(), preview(&n.data),
+                );
+            }
+            Payload::Delete { protocol, spi_size, spis } => {
+                eprintln!("#   Delete proto={protocol} spi_size={spi_size} count={}", spis.len())
+            }
+            Payload::VendorId(v) => eprintln!("#   VendorID ({} bytes) {}", v.len(), hex(v)),
+            Payload::Tsi(ts) | Payload::Tsr(ts) => {
+                eprintln!("#   TS ({} selector(s))", ts.len());
+                for s in ts { eprintln!("#     {}", ts_str(s)); }
+            }
+            Payload::Cp { cfg_type, attrs } => {
+                eprintln!("#   CP type={cfg_type} ({} attr(s))", attrs.len());
+                for (a, v) in attrs { eprintln!("#     attr 0x{a:04x} ({} bytes) {}", v.len(), hex(v)); }
+            }
+            Payload::Eap(d) => eprintln!("#   EAP ({} bytes) {}", d.len(), hex(d)),
+            Payload::Raw(t, d) => eprintln!("#   Raw type={t} ({} bytes) {}", d.len(), hex(d)),
+        }
+    }
+}
+
+fn return_proto(o: u8) -> &'static str { Box::leak(format!("proto{o}").into_boxed_str()) }
+fn xf_type(t: u8) -> &'static str {
+    match t { 1 => "ENCR", 2 => "PRF", 3 => "INTEG", 4 => "DH", 5 => "ESN", _ => "?" }
+}
+fn xf_name(ttype: u8, id: u16, kl: Option<u16>) -> String {
+    let base = match (ttype, id) {
+        (1, 3) => "3DES".into(), (1, 12) => "AES-CBC".into(), (1, 20) => "AES-GCM-16".into(),
+        (1, 18) => "AES-GCM-8".into(), (1, 28) => "CHACHA20POLY1305".into(),
+        (2, 2) => "HMAC-SHA1".into(), (2, 5) => "HMAC-SHA256".into(), (2, 6) => "HMAC-SHA384".into(), (2, 7) => "HMAC-SHA512".into(),
+        (3, 2) => "HMAC-SHA1-96".into(), (3, 12) => "HMAC-SHA256-128".into(), (3, 13) => "HMAC-SHA384-192".into(), (3, 14) => "HMAC-SHA512-256".into(),
+        (4, g) => format!("MODP/ECP group {g}"),
+        (5, 0) => "ESN=no".into(), (5, 1) => "ESN=yes".into(),
+        _ => format!("id {id}"),
+    };
+    match kl { Some(b) => format!("{base}/{b}"), None => base }
+}
+fn notify_name(t: u16) -> &'static str {
+    match t {
+        14 => "NO_PROPOSAL_CHOSEN", 17 => "INVALID_KE_PAYLOAD", 24 => "AUTHENTICATION_FAILED",
+        16388 => "NAT_DETECTION_SOURCE_IP", 16389 => "NAT_DETECTION_DESTINATION_IP", 16390 => "COOKIE",
+        16391 => "USE_TRANSPORT_MODE", 16393 => "REKEY_SA", 16396 => "MOBIKE_SUPPORTED",
+        16417 => "EAP_ONLY_AUTHENTICATION", 16406 => "REDIRECT_SUPPORTED",
+        0xF050 => "FORTI_VPN_NETWORK_ID", 0xF100 => "FORTI_FORTICLIENT_CONNECT",
+        0xF103 => "FORTI_DEV_ID_NOTIFY", 0xF118 => "FORTI_CLIENT_RESUME",
+        _ => "?",
+    }
+}
+fn ts_str(s: &wire::TrafficSelector) -> String {
+    let a = |v: &[u8]| v.iter().map(|b| b.to_string()).collect::<Vec<_>>().join(".");
+    format!("type={} proto={} ports {}-{} addr {}-{}", s.ts_type, s.ip_protocol, s.start_port, s.end_port, a(&s.start_addr), a(&s.end_addr))
+}
+fn hex(b: &[u8]) -> String { b.iter().map(|x| format!("{x:02x}")).collect() }
+fn preview(d: &[u8]) -> String {
+    let printable = d.iter().all(|&b| b == b'\n' || (0x20..0x7f).contains(&b));
+    if printable && !d.is_empty() { format!("{:?}", String::from_utf8_lossy(d)) } else { hex(d) }
+}
+
 /// Encode header + SK payload (IV | ciphertext | ICV) for `inner` payloads.
 pub fn encrypt_message(
     crypto: &Ikev2Crypto,
@@ -408,7 +520,7 @@ mod tests {
     #[test]
     fn sa_init_request_parses_back() {
         let mut s = Ikev2Session::new(IkeSuite::default_fgt(), EspSuite::default_fgt()).unwrap();
-        let b = s.build_sa_init(Ipv4Addr::new(192, 168, 1, 10), 500, Ipv4Addr::new(187, 214, 28, 2), 500, None);
+        let b = s.build_sa_init(Ipv4Addr::new(192, 168, 1, 10), 500, Ipv4Addr::new(203, 0, 113, 2), 500, None);
         let (hdr, rest) = wire::parse_header(&b).unwrap();
         assert_eq!(hdr.exchange, u8::from(ExchangeType::IkeSaInit));
         assert_eq!(hdr.flags, FLAG_INITIATOR);
@@ -446,5 +558,35 @@ mod tests {
         let n = msg.len();
         msg[n - 1] ^= 0xff;
         assert!(decrypt_message(&crypto, &sk_e, &sk_a, &msg).is_err());
+    }
+
+    #[test]
+    fn gateway_psk_auth_verifies_and_rejects() {
+        // Give a session a known crypto + keys and a fabricated SA_INIT transcript,
+        // act as the gateway to produce its shared-key AUTH, then check that the
+        // right PSK verifies and that a wrong PSK or a tampered IDr are rejected.
+        let mut s = Ikev2Session::new(IkeSuite::default_fgt(), EspSuite::default_fgt()).unwrap();
+        s.real_msg2 = b"IKE_SA_INIT response bytes".to_vec();
+        s.ni = vec![0x5a; 32];
+        s.crypto = Some(Ikev2Crypto::new(PRF_HMAC_SHA256, INTEG_HMAC_SHA256_128, ENCR_AES_CBC, 256).unwrap());
+        s.keys = Some(SaKeys {
+            sk_d: vec![], sk_ai: vec![], sk_ar: vec![], sk_ei: vec![], sk_er: vec![],
+            sk_pi: vec![0x11; 32], sk_pr: vec![0x22; 32],
+        });
+
+        let fqdn: u8 = IdType::Fqdn.into();
+        let mut idr_body = vec![fqdn, 0, 0, 0];
+        idr_body.extend_from_slice(b"gw.example.net");
+
+        let psk = b"group-secret";
+        // Gateway side: AUTH = psk_auth(PSK, responder_signed_octets).
+        let signed = s.responder_signed_octets(&idr_body);
+        let gw_auth = s.crypto.as_ref().unwrap().psk_auth(psk, &signed);
+
+        assert!(s.gateway_psk_auth_matches(psk, &idr_body, &gw_auth));
+        assert!(!s.gateway_psk_auth_matches(b"wrong-psk", &idr_body, &gw_auth));
+        let mut tampered = idr_body.clone();
+        *tampered.last_mut().unwrap() ^= 0xff;
+        assert!(!s.gateway_psk_auth_matches(psk, &tampered, &gw_auth));
     }
 }

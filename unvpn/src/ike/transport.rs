@@ -25,6 +25,17 @@ impl IkeUdp {
         Ok(IkeUdp { sock, natt })
     }
 
+    /// Float this same socket onto NAT-T: keep the local source port (so the NAT
+    /// mapping and the IKE SA the responder associated with it survive), just point
+    /// it at the gateway's 4500 and start prepending the Non-ESP marker. Reusing the
+    /// socket — rather than opening a fresh one with a new ephemeral source port — is
+    /// what lets a strict responder (e.g. FortiGate) still match the half-open IKE SA.
+    pub fn float_to_natt(&mut self, gateway: &str) -> Result<(), String> {
+        self.sock.connect((gateway, 4500u16)).map_err(e)?;
+        self.natt = true;
+        Ok(())
+    }
+
     /// The source IPv4 the kernel picked for this gateway route (for NAT-D).
     pub fn local_ipv4(&self) -> Ipv4Addr {
         match self.sock.local_addr().map(|a| a.ip()) {

@@ -52,14 +52,23 @@ pub fn open(
     parent: &impl IsA<gtk::Window>,
     login: &str,
     watch: &SsoWatch,
+    user_agent: Option<&str>,
     on_done: impl Fn(Result<String, String>) + 'static,
 ) -> adw::Window {
     let session = SESSION.with(|s| s.clone());
     let view = webkit6::WebView::builder().network_session(&session).vexpand(true).hexpand(true).build();
 
+    // Override the User-Agent (e.g. present as Windows) before the first load, so
+    // the IdP's device-platform check sees it.
+    if let Some(ua) = user_agent.filter(|u| !u.is_empty()) {
+        if let Some(s) = webkit6::prelude::WebViewExt::settings(&view) {
+            s.set_user_agent(Some(ua));
+        }
+    }
+
     let shown_url = match watch {
         SsoWatch::Cookie { final_url, .. } => final_url.as_str(),
-        SsoWatch::GpHeaders => login,
+        SsoWatch::GpHeaders | SsoWatch::Loopback => login,
     };
     let host = if shown_url.starts_with("data:") { String::new() } else { shown_url.split('/').nth(2).unwrap_or_default().to_string() };
     let header = adw::HeaderBar::builder()
@@ -94,6 +103,10 @@ pub fn open(
         SsoWatch::Cookie { final_url, cookie } => (final_url.clone(), cookie.clone()),
         SsoWatch::GpHeaders => {
             watch_gp(&view, &win, finish.clone());
+            (String::new(), String::new())
+        }
+        SsoWatch::Loopback => {
+            watch_loopback(&view, &win, finish.clone());
             (String::new(), String::new())
         }
     };
@@ -185,6 +198,32 @@ pub fn open(
     }
     win.present();
     win
+}
+
+/// Fortinet: the login ends by redirecting to the engine's loopback listener
+/// (`http://127.0.0.1:<port>` / `http://localhost:<port>`). Nothing to scrape —
+/// once the window reaches loopback the engine already took the token, so finish
+/// and close the window. The data path comes up from the engine side.
+fn watch_loopback(view: &webkit6::WebView, win: &adw::Window, finish: Rc<dyn Fn(Result<String, String>)>) {
+    view.connect_load_changed({
+        let finish = finish.clone();
+        let win = win.downgrade();
+        move |v, ev| {
+            if ev != webkit6::LoadEvent::Finished {
+                return;
+            }
+            let Some(uri) = v.uri() else { return };
+            if uri.starts_with("http://127.0.0.1") || uri.starts_with("http://localhost") {
+                finish(Ok(String::new()));
+                let win = win.clone();
+                glib::idle_add_local_once(move || {
+                    if let Some(w) = win.upgrade() {
+                        w.close();
+                    }
+                });
+            }
+        }
+    });
 }
 
 /// GlobalProtect: finish on the response headers of a page that completes the

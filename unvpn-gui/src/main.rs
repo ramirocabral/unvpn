@@ -89,6 +89,7 @@ struct App {
     form_group: adw::PreferencesGroup,
     name_row: adw::EntryRow,
     backend_row: adw::ComboRow,
+    forti_proto_row: adw::ComboRow,
     gateway_row: adw::EntryRow,
     browse_btn: gtk::Button,
     user_row: adw::EntryRow,
@@ -97,6 +98,8 @@ struct App {
     remember_key_pass_row: adw::SwitchRow,
     token_row: adw::EntryRow,
     realm_row: adw::EntryRow,
+    psk_row: adw::PasswordEntryRow,
+    ua_row: adw::EntryRow,
     sso_row: adw::ComboRow,
     remember_row: adw::SwitchRow,
     save_btn: gtk::Button,
@@ -174,8 +177,13 @@ impl App {
 
         let name_row = adw::EntryRow::builder().title("Profile name").build();
 
-        let backend_model = gtk::StringList::new(&["Check Point", "FortiClient", "F5", "AnyConnect (Cisco)", "GlobalProtect", "OpenVPN", "WireGuard", "FortiClient IPsec"]);
+        let backend_model = gtk::StringList::new(&["Check Point", "FortiClient", "F5", "AnyConnect (Cisco)", "GlobalProtect", "OpenVPN", "WireGuard"]);
         let backend_row = adw::ComboRow::builder().title("VPN client").model(&backend_model).build();
+        // FortiClient speaks two unrelated protocols; one dropdown entry, this
+        // selector picks SSL-VPN vs IPsec (shown only for FortiClient).
+        let forti_proto_model = gtk::StringList::new(&["SSL-VPN", "IPsec"]);
+        let forti_proto_row = adw::ComboRow::builder().model(&forti_proto_model).build();
+        forti_proto_row.set_title("Protocol");
 
         let gateway_row = adw::EntryRow::builder().title("Gateway").build();
         let browse_btn = gtk::Button::builder()
@@ -199,6 +207,12 @@ impl App {
         let auth_model = gtk::StringList::new(&["Password", "SSO / SAML"]);
         let sso_row = adw::ComboRow::builder().title("Authentication").model(&auth_model).build();
         let realm_row = adw::EntryRow::builder().title("Realm (optional)").build();
+        // FortiClient IPsec pre-shared key. Mirrors the official client, where the
+        // pre-shared key is a required credential (the user auth — EAP + OTP — rides
+        // on top). We also use it to verify the gateway's AUTH.
+        let psk_row = adw::PasswordEntryRow::new();
+        psk_row.set_title("Pre-shared key");
+        let ua_row = adw::EntryRow::builder().title("SSO User-Agent (optional)").build();
 
         let remember_row = adw::SwitchRow::builder()
             .title("Remember password")
@@ -211,9 +225,12 @@ impl App {
         form_group.set_header_suffix(Some(&save_btn));
         form_group.add(&name_row);
         form_group.add(&backend_row);
+        form_group.add(&forti_proto_row);
         form_group.add(&sso_row);
         form_group.add(&gateway_row);
         form_group.add(&realm_row);
+        form_group.add(&psk_row);
+        form_group.add(&ua_row);
         form_group.add(&user_row);
         form_group.add(&password_row);
         form_group.add(&key_pass_row);
@@ -325,6 +342,7 @@ impl App {
             form_group,
             name_row,
             backend_row,
+            forti_proto_row,
             gateway_row,
             browse_btn,
             user_row,
@@ -333,6 +351,8 @@ impl App {
             remember_key_pass_row,
             token_row,
             realm_row,
+            psk_row,
+            ua_row,
             sso_row,
             remember_row,
             save_btn,
@@ -382,6 +402,10 @@ impl App {
             app.update_form_visibility();
             app.sync_ui();
         }));
+        app.forti_proto_row.connect_selected_notify(glib::clone!(#[strong] app, move |_| {
+            app.update_form_visibility();
+            app.sync_ui();
+        }));
 
         app.gateway_row.connect_changed(glib::clone!(#[strong] app, move |_| {
             if app.backend() == Backend::OpenVpn {
@@ -393,6 +417,7 @@ impl App {
         app.user_row.connect_changed(glib::clone!(#[strong] app, move |_| app.sync_ui()));
         app.token_row.connect_changed(glib::clone!(#[strong] app, move |_| app.sync_ui()));
         app.password_row.connect_changed(glib::clone!(#[strong] app, move |_| app.sync_ui()));
+        app.psk_row.connect_changed(glib::clone!(#[strong] app, move |_| app.sync_ui()));
 
         app.connect_btn.connect_clicked(glib::clone!(#[strong] app, move |_| app.on_connect_clicked()));
         app.save_btn.connect_clicked(glib::clone!(#[strong] app, move |_| app.save_profile()));
@@ -420,7 +445,14 @@ impl App {
     }
 
     fn backend(&self) -> Backend {
-        Backend::from_index(self.backend_row.selected())
+        let b = Backend::from_index(self.backend_row.selected());
+        // The "FortiClient" entry is SSL-VPN by default; the protocol selector
+        // promotes it to the IPsec backend.
+        if b == Backend::Forti && self.forti_proto_row.selected() == 1 {
+            Backend::FortiIpsec
+        } else {
+            b
+        }
     }
     fn sso(&self) -> bool {
         self.backend().has_sso() && self.sso_row.selected() == 1
@@ -429,6 +461,7 @@ impl App {
     fn update_form_visibility(&self) {
         let b = self.backend();
         let forti = b == Backend::Forti;
+        let fortiipsec = b == Backend::FortiIpsec;
         let cp = b == Backend::CheckPoint;
         let anyconnect = b == Backend::AnyConnect;
         let gp = b == Backend::GlobalProtect;
@@ -452,16 +485,27 @@ impl App {
             "Gateway"
         });
 
+        // The SSL-VPN/IPsec selector only applies to the FortiClient entry.
+        self.forti_proto_row.set_visible(forti || fortiipsec);
         self.sso_row.set_visible(b.has_sso());
-        // The realm row doubles as AnyConnect's tunnel group / GlobalProtect's gateway.
-        self.realm_row.set_visible(forti || b.uses_group());
+        // The realm row doubles as AnyConnect's tunnel group / GlobalProtect's
+        // gateway / FortiClient IPsec's dialup group (localid).
+        self.realm_row.set_visible(forti || fortiipsec || b.uses_group());
         self.realm_row.set_title(if anyconnect {
             "Group (optional)"
         } else if gp {
             "Gateway (optional)"
+        } else if fortiipsec {
+            // FortiClient calls this the Phase1 "Local ID" and treats it as optional.
+            "Local ID (optional)"
         } else {
             "Realm (optional)"
         });
+        // Group PSK only applies to the FortiClient IPsec backend.
+        self.psk_row.set_visible(fortiipsec);
+        // The SSO User-Agent override only matters for a SAML login in the embedded
+        // window — show it when SSO is the chosen auth for an SSO-capable backend.
+        self.ua_row.set_visible(b.has_sso() && saml);
         self.user_row.set_visible(need_creds);
         self.password_row.set_visible(need_creds);
         self.remember_row.set_visible(need_creds);
@@ -476,7 +520,13 @@ impl App {
         let gw = !self.gateway_row.text().trim().is_empty();
         match self.backend() {
             Backend::Forti | Backend::AnyConnect | Backend::GlobalProtect if self.sso() => gw,
-            Backend::Forti | Backend::F5 | Backend::AnyConnect | Backend::GlobalProtect | Backend::FortiIpsec => {
+            Backend::FortiIpsec => {
+                // Match the official client: the pre-shared key is required.
+                gw && !self.user_row.text().trim().is_empty()
+                    && !self.password_row.text().is_empty()
+                    && !self.psk_row.text().is_empty()
+            }
+            Backend::Forti | Backend::F5 | Backend::AnyConnect | Backend::GlobalProtect => {
                 gw && !self.user_row.text().trim().is_empty()
                     && !self.password_row.text().is_empty()
             }
@@ -586,12 +636,16 @@ impl App {
 
     fn load_profile(&self, p: &Profile) {
         self.backend_row.set_selected(p.backend.index());
+        self.forti_proto_row.set_selected(if p.backend == Backend::FortiIpsec { 1 } else { 0 });
         self.sso_row.set_selected(if p.sso { 1 } else { 0 });
         self.name_row.set_text(&p.name);
         self.gateway_row.set_text(&p.gateway);
         self.user_row.set_text(&p.user);
         // realm_row doubles as AnyConnect's group / GlobalProtect's gateway field.
         self.realm_row.set_text(if p.backend.uses_group() { &p.group } else { &p.realm });
+        // Group PSK lives in the keyring (like the password), keyed per profile.
+        self.psk_row.set_text(&profiles::secret_get(&profiles::psk_account(&p.name)).unwrap_or_default());
+        self.ua_row.set_text(&p.sso_user_agent);
         self.remember_row.set_active(p.remember_password);
         self.token_row.set_text("");
         let secret = if p.remember_password { profiles::secret_get(&p.name).unwrap_or_default() } else { String::new() };
@@ -642,6 +696,7 @@ impl App {
             sso: self.sso(),
             remember_password: remember,
             remember_key_pass,
+            sso_user_agent: self.ua_row.text().trim().to_string(),
         };
 
         let pw = self.password_row.text().to_string();
@@ -651,6 +706,19 @@ impl App {
             }
         } else {
             profiles::secret_delete(&name);
+        }
+
+        // Group PSK (FortiClient IPsec only): keep it in the keyring, keyed per
+        // profile; it is config-like (shared across users) so it is always stored
+        // when present, with no separate "remember" toggle.
+        let psk_account = profiles::psk_account(&name);
+        let psk = self.psk_row.text().to_string();
+        if backend == Backend::FortiIpsec && !psk.is_empty() {
+            if !profiles::secret_set(&psk_account, &psk) {
+                self.toast("Couldn't save the group PSK to the keyring");
+            }
+        } else {
+            profiles::secret_delete(&psk_account);
         }
 
         {
@@ -673,6 +741,7 @@ impl App {
     fn delete_profile(&self, name: &str) {
         profiles::secret_delete(name);
         profiles::secret_delete(&profiles::keypass_account(name));
+        profiles::secret_delete(&profiles::psk_account(name));
         {
             let mut profs = self.profiles.borrow_mut();
             profs.retain(|e| e.name != name);
@@ -690,6 +759,8 @@ impl App {
         self.key_pass_row.set_text("");
         self.remember_key_pass_row.set_active(false);
         self.realm_row.set_text("");
+        self.psk_row.set_text("");
+        self.ua_row.set_text("");
         self.token_row.set_text("");
         self.remember_row.set_active(false);
         self.update_form_visibility();
@@ -732,6 +803,11 @@ impl App {
         let gw = self.gateway_row.text().trim().to_string();
         let user = self.user_row.text().trim().to_string();
         let realm = self.realm_row.text().trim().to_string();
+        // SSO User-Agent override for the embedded sign-in window (empty ⇒ none).
+        let sso_ua = {
+            let u = self.ua_row.text().trim().to_string();
+            (self.sso() && !u.is_empty()).then_some(u)
+        };
         let label = format!("connecting to {gw}");
 
         *self.active_profile.lock().unwrap() = {
@@ -775,11 +851,25 @@ impl App {
             // IKEv2 + EAP: password piped on stdin; the OTP/token is collected at
             // runtime via `# AUTH-PROMPT: code:` (it doesn't exist until the password
             // is accepted), exactly like Forti/F5.
-            Backend::FortiIpsec => (
-                vec!["forti-ipsec".into(), "-g".into(), gw.clone(), "-u".into(), user, "--connect".into()],
-                vec![self.password_row.text().to_string()],
-                None,
-            ),
+            Backend::FortiIpsec => {
+                let mut args: Vec<String> = vec!["forti-ipsec".into(), "-g".into(), gw.clone()];
+                // The dialup group (localid) selects the gateway's phase1; without a
+                // matching one the FortiGate silently drops the IKE_AUTH.
+                if !realm.is_empty() {
+                    args.push("--localid".into());
+                    args.push(realm.clone());
+                }
+                // Group PSK (optional): lets the client verify the gateway's AUTH.
+                let psk = self.psk_row.text().to_string();
+                if !psk.is_empty() {
+                    args.push("--psk".into());
+                    args.push(psk);
+                }
+                args.push("-u".into());
+                args.push(user);
+                args.push("--connect".into());
+                (args, vec![self.password_row.text().to_string()], None)
+            }
             Backend::OpenVpn => {
                 let mut args: Vec<String> = vec!["openvpn".into(), "-c".into(), gw.clone()];
                 // Pipe the password only when the engine will read one: an unexpected
@@ -836,7 +926,7 @@ impl App {
             }
         };
 
-        self.vpn.borrow_mut().connect(args, stdin_lines, label, saml);
+        self.vpn.borrow_mut().connect(args, stdin_lines, label, saml, sso_ua);
         self.sync_ui();
     }
 
@@ -847,13 +937,18 @@ impl App {
                 EngineEvent::Ip(ip) => {
                     self.ip_row.set_subtitle(&ip);
                     self.status_group.set_visible(true);
+                    // The tunnel is up; a lingering SSO window (e.g. Fortinet's
+                    // loopback login) has done its job — close it.
+                    self.close_sso_window();
                 }
                 EngineEvent::Dns(dns) => {
                     self.dns_row.set_subtitle(&dns);
                     self.dns_row.set_visible(!dns.is_empty());
                 }
                 EngineEvent::Prompt(p) => self.show_prompt(p),
-                EngineEvent::SsoBrowser { login, watch } => self.open_sso_window(&login, &watch),
+                EngineEvent::SsoBrowser { login, watch, user_agent } => {
+                    self.open_sso_window(&login, &watch, user_agent.as_deref())
+                }
                 EngineEvent::StateChanged => self.sync_ui(),
             },
             UiMsg::Tray(cmd) => self.handle_tray(cmd),
@@ -976,15 +1071,20 @@ impl App {
     /// Show the SAML login in the embedded browser; when it reaches the final page,
     /// pipe the token cookie to the engine's pending `sso` prompt — no copy/paste.
     #[cfg(feature = "webview")]
-    fn open_sso_window(&self, login: &str, watch: &SsoWatch) {
+    fn open_sso_window(&self, login: &str, watch: &SsoWatch, user_agent: Option<&str>) {
         self.close_sso_window();
+        // Fortinet's loopback flow has no token for us to hand back — the engine's
+        // own listener takes it. The window only hosts the login; don't answer a
+        // prompt (there is none), just let the tunnel come up.
+        let loopback = matches!(watch, SsoWatch::Loopback);
         let app = self.rc();
-        let win = sso::open(&self.window, login, watch, move |r| {
+        let win = sso::open(&self.window, login, watch, user_agent, move |r| {
             app.sso_window.borrow_mut().take();
             if app.vpn.borrow().state() != State::Connecting {
                 return; // aborted meanwhile
             }
             match r {
+                Ok(_) if loopback => app.append_log("→ signed in — bringing up the tunnel…"),
                 Ok(token) => {
                     app.vpn.borrow_mut().answer_prompt(&token);
                     app.append_log("→ SSO token captured from the sign-in window");
@@ -999,7 +1099,7 @@ impl App {
     }
 
     #[cfg(not(feature = "webview"))]
-    fn open_sso_window(&self, login: &str, _watch: &SsoWatch) {
+    fn open_sso_window(&self, login: &str, _watch: &SsoWatch, _user_agent: Option<&str>) {
         let _ = std::process::Command::new("xdg-open").arg(login).spawn();
     }
 

@@ -400,9 +400,13 @@ pub fn derive_msk(password: &str, nt_response: &[u8; 24]) -> [u8; 64] {
     let master = get_master_key(&phh, nt_response);
     let send = get_asymmetric_start_key(&master, MAGIC2);
     let recv = get_asymmetric_start_key(&master, MAGIC3);
+    // MSK = MasterSendKey | MasterReceiveKey | 32 zero octets. The send key comes
+    // first: validated live against strongSwan (and this is what an RFC 7296 §2.16
+    // responder — FortiGate included — verifies the EAP-keyed AUTH against). A
+    // recv|send ordering makes EAP-MSCHAPv2 succeed but the final AUTH fail.
     let mut msk = [0u8; 64];
-    msk[..16].copy_from_slice(&recv);
-    msk[16..32].copy_from_slice(&send);
+    msk[..16].copy_from_slice(&send);
+    msk[16..32].copy_from_slice(&recv);
     msk
 }
 
@@ -574,5 +578,13 @@ mod tests {
         let msk = derive_msk(PASS, &nt);
         assert_eq!(msk.len(), 64);
         assert_ne!(&msk[..16], &msk[16..32]); // send != recv
+        // Known-answer for USER/PASS = "User"/"clientPass": MSK = MasterSendKey |
+        // MasterReceiveKey | 32 zero octets. This exact ordering was confirmed live
+        // against a strongSwan responder (recv|send makes the EAP-keyed AUTH fail).
+        assert_eq!(
+            hex(&msk),
+            "d5f0e9521e3ea9589645e86051c822268b7cdc149b993a1ba118cb153f56dccb\
+             0000000000000000000000000000000000000000000000000000000000000000"
+        );
     }
 }

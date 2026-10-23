@@ -33,27 +33,29 @@ impl Backend {
     pub fn label(self) -> &'static str {
         match self {
             Backend::CheckPoint => "Check Point",
-            Backend::Forti => "FortiClient",
+            Backend::Forti => "FortiClient (SSL-VPN)",
             Backend::F5 => "F5",
             Backend::AnyConnect => "AnyConnect (Cisco)",
             Backend::GlobalProtect => "GlobalProtect",
             Backend::OpenVpn => "OpenVPN",
             Backend::WireGuard => "WireGuard",
-            Backend::FortiIpsec => "FortiClient IPsec",
+            Backend::FortiIpsec => "FortiClient (IPsec)",
         }
     }
 
-    /// Position in the backend `ComboRow`; must match its model order.
+    /// Position in the backend `ComboRow`; must match its model order. Both
+    /// FortiClient variants share one "FortiClient" entry — the SSL-VPN/IPsec
+    /// choice is a separate selector in the form — so `FortiIpsec` maps to the
+    /// same slot as `Forti`.
     pub fn index(self) -> u32 {
         match self {
             Backend::CheckPoint => 0,
-            Backend::Forti => 1,
+            Backend::Forti | Backend::FortiIpsec => 1,
             Backend::F5 => 2,
             Backend::AnyConnect => 3,
             Backend::GlobalProtect => 4,
             Backend::OpenVpn => 5,
             Backend::WireGuard => 6,
-            Backend::FortiIpsec => 7,
         }
     }
 
@@ -72,6 +74,8 @@ impl Backend {
         matches!(self, Backend::OpenVpn | Backend::WireGuard)
     }
 
+    /// The dropdown slot's primary backend. Slot 1 ("FortiClient") resolves to
+    /// `Forti`; the form's protocol selector promotes it to `FortiIpsec`.
     pub fn from_index(i: u32) -> Backend {
         match i {
             1 => Backend::Forti,
@@ -80,7 +84,6 @@ impl Backend {
             4 => Backend::GlobalProtect,
             5 => Backend::OpenVpn,
             6 => Backend::WireGuard,
-            7 => Backend::FortiIpsec,
             _ => Backend::CheckPoint,
         }
     }
@@ -106,6 +109,12 @@ pub struct Profile {
     pub remember_password: bool,
     #[serde(default)]
     pub remember_key_pass: bool,
+    /// Optional User-Agent for the embedded SSO sign-in window. Empty ⇒ default
+    /// (WebKit's own, i.e. Linux). Set a Windows UA to pass an Entra/Azure
+    /// Conditional Access "device platform" filter that blocks Linux. Only the
+    /// SAML login is affected; the VPN data path is unchanged.
+    #[serde(default)]
+    pub sso_user_agent: String,
 }
 
 impl Profile {
@@ -245,4 +254,9 @@ pub fn secret_delete(name: &str) {
 
 pub fn keypass_account(name: &str) -> String {
     format!("{name}#keypass")
+}
+
+/// Keyring account for a profile's FortiClient IPsec group pre-shared key.
+pub fn psk_account(name: &str) -> String {
+    format!("{name}#psk")
 }

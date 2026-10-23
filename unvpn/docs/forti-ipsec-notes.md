@@ -5,7 +5,20 @@ Distinct from the existing Fortinet **SSL-VPN** back-end (`src/forti/`, PPP over
 TLS/DTLS): this is IPsec.
 
 Subcommand: `unvpn forti-ipsec -g <host[:port]> -u <user> [--password p]
-[--code otp] [--emssn SN] [--probe|--login|--connect] [--no-routes]`.
+[--code otp] [--emssn SN] [--localid id] [--id-type fqdn|rfc822|keyid]
+[--psk key] [--probe|--auth-probe|--login|--connect] [--no-routes]`.
+
+`--psk` is the dialup group pre-shared key. It is *not* needed to authenticate
+(the client's final AUTH is keyed by the EAP MSK), but when supplied it verifies
+the gateway's own AUTH (shared-key, method 2): a mismatch aborts, which detects a
+wrong gateway or a man-in-the-middle.
+
+Modes: `--probe` does IKE_SA_INIT only; `--auth-probe` additionally sends the first
+IKE_AUTH with a throwaway identity and no credentials, then dumps the gateway's
+reply (which EAP method it offers, PSK vs cert, or whether an EMS/ZTNA gate drops
+it first); `--login` authenticates and negotiates the CHILD SA but stops before the
+data plane; `--connect` runs the tunnel. `UNVPN_VERBOSE=1` dumps every parsed
+payload chain (structure only, no key material).
 
 ## Where this came from (RE)
 
@@ -78,12 +91,80 @@ PRF-SHA256 (FortiGate's common dialup default):
 
 ## Status
 
-- **Offline-tested**: 35 unit tests — wire framing, IKEv2 crypto ladder, EAP RFC
-  vectors (MD4/DES/NT-Response/MasterKey), SK encrypt+ICV round-trip, config parse.
-- **`--probe`** (IKE_SA_INIT only) is ready to run against any FortiGate IPsec
-  gateway and report its proposal + NAT state.
-- **NOT yet live-validated**: the EAP auth + ESP data plane are implemented per RFC
-  but unverified against a real gateway. No FortiGate IPsec gateway/creds on hand.
+- **Offline-tested**: 36 unit tests — wire framing, IKEv2 crypto ladder, EAP RFC
+  vectors (MD4/DES/NT-Response/MasterKey + the MSK known-answer), SK encrypt+ICV
+  round-trip, config parse.
+- **Live-validated against strongSwan** (a local IKEv2 responder, EAP-MSCHAPv2):
+  IKE_SA_INIT → first IKE_AUTH → full EAP-MSCHAPv2 loop → final AUTH → CHILD SA with
+  an assigned internal IP from the pool. This exercises the real SK crypto
+  (SKEYSEED/prf+/SK_* keys, AES-CBC, ICV), the EAP state machine, the MSK, the
+  EAP-keyed AUTH, and the CP(CFG_REPLY) parse against an independent implementation.
+- **MSK ordering fixed here**: the EAP-MSCHAPv2 MSK is `MasterSendKey |
+  MasterReceiveKey | 32 zero octets`. A `recv|send` ordering lets EAP-MSCHAPv2
+  *succeed* (the server establishes the MSK) but makes the final `AUTH` fail
+  verification — charon logs exactly that. Now pinned by a known-answer test.
+- **Against the live managed FortiGate**: `--probe` succeeds — the gateway accepts
+  the single offered suite (AES-CBC-256 / PRF-SHA256 / SHA256-128 / MODP2048),
+  returns a 16-byte nonce, no VendorID, and signals NAT (→ NAT-T 4500). The first
+  **IKE_AUTH then starts the EAP exchange**: the gateway replies with its `IDr`,
+  an `AUTH` of method 2 (**shared-key MIC — it authenticates by PSK**), and an
+  **EAP-Request/Identity** — i.e. it accepts the message and asks for the user
+  identity, before any credential or EMS serial is presented (we sent none).
+- **The dialup group ID (`IDi`) is what the gateway keys on.** An earlier probe
+  that sent the username as an `IDi` of type RFC822 was *silently dropped* — a
+  FortiGate dialup selects the phase1-interface by the peer ID, and an ID that
+  matches no configured group gets no reply at all. Sending the profile's
+  `<localid>` (the dialup group name) as the `IDi` — `--localid <group>`, type
+  KEY_ID (also accepted as FQDN) — makes the same gateway proceed to EAP. So the
+  silent drop was **ID selection, not an EMS/ZTNA policy gate**: no FortiClient/EMS
+  serial is required at the IKE layer to begin EAP on this gateway. (The EMS serial
+  machinery still exists in `iked`/the profile and a gateway *can* be configured to
+  enforce it; this particular dialup does not, pre-EAP.)
+- **ESP data plane** is not yet live-validated, but reuses `ike::esp::EspSa`, which
+  is exercised in production by the Check Point IKEv1 back-end.
+
+### NAT-T note (fixed)
+
+Floating to UDP/4500 now reuses the *same* socket (keeps the source port) via
+`IkeUdp::float_to_natt`, instead of opening a fresh socket with a new ephemeral
+port. A strict responder tracks the half-open IKE SA by the NAT mapping of the
+SA_INIT source; a new source port breaks it (the gateway never replies to the
+IKE_AUTH). Our NAT-D *source* hash still claims port 500 while we send from an
+ephemeral port, so a peer always flags NAT on us — harmless (we are behind NAT to
+any real gateway anyway), but it also trips NAT-T on loopback tests.
+
+## FortiClient profile secret de-obfuscation (`Enc ` fields)
+
+A provisioned FortiClient installer/profile stores secrets — the dialup group
+pre-shared key, saved passwords — as `Enc <hex>` (also seen as `EncX <hex>`).
+This is Fortinet's *obfuscation*, not security: the scheme and its key are baked
+into the shipped binaries.
+
+- The routine is `forticlient::crypto::gladman::{encrypt,decrypt}` in
+  `confighandler`. The exported C-ABI wrappers are
+  `int decrypt_buffer(const u8 *in, i32 in_len, u8 *out, i32 *out_cap_inout,
+  const char *key)` and the matching `encrypt_buffer` (a 3-instruction stub that
+  flips an encrypt/decrypt flag and tail-calls the shared worker). `decrypt_buffer`
+  operates on the **raw ciphertext bytes** — stripping the `Enc `/`EncX ` tag and
+  hex-decoding happens one layer up, in the config-field reader — and returns 0 on
+  success with `*out_cap` set to the plaintext length.
+- When the caller passes no per-profile key, gladman falls back to a **fixed
+  default key compiled into every FortiClient build**: the pangram string
+  `fc_1A2Brown3Fox4Jumped5Over6A7Lazy8Dog` (38 bytes, recovered from
+  `confighandler`'s `.rodata`). It is a vendor constant, identical across
+  installs — not a per-customer secret.
+- Ciphertext carries a fixed **24-byte overhead** (a random prefix/IV); an
+  *n*-byte secret encrypts to *n*+24 bytes. So a 41-byte blob decrypts to a
+  17-byte secret.
+- Verified by running the vendor's own `decrypt_buffer` as an oracle (under a
+  debugger: break after libc init, `strcpy` the key, call with the hex-decoded
+  bytes) and by an `encrypt → decrypt` round-trip. A given deployment's group PSK
+  recovers cleanly this way (kept out of this repo; a real one is a site secret,
+  referenced here as `<group-psk>`).
+- Not yet reimplemented natively in Rust: `unvpn` takes the recovered PSK via
+  `--psk` instead (used to verify the gateway's AUTH). A pure-Rust `gladman` port
+  would make the client fully self-contained (identify the worker's exact
+  cipher/mode and the 24-byte prefix layout first).
 
 ## Open items / roadmap (need a live gateway or onboarding)
 
@@ -100,9 +181,15 @@ PRF-SHA256 (FortiGate's common dialup default):
   stub: once the box is EMS-registered, read the serial the real FortiClient holds
   (`fct_get_emssn` → `epctrl_ems_serial` in shm / the config DB). Override today via
   `--emssn` / `UNVPN_EMSSN`.
-- **AUTH-key selection under EAP**: MSK vs SK_pi — confirm against a capture which
-  one FortiGate expects, and whether the gateway authenticates by cert or group PSK
-  (then verify its AUTH instead of only logging).
+- **AUTH-key selection under EAP** — *resolved*: the final AUTH is keyed by the
+  EAP MSK (RFC 7296 §2.16), MSK = `MasterSendKey | MasterReceiveKey`, confirmed live
+  against strongSwan. `SK_pi` is only the fallback when no EAP method ran.
+- **Gateway AUTH verification** — *implemented* for the shared-key case: with
+  `--psk <group-key>` we recompute the responder's signed octets
+  (`RealMessage2 | Ni | prf(SK_pr, IDr')`) and compare `prf(prf(PSK, pad), octets)`
+  to the gateway's method-2 AUTH; a mismatch aborts. Without a PSK (or against a
+  cert-authenticated gateway) we only log the method — handling a gateway
+  CERT/CERTREQ is still open.
 - **DH agility**: only MODP2048 is wired; add MODP1024/1536 and ECP256/384 if a
   gateway demands them (INVALID_KE currently just errors with the wanted group).
 - **ESP**: ESN, AES-GCM, rekey (CREATE_CHILD_SA), DPD via INFORMATIONAL, Delete-SA
