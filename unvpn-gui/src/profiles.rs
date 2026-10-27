@@ -221,6 +221,24 @@ fn profiles_path() -> std::path::PathBuf {
     config_dir().join("profiles.toml")
 }
 
+/// Where imported OpenVPN / WireGuard profile files are kept, one directory per profile.
+pub fn files_dir() -> std::path::PathBuf {
+    config_dir().join("files")
+}
+
+/// Removes a profile's file directory if it is one of ours (under [`files_dir`]).
+pub fn remove_owned_files(p: &Profile) {
+    if !p.backend.uses_profile_file() {
+        return;
+    }
+    let root = files_dir();
+    if let Some(dir) = std::path::Path::new(&p.gateway).parent() {
+        if dir.parent() == Some(root.as_path()) {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+}
+
 pub fn load() -> Vec<Profile> {
     let Ok(text) = std::fs::read_to_string(profiles_path()) else {
         return Vec::new();

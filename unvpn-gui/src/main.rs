@@ -7,6 +7,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod bundle;
 mod engine;
 mod icon;
 mod profiles;
@@ -163,6 +164,8 @@ impl App {
         header.pack_start(&status_pill);
 
         let menu = gio::Menu::new();
+        menu.append(Some("Export Profiles…"), Some("app.export"));
+        menu.append(Some("Import Profiles…"), Some("app.import"));
         menu.append(Some("About unvpn"), Some("app.about"));
         menu.append(Some("Quit"), Some("app.quit"));
         let menu_btn = gtk::MenuButton::builder()
@@ -766,6 +769,9 @@ impl App {
     }
 
     fn delete_profile(&self, name: &str) {
+        if let Some(p) = self.profiles.borrow().iter().find(|p| p.name == name) {
+            profiles::remove_owned_files(p);
+        }
         profiles::secret_delete(name);
         profiles::secret_delete(&profiles::keypass_account(name));
         profiles::secret_delete(&profiles::psk_account(name));
@@ -776,6 +782,213 @@ impl App {
         }
         self.refresh_profiles_list();
         self.toast(&format!("Deleted profile “{name}”"));
+    }
+
+    fn export_profiles(&self) {
+        let n = self.profiles.borrow().len();
+        if n == 0 {
+            self.toast("No saved profiles to export");
+            return;
+        }
+        let pass = adw::PasswordEntryRow::builder().title("Passphrase").build();
+        let confirm = adw::PasswordEntryRow::builder().title("Repeat passphrase").activates_default(true).build();
+        let dialog = passphrase_dialog(
+            "Export Profiles",
+            &format!(
+                "{n} profile(s), with their saved passwords, PSKs and VPN files. The export is encrypted \
+                 with this passphrase (at least {} characters); you'll need it to import.",
+                bundle::MIN_PASSPHRASE
+            ),
+            ("export", "Export…"),
+            &[&pass, &confirm],
+        );
+        let check = glib::clone!(#[weak] dialog, #[weak] pass, #[weak] confirm, move |_: &adw::PasswordEntryRow| {
+            let p = pass.text();
+            dialog.set_response_enabled("export", p.chars().count() >= bundle::MIN_PASSPHRASE && p == confirm.text());
+        });
+        pass.connect_changed(check.clone());
+        confirm.connect_changed(check);
+        let app = self.rc();
+        dialog.connect_response(Some("export"), glib::clone!(#[weak] pass, move |_, _| {
+            app.pick_export_file(pass.text().to_string());
+        }));
+        dialog.present(Some(&self.window));
+    }
+
+    fn pick_export_file(&self, pass: String) {
+        let dialog = gtk::FileDialog::builder()
+            .title("Export Profiles")
+            .modal(true)
+            .initial_name(format!("unvpn-profiles.{}", bundle::FILE_EXT))
+            .build();
+        let app = self.rc();
+        dialog.save(Some(&self.window), gio::Cancellable::NONE, move |res| {
+            let Some(mut path) = res.ok().and_then(|f| f.path()) else { return };
+            if path.extension().is_none() {
+                path.set_extension(bundle::FILE_EXT);
+            }
+            app.write_export(path, pass);
+        });
+    }
+
+    fn write_export(&self, path: std::path::PathBuf, pass: String) {
+        let (b, skipped) = bundle::collect(&self.profiles.borrow());
+        let n = b.entries.len();
+        let app = self.rc();
+        glib::spawn_future_local(async move {
+            let res = gio::spawn_blocking(move || {
+                let data = bundle::seal(&b, &pass)?;
+                bundle::write_private(&path, &data).map_err(|e| format!("write {}: {e}", path.display()))
+            })
+            .await;
+            for s in &skipped {
+                app.append_log(&format!("export: skipped {s}"));
+            }
+            match res {
+                Ok(Ok(())) if skipped.is_empty() => app.toast(&format!("Exported {n} profile(s)")),
+                Ok(Ok(())) => app.toast(&format!("Exported {n} profile(s); skipped {} (see log)", skipped.len())),
+                Ok(Err(e)) => app.toast(&format!("Export failed: {e}")),
+                Err(_) => app.toast("Export failed"),
+            }
+        });
+    }
+
+    fn import_profiles(&self) {
+        let filter = gtk::FileFilter::new();
+        filter.set_name(Some("unvpn profile exports"));
+        filter.add_pattern(&format!("*.{}", bundle::FILE_EXT));
+        let filters = gio::ListStore::new::<gtk::FileFilter>();
+        filters.append(&filter);
+        let dialog = gtk::FileDialog::builder().title("Import Profiles").modal(true).filters(&filters).build();
+        let app = self.rc();
+        dialog.open(Some(&self.window), gio::Cancellable::NONE, move |res| {
+            let Some(path) = res.ok().and_then(|f| f.path()) else { return };
+            match std::fs::read(&path) {
+                Ok(data) if bundle::is_bundle(&data) => app.ask_import_passphrase(Rc::new(data), None),
+                Ok(_) => app.toast("That file isn't an unvpn profile export"),
+                Err(e) => app.toast(&format!("Couldn't read {}: {e}", path.display())),
+            }
+        });
+    }
+
+    fn ask_import_passphrase(&self, data: Rc<Vec<u8>>, error: Option<&str>) {
+        let pass = adw::PasswordEntryRow::builder().title("Passphrase").activates_default(true).build();
+        let body = match error {
+            Some(e) => format!("{e}. Try again."),
+            None => "Enter the passphrase the profiles were exported with.".to_string(),
+        };
+        let dialog = passphrase_dialog("Import Profiles", &body, ("import", "Import"), &[&pass]);
+        pass.connect_changed(glib::clone!(#[weak] dialog, move |p| {
+            dialog.set_response_enabled("import", !p.text().is_empty());
+        }));
+        let app = self.rc();
+        dialog.connect_response(Some("import"), glib::clone!(#[weak] pass, move |_, _| {
+            let pass = pass.text().to_string();
+            let bytes = (*data).clone();
+            let (app, data) = (app.clone(), data.clone());
+            glib::spawn_future_local(async move {
+                match gio::spawn_blocking(move || bundle::open(&bytes, &pass)).await {
+                    Ok(Ok(b)) => app.confirm_import(b),
+                    Ok(Err(bundle::OpenError::WrongPassphrase)) => app.ask_import_passphrase(data, Some("Wrong passphrase")),
+                    Ok(Err(e)) => app.toast(&format!("Can't import: {e}")),
+                    Err(_) => app.toast("Import failed"),
+                }
+            });
+        }));
+        dialog.present(Some(&self.window));
+    }
+
+    fn confirm_import(&self, b: bundle::Bundle) {
+        if b.entries.is_empty() {
+            self.toast("The export has no profiles");
+            return;
+        }
+        let existing: Vec<String> = {
+            let profs = self.profiles.borrow();
+            b.entries
+                .iter()
+                .map(|e| e.profile.name.clone())
+                .filter(|n| profs.iter().any(|p| &p.name == n))
+                .collect()
+        };
+        if existing.is_empty() {
+            self.apply_import(b, false);
+            return;
+        }
+        let list: Vec<String> = existing.iter().map(|n| format!("• {n}")).collect();
+        let dialog = adw::AlertDialog::builder()
+            .heading("Profiles Already Exist")
+            .body(format!("These profiles are already saved here:\n{}", list.join("\n")))
+            .build();
+        dialog.add_responses(&[("cancel", "Cancel"), ("keep", "Keep Both"), ("replace", "Replace")]);
+        dialog.set_response_appearance("replace", adw::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("keep"));
+        dialog.set_close_response("cancel");
+        let app = self.rc();
+        let b = RefCell::new(Some(b));
+        dialog.connect_response(None, move |_, r| {
+            let replace = match r {
+                "keep" => false,
+                "replace" => true,
+                _ => return,
+            };
+            if let Some(b) = b.take() {
+                app.apply_import(b, replace);
+            }
+        });
+        dialog.present(Some(&self.window));
+    }
+
+    /// Adds the bundle's profiles. A name clash replaces the saved profile, or with
+    /// `replace` off, imports under a free name ("work (2)").
+    fn apply_import(&self, b: bundle::Bundle, replace: bool) {
+        let root = profiles::files_dir();
+        let mut imported = 0;
+        let mut keyring_failed = false;
+        let mut errors = Vec::new();
+        {
+            let mut profs = self.profiles.borrow_mut();
+            for e in &b.entries {
+                let base = e.profile.name.as_str();
+                let clash = profs.iter().any(|p| p.name == base);
+                let name = if clash && !replace { free_name(&profs, base) } else { base.to_string() };
+                let mut p = match bundle::install_files(e, &name, &root) {
+                    Ok(p) => p,
+                    Err(err) => {
+                        errors.push(err);
+                        continue;
+                    }
+                };
+                let slot = profs.iter().position(|q| q.name == name);
+                if let Some(i) = slot {
+                    profiles::remove_owned_files(&profs[i]);
+                    profiles::secret_delete(&name);
+                    profiles::secret_delete(&profiles::keypass_account(&name));
+                    profiles::secret_delete(&profiles::psk_account(&name));
+                }
+                keyring_failed |= !bundle::install_secrets(e, &mut p);
+                match slot {
+                    Some(i) => profs[i] = p,
+                    None => profs.push(p),
+                }
+                imported += 1;
+            }
+            if let Err(e) = profiles::save(&profs) {
+                errors.push(format!("couldn't save profiles: {e}"));
+            }
+        }
+        self.refresh_profiles_list();
+        for e in &errors {
+            self.append_log(&format!("import: {e}"));
+        }
+        let mut msg = format!("Imported {imported} profile(s)");
+        if keyring_failed {
+            msg.push_str("; some passwords couldn't be stored in the keyring");
+        }
+        if !errors.is_empty() {
+            msg.push_str(&format!("; {} failed (see log)", errors.len()));
+        }
+        self.toast(&msg);
     }
 
     fn on_new_profile(&self) {
@@ -1445,6 +1658,24 @@ impl App {
     }
 }
 
+fn passphrase_dialog(heading: &str, body: &str, ok: (&str, &str), rows: &[&adw::PasswordEntryRow]) -> adw::AlertDialog {
+    let list = gtk::ListBox::builder().css_classes(["boxed-list"]).selection_mode(gtk::SelectionMode::None).build();
+    for r in rows {
+        list.append(*r);
+    }
+    let dialog = adw::AlertDialog::builder().heading(heading).body(body).extra_child(&list).build();
+    dialog.add_responses(&[("cancel", "Cancel"), ok]);
+    dialog.set_response_appearance(ok.0, adw::ResponseAppearance::Suggested);
+    dialog.set_response_enabled(ok.0, false);
+    dialog.set_default_response(Some(ok.0));
+    dialog.set_close_response("cancel");
+    dialog
+}
+
+fn free_name(profs: &[Profile], base: &str) -> String {
+    (2..).map(|i| format!("{base} ({i})")).find(|n| !profs.iter().any(|p| &p.name == n)).unwrap()
+}
+
 fn build_ui(app: &adw::Application, start_hidden: bool) {
     // Single instance: launching again (e.g. from the app launcher while it sits in
     // the tray) just brings the existing window back.
@@ -1468,8 +1699,14 @@ fn build_ui(app: &adw::Application, start_hidden: bool) {
     }));
     let quit = gio::SimpleAction::new("quit", None);
     quit.connect_activate(glib::clone!(#[strong] state_app, move |_, _| state_app.request_quit()));
+    let export = gio::SimpleAction::new("export", None);
+    export.connect_activate(glib::clone!(#[strong] state_app, move |_, _| state_app.export_profiles()));
+    let import = gio::SimpleAction::new("import", None);
+    import.connect_activate(glib::clone!(#[strong] state_app, move |_, _| state_app.import_profiles()));
     app.add_action(&about);
     app.add_action(&quit);
+    app.add_action(&export);
+    app.add_action(&import);
 
     state_app.init_tray();
 

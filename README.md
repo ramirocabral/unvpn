@@ -26,6 +26,7 @@ Supported VPNs:
 
 - GTK4 / libadwaita app with saved connection profiles.
 - Passwords are stored in the system keyring.
+- Export / import of all profiles (with their passwords and VPN files) as one passphrase-encrypted file, to move them to another machine.
 - Tray icon that shows the connection state.
 
 ## Install

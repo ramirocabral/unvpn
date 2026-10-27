@@ -17,6 +17,10 @@ keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
 # Embedded browser for AnyConnect SAML (needs webkitgtk-6.0). Without it the SSO
 # login opens in the default browser and the token cookie is pasted by hand.
 webkit6 = { version = "0.6", optional = true }
+argon2 = "0.5"
+chacha20poly1305 = "0.10"
+base64 = "0.22"
+getrandom = "0.2"
 
 [features]
 default = ["webview"]
@@ -25,3 +29,12 @@ webview = ["dep:webkit6"]
 [[bin]]
 name = "unvpn-gui"
 path = "src/main.rs"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3
