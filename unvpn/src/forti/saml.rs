@@ -1,8 +1,6 @@
 //! SAML / SSO login for FortiGate SSL-VPN ("external browser" mode).
 //!
-//! Reverse-engineered from FortiClient 7.4 for Linux: the Electron GUI
-//! (`gui/resources/app.asar` → `src/main/saml/saml.js`) drives the SSO and the
-//! `vpn` engine only exchanges its result (`/remote/saml/auth_id?id=`):
+//! The engine exchanges the SSO result at `/remote/saml/auth_id?id=`:
 //!   1. `GET /remote/info` → `<api … remoteauthtimeout='240' sso_port='8020'/>`.
 //!      `sso_port` (FortiOS `saml-redirect-port`, default 8020) is where the gateway
 //!      sends the browser back; `remoteauthtimeout` bounds the wait. FortiClient

@@ -2,17 +2,17 @@
 //!
 //! Every GP control call is a form POST (`application/x-www-form-urlencoded`) to
 //! a `*.esp` page on the portal or gateway, answered with XML (sometimes a
-//! JavaScript or HTML-wrapped challenge). The transport itself is the generic
-//! HTTP/1.1-over-TLS client the AnyConnect back-end already has; only the
-//! headers differ. Like the official client and openconnect, the gateway
-//! certificate is accepted as-is (the session is bound by the authcookie).
+//! JavaScript or HTML-wrapped challenge). The transport is the generic
+//! HTTP/1.1-over-TLS client the AnyConnect back-end already has; only the headers
+//! differ. The gateway certificate is accepted as-is (the session is bound by the
+//! authcookie).
 
 pub use crate::anyconnect::http::{connect_tls, read_response, split_url, Cookies, Endpoint, Response};
 pub use crate::forti::http::{percent_decode, urlencode};
 use std::io::Write;
 
-/// The User-Agent the gateway expects from its own client (openconnect's
-/// `gpst_common_headers`); some older PAN-OS releases reject anything else.
+/// The User-Agent the gateway expects from its own client; some older PAN-OS
+/// releases reject anything else.
 pub const USER_AGENT: &str = "PAN GlobalProtect";
 
 /// POST `body` to `path` (a fresh `Connection: close` request). Cookies set by

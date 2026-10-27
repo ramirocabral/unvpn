@@ -1,9 +1,7 @@
 //! Cisco AnyConnect (SSL / CSTP) back-end for unvpn.
 //!
-//! Native, from-scratch client for Cisco's AnyConnect SSL-VPN protocol — the one
-//! the Secure Client / AnyConnect speaks to an ASA or Secure Firewall, and the one
-//! openconnect's default (`anyconnect`) backend interoperates with. Reverse-
-//! engineered from the AnyConnect Windows installer plus openconnect prior art.
+//! Native, from-scratch client for Cisco's AnyConnect SSL-VPN protocol — the one the
+//! Secure Client / AnyConnect speaks to an ASA or Secure Firewall.
 
 pub mod auth;
 pub mod config;

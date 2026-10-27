@@ -1,8 +1,7 @@
 //! IKEv1 session key schedule (RFC 2409 §5) for the initiator role.
 //!
-//! Derives SKEYID / SKEYID_{d,a,e} from the DH shared secret and nonces, keeps
-//! the CBC IV chain per message-id, and computes HASH_I / HASH_R and the ESP
-//! KEYMAT. Ported from the `isakmp` crate's `ikev1/session.rs`.
+//! Derives SKEYID / SKEYID_{d,a,e} from the DH shared secret and nonces, keeps the
+//! CBC IV chain per message-id, and computes HASH_I / HASH_R and the ESP KEYMAT.
 
 use std::collections::HashMap;
 
@@ -88,7 +87,7 @@ impl Ikev1Session {
         let secret = self.crypto().shared_secret(responder_pubkey)?;
         self.shared_secret = secret;
 
-        // SKEYID = prf(Ni_b | Nr_b, g^xy)  (signature / hybrid auth)
+        // SKEYID = prf(Ni_b | Nr_b, g^xy) (signature / hybrid auth)
         let mut nonce_key = self.initiator_nonce.clone();
         nonce_key.extend_from_slice(&self.responder_nonce);
         self.skeyid = self.crypto().prf(&nonce_key, &[&self.shared_secret]);

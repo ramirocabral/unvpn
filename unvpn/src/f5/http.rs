@@ -5,8 +5,7 @@
 //! both the `MRHSession` and `F5_ST` cookies are set. After `GET /myvpn?…` the same
 //! TLS stream ([`connect_tls`] + [`build_request`]) carries PPP.
 //!
-//! Certificates: like openconnect's default, the gateway cert is accepted
-//! (corporate CAs are often not in the system store).
+//! The gateway cert is accepted (corporate CAs are often not in the system store).
 
 use native_tls::{TlsConnector, TlsStream};
 use std::collections::BTreeMap;
@@ -14,9 +13,8 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
 
-/// The exact User-Agent of the official F5 client (verified in the shipped
-/// `f5vpn.exe`, APM clients 7.2.5.x). Some APM access policies branch on
-/// "F5 Networks Client" in the UA.
+/// The exact User-Agent the official F5 client sends. Some APM access policies
+/// branch on "F5 Networks Client" in the UA.
 pub const DEFAULT_USER_AGENT: &str =
     "Mozilla/5.0 (compatible; MSIE 10.0; Windows NT 6.1; Trident/6.0; F5 Networks Client)";
 

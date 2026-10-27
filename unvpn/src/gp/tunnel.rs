@@ -18,9 +18,6 @@
 //! An all-zero tail with ethertype 0 and no payload is the keepalive/DPD frame,
 //! which the gateway echoes. Opening the SSL tunnel invalidates the ESP keys, so
 //! it is only used once ESP has been given up on.
-//!
-//! Wire formats follow openconnect `gpst.c` / `esp.c` (interoperable with
-//! PAN-OS gateways and Prisma Access).
 
 use super::auth::Session;
 use super::config::{self, GpConfig};
@@ -40,7 +37,7 @@ static GP_STOP: AtomicBool = AtomicBool::new(false);
 
 pub const TUN_NAME: &str = "gpvpn0";
 const MAX_RECONNECT_TRIES: u32 = 10;
-/// DPD/keepalive interval: what the Windows client uses (openconnect too).
+/// DPD/keepalive interval: what the Windows client uses.
 const DPD_SECS: u64 = 10;
 /// No traffic at all for this long ⇒ the path is dead.
 const DEAD_SECS: u64 = 35;
@@ -83,7 +80,7 @@ pub fn run(s: &mut Session, opts: RunOpts) -> Result<(), String> {
         }
     }
 
-    // This exact "— IP <ip>  DNS [..]" shape is what the GUI's log parser reads.
+    // This exact "— IP <ip> DNS [..]" shape is what the GUI's log parser reads.
     out!("# GP up — IP {assigned}  DNS {:?}  (mtu {mtu})", cfg.dns);
 
     let (mut tun_file, tun_name) = tun::open_tun(TUN_NAME)?;

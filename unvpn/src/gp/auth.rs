@@ -1,6 +1,6 @@
 //! GlobalProtect authentication: portal → gateway → authcookie.
 //!
-//! The flow the real client (and openconnect's `auth-globalprotect.c`) follows:
+//! The flow:
 //!
 //! 1. `POST /global-protect/prelogin.esp` (portal) or `/ssl-vpn/prelogin.esp`
 //!    (gateway) — learn the form labels and whether SAML is in use. A host that
@@ -101,7 +101,7 @@ fn classify_error(msg: String) -> GpError {
 }
 
 /// `var respStatus = "Challenge|Error";\nvar respMsg = "<prompt>";\n
-/// thisForm.inputStr.value = "<inputStr>";` (openconnect `parse_javascript`).
+/// thisForm.inputStr.value = "<inputStr>";`.
 fn parse_javascript(js: &str) -> Result<Reply, GpError> {
     let grab = |key: &str| -> Option<String> {
         let start = js.find(key)? + key.len();
@@ -295,8 +295,8 @@ impl AuthCookie {
     }
 }
 
-/// Positional `<argument>`s of the `login.esp` `<jnlp>` reply (openconnect's
-/// `gp_login_args`): 1 authcookie, 3 portal, 4 user, 5 auth source, 7 domain,
+/// Positional `<argument>`s of the `login.esp` `<jnlp>` reply:
+/// 1 authcookie, 3 portal, 4 user, 5 auth source, 7 domain,
 /// 12 connection-type ("tunnel"), 15 preferred-ip.
 pub fn parse_login(root: &Element, computer: &str) -> Result<AuthCookie, String> {
     if root.name != "jnlp" {
@@ -550,8 +550,8 @@ impl Session {
                         self.app_version = Some(v.clone());
                     }
                     self.hip_interval = portal_cfg.hip_interval;
-                    // Replay the portal credentials on the gateway (openconnect's
-                    // "blind retry"): fine with a portal cookie, or a plain
+                    // Replay the portal credentials on the gateway (a "blind
+                    // retry"): fine with a portal cookie, or a plain
                     // password. A one-time challenge answer or a SAML cookie is not.
                     let has_cookie = portal_cfg.userauthcookie.is_some() || portal_cfg.prelogon_cookie.is_some();
                     if has_cookie || (!used.from_challenge && used.secret_field == "passwd") {

@@ -1,7 +1,6 @@
 //! PPP over the Fortinet SSL-VPN tunnel (in-process, no pppd).
 //!
-//! Framing on the TLS stream (one header per packet; `encap_len = 6`), verified
-//! against openconnect's `PPP_ENCAP_FORTINET` and the FortiClient `vpn` binary:
+//! Framing on the TLS stream (one header per packet; `encap_len = 6`):
 //!
 //! ```text
 //!   [u16 be total_len = ppp_frame_len + 6]

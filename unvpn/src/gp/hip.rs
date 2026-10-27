@@ -2,9 +2,9 @@
 //!
 //! After `getconfig.esp` the client asks `POST /ssl-vpn/hipreportcheck.esp`
 //! whether a report is needed for an md5 that identifies this host+session; if
-//! so it submits an XML report to `/ssl-vpn/hipreport.esp`. The md5 only has to
-//! be stable and match between check and report (openconnect hashes the session
-//! cookie minus its volatile fields, and so do we).
+//! so it submits an XML report to `/ssl-vpn/hipreport.esp`. The md5 only has to be
+//! stable and match between check and report (we hash the session cookie minus its
+//! volatile fields).
 //!
 //! The report is generated natively and is truthful: the real OS, hostname and
 //! tunnel address, and empty product lists — no invented antivirus or disk

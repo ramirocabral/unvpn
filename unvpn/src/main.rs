@@ -1,6 +1,4 @@
 //! unvpn — native Linux multi-vendor VPN client (Check Point, Fortinet, F5, AnyConnect, GlobalProtect, OpenVPN).
-//!
-//! Check Point is reverse-engineered from Endpoint Security VPN E84.30.
 
 /// `println!` that never panics. Once the GUI is gone our stdout is a broken pipe,
 /// and a panicking print on a teardown path would skip restoring DNS and routes.
@@ -32,7 +30,7 @@ const USER_AGENT: &str = "Mozilla/5.0 (compatible; CPSC 5.0; Windows NT 5.0)";
 const CCC_PATH: &str = "/clients/";
 
 /// A non-zero request id. The gateway echoes it back in the response header;
-/// snx-rs uses a fresh id per request (ours is derived from the clock).
+/// Derived from the clock.
 fn new_request_id() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     let nanos = SystemTime::now()
@@ -221,7 +219,7 @@ fn ip_checksum(header: &[u8]) -> u16 {
 /// Check Point IPsec "tunnel-test" keepalive: a 12-byte UDP payload to the
 /// gateway on port 18234, carried *inside* the tunnel. Check Point tears a tunnel
 /// down after a few minutes of not seeing these, even if ESP data is flowing —
-/// this is what kept the tunnel from surviving past ~20 min. (From snx-rs.)
+/// this is what kept the tunnel from surviving past ~20 min.
 fn ipsec_keepalive_packet(src: std::net::Ipv4Addr, dst: std::net::Ipv4Addr, counter: u32) -> Vec<u8> {
     let mut payload = [0u8; 12];
     payload[0..4].copy_from_slice(&counter.to_be_bytes());
@@ -480,7 +478,7 @@ fn ike_control_loop(
     let mut esp_next = Instant::now() + esp_interval;
     // The Office Mode IP has a lease (e.g. 900s); not renewing it is what dropped
     // the tunnel at ~15 min. Renew it with a fresh OM config request (requesting
-    // the current IP) under the IKE SA before it expires. (From snx-rs.)
+    // the current IP) under the IKE SA before it expires.
     let mut lease_next = (lease_secs > 0).then(|| Instant::now() + lease_renew_at(lease_secs));
     println!(
         "# IKE control up — ESP lifetime {lifetime_secs}s (rekey {}s), OM lease {lease_secs}s{}",
@@ -506,8 +504,7 @@ fn ike_control_loop(
             }
             Err(RecvTimeoutError::Timeout) => {
                 let now = Instant::now();
-                // Office Mode lease renewal — and refresh the ESP SA alongside it,
-                // the way snx-rs's session exchange does.
+                // Office Mode lease renewal — and refresh the ESP SA alongside it.
                 if lease_next.is_some_and(|ln| now >= ln) {
                     match do_lease_renew(&mut session, &sock, om_ip, &mac, &ike_rx) {
                         Ok(nl) => {

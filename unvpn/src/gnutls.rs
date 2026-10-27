@@ -1,6 +1,6 @@
 //! DTLS over UDP via **GnuTLS**, shared by every back-end's UDP fast path.
 //!
-//! Two ways to bring a DTLS session up, mirroring openconnect `gnutls-dtls.c`:
+//! Two ways to bring a DTLS session up:
 //! * [`DtlsSession::connect_resume`] — Cisco AnyConnect's "resume of a session that
 //!   never existed" (pre-shared master secret + session id, abbreviated handshake).
 //! * [`DtlsSession::connect_cert`] — an ordinary certificate-based DTLS handshake,
@@ -147,7 +147,7 @@ const GNUTLS_SHUT_WR: c_int = 1;
 /// layer then reports how much application data fits ([`DtlsSession::data_mtu`]).
 const UDP_PAYLOAD_MTU: c_uint = 1500 - 20 - 8;
 
-/// Priority for the certificate handshake: openconnect's default (`NORMAL` minus the
+/// Priority for the certificate handshake: `NORMAL` minus the
 /// broken bits, plus CBC-SHA256 for old servers).
 const CERT_PRIORITY: &str = "NORMAL:-VERS-SSL3.0:+SHA256:%COMPAT:-3DES-CBC:-ARCFOUR-128";
 

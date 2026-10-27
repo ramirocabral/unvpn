@@ -1,43 +1,35 @@
 //! Check Point CCC protocol — S-expression (de)serialization.
 //!
-//! Reverse-engineered from Endpoint Security VPN E84.30 (Trac 98.61.02307):
-//! the control channel is `POST /clients/` over TLS/443, with
-//! `Content-Type: application/x-www-form-urlencoded` and the S-expression
-//! below as the raw body. Vocabulary (CCCclientRequest, CCCserverResponse,
-//! ClientHello, client_info/client_type/client_mode, login_options_list, ...)
-//! was taken from TrAPI.dll/TracSrvWrapper.exe strings + RTTI and the Trac
-//! flow logs.
+//! The control channel is `POST /clients/` over TLS/443, with
+//! `Content-Type: application/x-www-form-urlencoded` and the S-expression below as
+//! the raw body (vocabulary: CCCclientRequest, CCCserverResponse, ClientHello,
+//! client_info/client_type/client_mode, login_options_list...).
 //!
-//! ClientHello request shape (E84.30). Values are BARE symbols, NOT quoted:
-//! confirmed from trac.log, which logs Check Point S-expressions with bare
-//! values such as `transport (Auto-Detect)`, `username (u-123456)`,
-//! `realm_display_name (Standard)`.
+//! ClientHello request shape. Values are BARE symbols, NOT quoted — e.g.
+//! `transport (Auto-Detect)`, `username (u-123456)`, `realm_display_name (Standard)`.
 //! ```text
 //! (CCCclientRequest
 //!     :RequestHeader (
 //!         :id (<n>)
 //!         :type (ClientHello)
-//!         :session_id ()
-//!     )
+//! :session_id 
+//! )
 //!     :RequestData (
 //!         :client_info (
 //!             :client_type (TRAC)
 //!             :client_version (1)
 //!             :client_support_saml (true)
-//!         )
-//!     )
+//! )
+//! )
 //! )
 //! ```
 //!
-//! VERIFIED against the live gateway: this yields `return_code (600)` with a
-//! `login_options_data` block. Two things were essential:
+//! Two requirements:
 //!   1. The body MUST be multi-line with tab indentation. A single-line body is
-//!      rejected with `return_code (504)` and an empty header echo — the parser
-//!      cannot even extract `type`.
-//!   2. The RequestHeader carries NO `protocol_version`: that is a field the
-//!      SERVER returns, nested as `:protocol_version (:protocol_version (100))`.
-//!      Sending it in the request is the gateway's "bad protocol version number".
-//! ClientInfo = client_type/client_version/client_support_saml (snx-rs proto.rs).
+//! rejected with `return_code (504)`.
+//! 2. The RequestHeader carries NO `protocol_version`: that is a field the server
+//! returns, nested as `:protocol_version (:protocol_version (100))`. Sending it
+//! in the request is rejected as a bad protocol version.
 
 use std::fmt::Write as _;
 
@@ -84,7 +76,7 @@ impl Value {
     }
 
     /// Serialize a bare (unnamed) value — used for the IKE hybrid-auth blob,
-    /// which is a nameless Check Point S-expression `(\n\t:k (v) ...\n)`.
+    /// which is a nameless Check Point S-expression `(\n\t:k (v)...\n)`.
     pub fn serialize_bare(&self) -> String {
         let mut out = String::new();
         self.write_indented(&mut out, 0);
@@ -100,8 +92,7 @@ impl Value {
     }
 
     /// Check Point's gateway parser REQUIRES this multi-line, tab-indented
-    /// layout: a single-line body is rejected with `return_code (504)`. Matches
-    /// snx-rs's `encode_object`.
+    /// layout: a single-line body is rejected with `return_code (504)`.
     fn write_indented(&self, out: &mut String, level: usize) {
         match self {
             Value::Empty => out.push_str("()"),
@@ -158,8 +149,8 @@ fn push_tabs(out: &mut String, n: usize) {
     }
 }
 
-// Secret obfuscation (Check Point "snx" scheme), ported verbatim from snx-rs
-// `util.rs`. username/password/prompt/active_key travel as hex of a per-index
+// Secret obfuscation (Check Point "snx" scheme): username/password/prompt/active_key
+// travels as hex of a per-index
 // XOR against a fixed table, emitted in reversed byte order.
 
 const XOR_TABLE: &[u8] = &[
@@ -292,7 +283,7 @@ pub fn auth_userpass(request_id: i64, username: &str, realm: &str) -> Packet {
 /// as a CONTROL frame once the data-plane TLS socket is up). `cookie` is the
 /// deobfuscated `active_key` from CCC auth; `office_mode_ip` is `0.0.0.0` on the
 /// first connect (or a prior address to request keeping it). The gateway replies
-/// with `(hello_reply ...)` carrying the assigned Office Mode IP, routes and DNS.
+/// with `(hello_reply...)` carrying the assigned Office Mode IP, routes and DNS.
 pub fn tunnel_client_hello(cookie: &str, office_mode_ip: &str) -> Packet {
     let office_mode = Value::map(vec![
         ("ipaddr", Value::sym(office_mode_ip)),

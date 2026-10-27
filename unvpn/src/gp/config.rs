@@ -11,8 +11,6 @@
 //!   <c2s-spi>0x…</c2s-spi><s2c-spi>0x…</s2c-spi>
 //!   <ekey-c2s><bits>128</bits><val>hex</val></ekey-c2s> … akey-s2c …</ipsec>
 //! ```
-//!
-//! Semantics follow openconnect's `gpst_parse_config_xml`.
 
 use super::auth::{classify, Reply, Session};
 use super::http::Form;

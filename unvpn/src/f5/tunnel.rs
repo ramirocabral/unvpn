@@ -2,7 +2,7 @@
 //! IP in the `X-VPN-client-IP` response header) → PPP over the same stream.
 //!
 //! When the gateway offers DTLS (`tunnel_dtls` + `tunnel_port_dtls`, non-HDLC) the
-//! channel is tried over DTLS first (openconnect's fast path, no TCP-over-TCP):
+//! channel is tried over DTLS first (the fast path, no TCP-over-TCP):
 //! an ordinary certificate DTLS handshake to the DTLS port, then the very same
 //! `GET /myvpn?…` sent as the first record ("HTTP over DTLS"), whose `HTTP/1.x 200`
 //! answer comes back as a record, then PPP (F5 framing), one frame per record.
@@ -129,7 +129,7 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
 
     let mut want_dtls = cfg.dtls && cfg.dtls_port > 0 && !opts.no_dtls;
     if want_dtls && cfg.hdlc {
-        // openconnect: the two aren't meant to be combined — stay on TLS.
+        // The two aren't meant to be combined — stay on TLS.
         println!("# gateway offers DTLS but also requires HDLC framing — staying on TLS");
         want_dtls = false;
     }
@@ -168,8 +168,7 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
     }
 
     // The F5 protocol expects the tunnel to drop and the client to transparently
-    // reconnect (`autoreconnectifdropped`; openconnect and the shipped client do it),
-    // reusing the same session (sess/Z + cookies) with no re-auth.
+    // reconnect (`autoreconnectifdropped` // reusing the same session (sess/Z + cookies) with no re-auth.
     if opts.watch_stdin {
         sysnet::spawn_stdin_disconnect(&F5_STOP);
     }
@@ -271,8 +270,7 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
     out!("# disconnecting — terminating PPP, restoring DNS/routes …");
     let _ = conn.send(ppp::PPP_LCP, &ppp::terminate_request(0xfe));
     drop(conn); // close the tunnel socket before asking the gateway to hang up
-    // Tell the gateway to drop the session server-side (openconnect `f5_bye`; the
-    // /vdesk/hangup.php3 endpoint is confirmed in the shipped f5vpn.exe).
+    // Tell the gateway to drop the session server-side via /vdesk/hangup.php3.
     let _ = http::request(
         &session.host, session.port, "GET", "/vdesk/hangup.php3?hangup_error=1",
         &mut session.cookies, &[], b"", session.timeout,
@@ -323,7 +321,7 @@ fn header_ip(headers: &[(String, String)]) -> Option<Ipv4Addr> {
         .and_then(|(_, v)| v.trim().parse::<Ipv4Addr>().ok())
 }
 
-/// PPP over DTLS on `tunnel_port_dtls` (openconnect `f5_dtls_catch_probe`).
+/// PPP over DTLS on `tunnel_port_dtls`.
 fn open_dtls(session: &Session, cfg: &F5Options) -> Result<Channel, String> {
     let gw = resolve_v4(&session.host, session.port)?;
     println!("# trying DTLS (UDP {gw}:{}, {}) …", cfg.dtls_port, if cfg.dtls12 { "DTLSv1.2" } else { "DTLSv1.0" });
@@ -508,12 +506,11 @@ fn sleep_interruptible(secs: u64) -> bool {
     F5_STOP.load(Ordering::SeqCst)
 }
 
-/// Tokens are appended as openconnect does (sess/Z raw; hostname base64).
+/// Tokens are appended as: sess/Z raw, hostname base64.
 fn build_myvpn_path(cfg: &F5Options) -> String {
     let yn = |b: bool| if b { "yes" } else { "no" };
     // `client_keepalive=yes` asks the gateway to run its side of the tunnel keepalive
-    // (the shipped `svpn` client always sends it); openconnect omits it, but it is
-    // harmless and matches the real client.
+    // // harmless and matches the real client.
     format!(
         "/myvpn?sess={}&hdlc_framing={}&ipv4={}&ipv6={}&Z={}&hostname={}&client_keepalive=yes",
         cfg.session_id,
@@ -656,8 +653,7 @@ fn data_loop(
             }
         }
 
-        // Both of openconnect's liveness packets: Discard-Request (keepalive) and
-        // Echo-Request (DPD).
+        // Both liveness packets: Discard-Request (keepalive) and Echo-Request (DPD).
         if last_hb.elapsed().as_secs() >= ka.lcp_secs {
             echo_id = echo_id.wrapping_add(1);
             let _ = conn.send(ppp::PPP_LCP, &ppp::discard_request(echo_id));

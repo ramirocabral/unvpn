@@ -2,16 +2,15 @@
 //!
 //! F5 offers two framings on the byte stream, chosen by the `hdlc_framing` option:
 //!
-//!   * **F5** (non-HDLC): one 4-byte header per packet, verified against
-//!     openconnect's `PPP_ENCAP_F5` and `ppp.c`:
+//! * **F5** (non-HDLC): one 4-byte header per packet:
 //!     ```text
 //!       [u16 be 0xf500]            magic
 //!       [u16 be payload_len]       = len(PPP frame)
 //!       [PPP frame]
 //!     ```
 //!   * **F5 HDLC**: classic RFC1662 async-HDLC — `7e` flags, `7d`/`20` byte-stuffing
-//!     and a trailing FCS-16. (openconnect disables DTLS in this mode because HDLC
-//!     makes the MTU unpredictable; the TLS data plane still supports it.)
+//! and a trailing FCS-16. DTLS is disabled in this mode (HDLC makes the MTU
+//! unpredictable); the TLS data plane still supports it.
 //!
 //! The PPP frame itself is `FF 03` (address+control) + `[protocol]` (1 or 2 bytes)
 //! + payload, with ACFC/PFC compression for IP data (see [`PppConn::send`]); on
@@ -127,11 +126,9 @@ impl<S: Read + Write> PppConn<S> {
         self.rbuf.extend_from_slice(data);
     }
 
-    /// Framing of the PPP header matches the real F5 data plane (cross-checked
-    /// against openconnect and gof5): control protocols (LCP/IPCP/IP6CP, ≥0x0100)
-    /// go out uncompressed as `FF 03` + 2-byte protocol, while IP data protocols
-    /// (0x0021 / 0x0057) use ACFC+PFC — a bare 1-byte protocol, no `FF 03` — which
-    /// is exactly what F5's own client emits (`[0xf500][len][0x21][ip]`).
+    /// Control protocols (LCP/IPCP/IP6CP, ≥0x0100) go out uncompressed as `FF 03` +
+    /// 2-byte protocol; IP data protocols (0x0021 / 0x0057) use ACFC+PFC — a bare
+    /// 1-byte protocol, no `FF 03` (`[0xf500][len][0x21][ip]`).
     pub fn send(&mut self, proto: u16, payload: &[u8]) -> Result<(), String> {
         self.flush_tx()?;
         let out = self.encode(proto, payload);
@@ -586,12 +583,12 @@ fn ipcp_phase<S: Read + Write>(conn: &mut PppConn<S>, seed_ip: Ipv4Addr) -> Resu
     Ok(IpConfig { addr: want_ip, dns, peer_mru: None })
 }
 
-/// Dead-peer detection (openconnect's `KA_DPD`).
+/// Dead-peer detection.
 pub fn echo_request(id: u8) -> Vec<u8> {
     ctrl(ECHO_REQ, id, &[0, 0, 0, 0])
 }
 
-/// openconnect's keepalive packet (`KA_KEEPALIVE`): keeps the gateway's idle-session
+/// Keepalive packet: keeps the gateway's idle-session
 /// timer from firing (it tore idle F5 tunnels down after a couple of minutes).
 /// Carries the 4-byte Magic-Number field per RFC 1661.
 pub fn discard_request(id: u8) -> Vec<u8> {
@@ -685,7 +682,7 @@ mod tests {
 
     #[test]
     fn f5_data_frame_is_pfc_compressed() {
-        // Cross-checked vs gof5 / F5's own client: IP data is [0xf500][len][0x21][ip].
+        // IP data is [0xf500][len][0x21][ip].
         let mut c = PppConn::new(Cursor::new(Vec::<u8>::new()), Framing::F5);
         c.send(PPP_IPV4, b"\x45\x00\x00\x14").unwrap();
         let f = c.get_ref().get_ref().clone();

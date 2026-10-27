@@ -2,12 +2,11 @@
 //!
 //! Every request carries the aggregate-auth headers (`X-Transcend-Version`,
 //! `X-Aggregate-Auth`). Redirects are handed back to the caller: the auth layer
-//! decides whether a `Location` is a load-balancer hop to another gateway
-//! (follow) or something XML-POST can't handle (fail), as openconnect does.
+//! decides whether a `Location` is a load-balancer hop to another gateway (follow)
+//! or something XML-POST can't handle (fail).
 //!
-//! Certificates: like the other back-ends and openconnect's default, the gateway
-//! certificate is accepted (corporate CAs are often not in the system store); the
-//! session is bound by the `webvpn` cookie, not by the certificate.
+//! The gateway certificate is accepted (corporate CAs are often not in the system
+//! store); the session is bound by the `webvpn` cookie, not by the certificate.
 
 use native_tls::{TlsConnector, TlsStream};
 use std::collections::BTreeMap;
@@ -112,8 +111,8 @@ fn connect_tcp(host: &str, port: u16, timeout: Duration) -> Result<TcpStream, St
     Err(last)
 }
 
-/// The headers every AnyConnect control request carries (openconnect
-/// `cstp_common_headers`): identity, cookies and the aggregate-auth markers.
+/// The headers every AnyConnect control request carries: identity, cookies and
+/// the aggregate-auth markers.
 pub fn common_headers(ep: &Endpoint, cookies: &Cookies) -> String {
     let mut h = format!("Host: {}\r\nUser-Agent: {}\r\n", ep.host_header(), ep.user_agent);
     if let Some(c) = cookies.header() {

@@ -6,10 +6,9 @@
 //!  2. the tunnel *options* — `GET /vdesk/vpn/connect.php3?<params>&outform=xml…`
 //!     → `<favorite><object><Session_ID>…</Session_ID><ur_Z>…</ur_Z>…</object>…`.
 //!
-//! Unlike Fortinet (data in attributes), F5 puts everything in **element text**,
-//! with numbered tags (`DNS0`, `DNS1`, `LAN0`, `ExcludeSubnets0`, …). Field set and
-//! semantics follow openconnect's `f5.c`. Parsed with a tolerant leaf-text scanner,
-//! not a full XML parser.
+//! F5 puts everything in **element text**,
+//! with numbered tags (`DNS0`, `DNS1`, `LAN0`, `ExcludeSubnets0`, …). Parsed with a
+//! tolerant leaf-text scanner, not a full XML parser.
 
 use std::net::Ipv4Addr;
 
@@ -34,8 +33,7 @@ pub struct F5Options {
     pub dtls12: bool,
     pub idle_timeout: u32,
     /// `autoreconnectifdropped<n>`: reconnect the tunnel transparently if it drops.
-    /// Defaults to `true` when absent — the F5 protocol expects clients to reconnect,
-    /// and both openconnect and the shipped client always do.
+    /// Defaults to `true` when absent — the F5 protocol expects clients to reconnect.
     pub autoreconnect: bool,
     /// `UseDefaultGateway0`: full tunnel (default route) vs. split-only.
     pub default_route: bool,
@@ -122,7 +120,7 @@ fn is_numbered(name: &str, prefix: &str) -> bool {
 }
 
 /// F5 sends DNS both as separate `DNS<n>` tags and, sometimes, multiple space- or
-/// comma-separated values in one (gof5 splits each tag too).
+/// comma-separated values in one.
 fn push_ips(dst: &mut Vec<Ipv4Addr>, text: &str) {
     for w in text.split(|c: char| c.is_whitespace() || c == ',').filter(|s| !s.is_empty()) {
         if let Ok(ip) = w.parse::<Ipv4Addr>() {
@@ -134,7 +132,7 @@ fn push_ips(dst: &mut Vec<Ipv4Addr>, text: &str) {
 }
 
 /// `net/mask` words, space- or comma-separated. The real F5 wire form uses a dotted
-/// mask (`10.0.0.0/255.0.0.0`, cross-checked with gof5); a prefix length is accepted too.
+/// mask (`10.0.0.0/255.0.0.0`); a prefix length is accepted too.
 fn push_routes(dst: &mut Vec<Route>, text: &str) {
     for word in text.split(|c: char| c.is_whitespace() || c == ',').filter(|s| !s.is_empty()) {
         let Some((net_s, mask_s)) = word.split_once('/') else {
@@ -212,7 +210,7 @@ fn leaf_texts(xml: &str) -> Vec<(String, String)> {
             let text = xml[content_start..next_lt].trim().to_string();
             out.push((name, text));
         }
-        // Otherwise a container: i stays at content_start to descend into children.
+    // Otherwise a container: i stays at content_start to descend into children.
     }
     out
 }
@@ -288,9 +286,9 @@ mod tests {
         assert_eq!(parse_mask("33"), None);
     }
 
-    /// Shape captured live from a real BIG-IP APM: split tunnel driven by
-    /// `SplitTunneling0` with `UseDefaultGateway0` absent, DNS and `net/dotted-mask`
-    /// routes space-separated with a trailing space, empty exclude.
+    /// Split tunnel driven by `SplitTunneling0` with `UseDefaultGateway0` absent,
+    /// DNS and `net/dotted-mask` routes space-separated with a trailing space, empty
+    /// exclude.
     #[test]
     fn options_real_world_split_tunnel() {
         let xml = r#"<?xml version="1.0"?>

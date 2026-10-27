@@ -9,11 +9,9 @@
 //! until `<config-auth type="complete">` with `<auth id="success">` and the
 //! `<session-token>` (= the `webvpn` cookie for the tunnel).
 //!
-//! Wire format and field mapping follow the real client as interoperably
-//! implemented by openconnect `auth.c` (`xmlpost_*`, `parse_xml_response`,
-//! `process_auth_form`): `group_list` → `<group-select>`; `answer` /
-//! `new_password` / `whichpin` → `<password>`; `verify_*` dropped; everything else
-//! → `<name>value</name>` under `<auth>`.
+//! Field mapping: `group_list` → `<group-select>`; `answer` / `new_password` /
+//! `whichpin` → `<password>`; `verify_*` dropped; everything else →
+//! `<name>value</name>` under `<auth>`.
 
 use super::http::{self, Cookies, Endpoint};
 use super::xml::{self, Element};
@@ -154,7 +152,7 @@ pub fn parse_reply(doc: &str) -> Result<Reply, String> {
 }
 
 /// Text of a `<message>`/`<error>` node with its `%s` placeholders filled from the
-/// `param1`/`param2` attributes (openconnect `xmlnode_msg`).
+/// `param1`/`param2` attributes.
 fn msg_text(e: &Element) -> Option<String> {
     let fmt = e.deep_text();
     if fmt.trim().is_empty() {
@@ -349,12 +347,11 @@ impl Session {
         format!("{}{}", self.ep.base_url(), path)
     }
 
-    /// POST an XML body, returning the parsed reply. Cross-host redirects (VPN
-    /// load balancing to another cluster member) are followed by re-POSTing the same
-    /// body to the new gateway, which then becomes the session's endpoint. A
-    /// same-host redirect means the gateway didn't take the XML login (an ancient
-    /// non-aggregate-auth ASA) — openconnect falls back to a legacy HTML login
-    /// there; we report it.
+    /// POST an XML body, returning the parsed reply. Cross-host redirects (load
+    /// balancing to another cluster member) are followed by re-POSTing the same body
+    /// to the new gateway, which becomes the session's endpoint. A same-host redirect
+    /// means the gateway didn't take the XML login (an ancient non-aggregate-auth
+    /// ASA); we report it.
     pub fn post_xml(&mut self, path: &mut String, body: &str) -> Result<Reply, String> {
         for _ in 0..5 {
             let resp = http::request(&self.ep, "POST", path, &mut self.cookies, Some(XML_CT), body.as_bytes())?;
@@ -473,14 +470,14 @@ impl Session {
             }
 
             // Next POSTs go to the form action, else stay on the current URL
-            // (openconnect: an unset action reuses it).
+            //.
             if let Some(a) = &form.action {
                 path = a.clone();
             }
 
             // Group dropdown: (re)start the dialogue once with the chosen group, so
             // the gateway serves that group's own form (it may ask for different
-            // factors) — openconnect does the same (OC_FORM_RESULT_NEWGROUP).
+            // factors).
             let mut group_value: Option<String> = None;
             let mut choice: Option<Choice> = None;
             if let Some(sel) = form.group_select() {
@@ -515,8 +512,7 @@ impl Session {
     }
 }
 
-/// Decide a value for every field of `form` (openconnect `process_auth_form` +
-/// the CLI form handler).
+/// Decide a value for every field of `form`.
 fn fill_form(
     form: &Form,
     choice: Option<&Choice>,

@@ -3,8 +3,7 @@
 //! Native client for the GlobalProtect SSL-VPN as spoken by PAN-OS firewalls and
 //! Prisma Access: portal/gateway login over HTTPS form posts, then the data plane
 //! over ESP-in-UDP (keys delivered in the config, no IKE) with the SSL tunnel as
-//! fallback, plus the HIP posture report. Interoperable with openconnect's `gp`
-//! protocol (`auth-globalprotect.c`, `gpst.c`), which documents the wire format.
+//! fallback, plus the HIP posture report.
 
 pub mod auth;
 pub mod config;
@@ -17,7 +16,7 @@ use http::Endpoint;
 use std::io::Write;
 use std::time::Duration;
 
-/// `app-version` when the portal didn't tell us its own (openconnect's default).
+/// `app-version` when the portal didn't tell us its own.
 pub const DEFAULT_APP_VERSION: &str = "6.3.0-33";
 const CLIENT_OS: &str = "Linux";
 const OS_VERSION: &str = "linux-64";
@@ -102,7 +101,7 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
     }
     let host = host.ok_or("gp requires --gateway <portal-or-gateway>")?;
     let (_, _, path) = http::split_url(&host)?;
-    // openconnect-style hint in the URL path: /global-protect = portal, /ssl-vpn = gateway.
+    // Hint in the URL path: /global-protect = portal, /ssl-vpn = gateway.
     let role = role.unwrap_or(if path.starts_with("/global-protect") || path == "/portal" {
         Role::Portal
     } else if path.starts_with("/ssl-vpn") || path == "/gateway" {

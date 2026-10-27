@@ -101,7 +101,7 @@ pub fn ip_batch(lines: &[String]) -> Result<(), String> {
         for l in lines {
             let _ = writeln!(si, "{l}");
         }
-        // si dropped here → EOF, so `ip` processes the batch and exits.
+    // si dropped here → EOF, so `ip` processes the batch and exits.
     }
     child.wait().map_err(|e| format!("ip -batch wait: {e}"))?;
     Ok(())

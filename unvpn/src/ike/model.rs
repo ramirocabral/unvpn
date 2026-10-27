@@ -1,9 +1,8 @@
-//! IKEv1 numeric registries (RFC 2407/2408/2409) plus the Check Point
-//! proprietary extensions, reverse-engineered from the Endpoint Security VPN
-//! E84.30 Main Mode capture (tests: `mm.bin`).
+//! IKEv1 numeric registries (RFC 2407/2408/2409) plus Check Point's proprietary
+//! extensions.
 //!
-//! The Phase-1 proposal Check Point uses (decoded from the real gateway):
-//! AES-CBC/256, SHA2-256, DH group 2, auth method 0xfadd (Hybrid), 28800s.
+//! The Phase-1 proposal Check Point uses: AES-CBC/256, SHA2-256, DH group 2,
+//! auth method 0xfadd (Hybrid), 28800s.
 
 /// Declare a wire enum: known values plus an `Other(repr)` fallback so unknown
 /// values survive a decode/encode cycle unchanged.

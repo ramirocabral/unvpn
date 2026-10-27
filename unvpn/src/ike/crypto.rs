@@ -1,8 +1,7 @@
 //! IKEv1 / ESP cryptographic primitives, backed by OpenSSL.
 //!
-//! A single negotiated hash serves as PRF, integrity function and hash in
-//! IKEv1 (RFC 2409). DH uses the Oakley MODP groups (prime embedded from the
-//! RFC). Ported from the `isakmp` crate's `crypto.rs`.
+//! A single negotiated hash serves as PRF, integrity function and hash in IKEv1
+//! (RFC 2409). DH uses the Oakley MODP groups (prime embedded from the RFC).
 
 use openssl::{
     bn::BigNum,

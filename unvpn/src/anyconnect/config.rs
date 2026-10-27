@@ -2,13 +2,11 @@
 //! response headers (`X-CSTP-*` and `X-DTLS-*`), into the address, routes, DNS,
 //! MTU and liveness timers the data plane needs.
 //!
-//! Header semantics follow the real client as implemented by openconnect
-//! `cstp.c` (`start_cstp_connection`): `X-CSTP-Address`/`Netmask` give the
-//! assigned IP; `Split-Include`/`Split-Exclude` are CIDR or `addr/mask` routes
-//! (no splits + no "tunnel everything" marker ⇒ full tunnel); `DNS`, `NBNS`,
-//! `Default-Domain`, `Split-DNS`; `MTU` the tunnel MTU; `Keepalive`, `DPD`,
-//! `Rekey-Time`/`Rekey-Method`, `Idle-Timeout`, `Disconnected-Timeout`. DTLS
-//! headers carry the UDP port, cipher and DTLS session id/keepalive.
+//! `X-CSTP-Address`/`Netmask` give the assigned IP; `Split-Include`/`Split-Exclude`
+//! are CIDR or `addr/mask` routes (no splits + no "tunnel everything" marker ⇒ full
+//! tunnel); `DNS`, `NBNS`, `Default-Domain`, `Split-DNS`; `MTU`; `Keepalive`, `DPD`,
+//! `Rekey-Time`/`Rekey-Method`, `Idle-Timeout`, `Disconnected-Timeout`. DTLS headers
+//! carry the UDP port, cipher and DTLS session id/keepalive.
 
 use std::net::Ipv4Addr;
 

@@ -2,9 +2,7 @@
 //! gateway returns after authentication (IP, DNS, search domain, split-tunnel
 //! routes, DTLS flag, timeouts).
 //!
-//! Dependency-light on purpose (the whole engine only needs glibc + OpenSSL): a
-//! small tolerant scanner over element start-tags, not a full XML parser. Field
-//! set follows openconnect's `fortinet.c`.
+//! A small tolerant scanner over element start-tags, not a full XML parser.
 
 use std::collections::BTreeMap;
 use std::net::Ipv4Addr;

@@ -4,8 +4,7 @@
 //! no plugin: control channel (reliability layer + TLS + key-method 2, with
 //! `tls-auth`/`tls-crypt` wrapping), data channel (AES-GCM / ChaCha20-Poly1305
 //! AEAD with P_DATA_V2, or legacy AES-CBC + HMAC), PUSH_REPLY configuration,
-//! renegotiation and reconnection. Written from the OpenVPN 2.6 sources (the
-//! wire protocol is documented only by the code).
+//! renegotiation and reconnection (OpenVPN 2.x protocol).
 //!
 //! Subcommand: `unvpn openvpn -c <profile.ovpn> [...]`
 //!   --probe      reset + TLS handshake only (no credentials): checks reachability,

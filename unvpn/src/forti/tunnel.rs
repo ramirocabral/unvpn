@@ -3,7 +3,7 @@
 //! (`GET /remote/sslvpn-tunnel`) — negotiate PPP, configure `tun`/routes/DNS, then
 //! pump packets between the tun device and the link with a single `poll(2)` loop.
 //!
-//! DTLS is the fast path (no TCP-over-TCP head-of-line blocking), as in openconnect:
+//! DTLS is the fast path (no TCP-over-TCP head-of-line blocking):
 //! an ordinary certificate DTLS handshake on the TLS port, then the bespoke
 //! `GFtype\0clthello\0SVPNCOOKIE\0<cookie>\0` hello answered by `…svrhello\0handshake\0ok`,
 //! then PPP frames (same 6-byte Fortinet header), one per record. If any of it fails
@@ -285,7 +285,7 @@ fn open_link(session: &Session, try_dtls: bool) -> Result<Up, String> {
     open_tls(session)
 }
 
-/// PPP over DTLS on the gateway's TLS port (openconnect: "DTLS always uses same port").
+/// PPP over DTLS on the gateway's TLS port.
 fn open_dtls(session: &Session) -> Result<Up, String> {
     let cookie = session.svpncookie().ok_or("no SVPNCOOKIE")?.to_string();
     let gw = resolve_v4(&session.host, session.port)?;
@@ -582,7 +582,7 @@ fn setup_routes(gw: Option<Ipv4Addr>, tun: &str, cfg: &config::TunnelConfig) -> 
     };
 
     // 1) Keep the encrypted tunnel's own packets off the tun: pin gw/32 to the
-    //    current path (so 0/1+128/1 or split routes don't loop it back).
+    // current path (so 0/1+128/1 or split routes don't loop it back).
     let mut pin: Option<(usize, String)> = None;
     if let Some((gw, (via, dev))) = gw.and_then(|g| original_path(g).map(|p| (g, p))) {
         let suffix = match &via {
@@ -606,7 +606,7 @@ fn setup_routes(gw: Option<Ipv4Addr>, tun: &str, cfg: &config::TunnelConfig) -> 
     }
 
     // 3) Tunnel routes: split list, or a full tunnel via 0/1 + 128/1 (which beats
-    //    the real default without deleting it, so the gateway pin above holds).
+    // the real default without deleting it, so the gateway pin above holds).
     let dev_suffix = format!("dev {tun}");
     if cfg.routes.is_empty() {
         for net in ["0.0.0.0/1", "128.0.0.0/1"] {

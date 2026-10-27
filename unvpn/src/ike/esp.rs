@@ -3,7 +3,7 @@
 //! A raw ESP packet is `SPI(4) | Seq(4) | IV | ciphertext | ICV`; the SPI (never
 //! zero) distinguishes it from an IKE message sharing the port. The ICV is
 //! HMAC over `SPI | Seq | IV | ciphertext`, truncated. Inner payload is a whole
-//! IPv4 packet (next_header = 4). Ported from the `isakmp` crate's `esp.rs`.
+//! IPv4 packet (next_header = 4).
 
 use std::sync::atomic::{AtomicU32, Ordering};
 

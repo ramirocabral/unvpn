@@ -297,7 +297,7 @@ fn stdin_rx() -> &'static Mutex<mpsc::Receiver<String>> {
 }
 
 /// Next stdin line, waiting at most `timeout` (`None` = until a line or EOF). Code
-/// that mixes this with direct `stdin().read_line` must do its direct reads first.
+/// that mixes this with direct `stdin.read_line` must do its direct reads first.
 pub fn stdin_next(timeout: Option<Duration>) -> StdinEvent {
     let rx = stdin_rx().lock().unwrap_or_else(|e| e.into_inner());
     match timeout {

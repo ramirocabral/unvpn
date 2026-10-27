@@ -139,7 +139,7 @@ impl Prepared {
 
     fn peer_info(&self) -> String {
         // IV_PROTO: DATA_V2 | REQUEST_PUSH | TLS_KEY_EXPORT | AUTH_PENDING_KW | DNS_OPTION
-        //          | CC_EXIT_NOTIFY | AUTH_FAIL_TEMP.
+        // | CC_EXIT_NOTIFY | AUTH_FAIL_TEMP.
         let mut iv_proto = 2 | 4 | 8 | 16 | 64 | 128 | 256;
         // Test knob: don't offer TLS-EKM, forcing the legacy TLS1.0-PRF key expansion.
         if std::env::var_os("UNVPN_OVPN_NO_EKM").is_some() {
@@ -358,7 +358,7 @@ pub fn run(mut p: Prepared, prompter: &mut dyn Prompter, opts: RunOpts) -> Resul
     let mtu = tun_mtu(&p.cfg, &push);
     let compress = push.compress.or(p.cfg.compress).unwrap_or(Compress::None);
     let dns = if p.cfg.route_nopull { Vec::new() } else { push.dns.clone() };
-    // This exact "— IP <ip>  DNS [..]" shape is what the GUI's log parser reads.
+    // This exact "— IP <ip> DNS [..]" shape is what the GUI's log parser reads.
     out!("# OpenVPN up — IP {ifc_local}  DNS {:?}  (mtu {mtu})", dns);
 
     let (mut tun_file, tun_name) = tun::open_tun(TUN_NAME)?;
@@ -658,7 +658,7 @@ fn data_loop(
                     } else if m.starts_with("AUTH_FAILED") {
                         return Err(format!("server revoked the session ({m})"));
                     } else if m.starts_with("PUSH_REPLY") {
-                        // Re-push after renegotiation: nothing to change for us.
+                    // Re-push after renegotiation: nothing to change for us.
                     } else {
                         out!("# server says: {m}");
                     }

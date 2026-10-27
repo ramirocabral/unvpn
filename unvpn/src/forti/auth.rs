@@ -1,10 +1,6 @@
 //! Fortinet SSL-VPN authentication over HTTPS: password, then any second factor.
 //!
-//! Wire formats come from three first-party sources, cross-checked: the
-//! FortiClient 7.4 engine `/opt/forticlient/vpn` (its exact `printf` templates —
-//! what the native client sends), the FortiOS portal's own `/sslvpn/js/login.js`
-//! (what the gateway's web login sends; the reference for the ajax `ret=6` challenge/renew flow, which the engine doesn't
-//! speak), and openfortivpn/openconnect for interop quirks:
+//! Wire formats:
 //!
 //!   login:        username=<u>&credential=<pw>&realm=<r>&ajax=1&redir=%2Fremote%2Findex&just_logged_in=1
 //!   token code:   username=&reqid=&polid=&grp=&realm=&peer=&code=<otp>&code2=[<next>]&redir=…&just_logged_in=1
@@ -14,8 +10,7 @@
 //!   ret=6 renew:  …same prefix…&credential=<new password>       (skip: …&reqid=<reqid>…&skip=1)
 //!   HTML form:    magic=&username=&reqid=&grpid=[&idx=]&credential=<answer>&realm=&redir=…  (legacy RSA/SMS page)
 //!
-//! Success is a non-empty `Set-Cookie: SVPNCOOKIE=…` and nothing else — not
-//! `ret=1` (the engine, openfortivpn and openconnect all key off the cookie).
+//! Success is a non-empty `Set-Cookie: SVPNCOOKIE=…` and nothing else — not `ret=1`.
 
 use super::http::{self, Cookies};
 use crate::sysnet;
@@ -311,7 +306,7 @@ impl Session {
     }
 
     /// Engine template 0xbf9090 + 0xbf90c8: no code, and never `magic` (magic plus
-    /// ftmpush gets HTTP 405 — openconnect #555, openfortivpn #728).
+    /// ftmpush gets HTTP 405.
     fn push_body(&self, ch: &Challenge) -> String {
         format!(
             "username={}&reqid={}&polid={}&grp={}&realm={}&peer={}{PUSH_SUFFIX}",
@@ -523,7 +518,7 @@ fn bold_text(html: &str) -> Option<String> {
     (!text.is_empty()).then(|| text.to_string())
 }
 
-/// Value of the first `<input ... name=NAME ... value=...>` in `body` (quoted or
+/// Value of the first `<input... name=NAME... value=...>` in `body` (quoted or
 /// bare attribute values, any case).
 fn find_input(body: &str, name: &str) -> Option<String> {
     let lower = body.to_ascii_lowercase();
@@ -567,9 +562,8 @@ fn attr_value(tag: &str, attr: &str) -> Option<String> {
 }
 
 /// ret=1 means the credentials were accepted ("go to redir"), but without a
-/// SVPNCOOKIE there is no session — FortiClient (on_login_failed), openfortivpn
-/// and openconnect all fail here. Seen on portals that demand a host check
-/// (openfortivpn #774), which following `redir` alone doesn't satisfy.
+/// SVPNCOOKIE there is no session. Seen on portals that demand a host check,
+/// which following `redir` alone doesn't satisfy.
 fn ret1_failure(redir: &str) -> String {
     let target = redir.split('?').next().unwrap_or(""); // never print user/IP from the query
     let hint = if target.contains("hostcheck") {
@@ -614,7 +608,7 @@ fn clean_failure(fields: &BTreeMap<String, String>, body: &str, status: u16, sec
         if second_factor {
             return "login rejected (HTTP 405) — the gateway refused this second-factor request".to_string();
         }
-        // Fortinet answers bad credentials (or login throttling) with 405 — openconnect #484.
+        // Fortinet answers bad credentials (or login throttling) with 405.
         return "login rejected (HTTP 405) — wrong username/password/realm, or the gateway is \
                 throttling logins from this IP"
             .to_string();
@@ -712,7 +706,7 @@ mod tests {
     #[test]
     fn token_kinds_by_ret() {
         let mut s = session();
-        // Real FortiGate reply (openconnect #555).
+        // Real FortiGate reply.
         let c = challenge(
             &mut s,
             "ret=2,reqid=1111111111,polid=1111111111,grp=alfa,portal=alfa-tunnel,magic=1111111111,\
@@ -754,7 +748,7 @@ mod tests {
     #[test]
     fn ret6_challenge_and_renew() {
         let mut s = session();
-        // FortiOS 7.6.2 (openfortivpn #1343).
+        // FortiOS 7.6.2.
         let c = challenge(
             &mut s,
             "ret=6,magic=1-62a7,actionurl=/remote/logincheck,reqid=31337,portal=,grpid=0,pid=266,is_chal_rsp=1,chal_msg=please enter otp:",
@@ -767,7 +761,7 @@ mod tests {
              &credential=p%40ss%20word&credential2=123456"
         );
 
-        // openfortivpn commit 1437ed4f sample.
+        // Real gateway challenge sample.
         let c = challenge(
             &mut s,
             "ret=6,actionurl=/remote/logincheck,magic=1-12345678,reqid=0,grpid=1,pid=249,is_chal_rsp=1,\
@@ -829,7 +823,7 @@ mod tests {
 
     #[test]
     fn legacy_sms_form_challenge() {
-        // Shape of the real 401 page in openconnect #332.
+        // Shape of a real 401 page.
         let html = r#"<html><body><FORM ACTION="/remote/logincheck" method="POST">
             <TABLE><TR align=center valign=middle><TD colspan=2><b>Please type in the SMS token:</b></TD></TR>
             <INPUT TYPE="hidden" NAME="magic" VALUE="336-79a890ea">

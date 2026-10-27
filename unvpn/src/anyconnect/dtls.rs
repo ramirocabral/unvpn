@@ -4,22 +4,19 @@
 //! server already share a master secret (`X-DTLS-Master-Secret` sent in the CSTP
 //! CONNECT) and a session id (`X-DTLS-Session-ID` returned), so the client injects
 //! those into a DTLS session and completes an abbreviated handshake with no key
-//! exchange. GnuTLS exposes exactly this via `gnutls_session_set_premaster`, and —
-//! crucially — `GNUTLS_NO_DEFAULT_EXTENSIONS` lets it emit the *minimal* ClientHello
-//! the ASA accepts (no `supported_groups`/`ec_point_formats`/`extended_master_secret`
-//! that OpenSSL always adds for an ECDHE cipher and that make a modern ASA reject the
-//! resume with an alert). This is why openconnect uses GnuTLS for AnyConnect DTLS,
-//! and why we link it here just for the DTLS socket (OpenSSL stays for the TLS/CSTP
-//! side). Parameters/priority strings mirror openconnect `gnutls-dtls.c`.
+//! exchange. GnuTLS exposes this via `gnutls_session_set_premaster`, and
+//! `GNUTLS_NO_DEFAULT_EXTENSIONS` lets it emit the *minimal* ClientHello the ASA
+//! accepts (no `supported_groups`/`ec_point_formats`/`extended_master_secret`, which
+//! OpenSSL always adds for an ECDHE cipher and which make a modern ASA reject the
+//! resume). GnuTLS is used only for the DTLS socket; OpenSSL stays for TLS/CSTP.
 //!
 //! Each datagram is `[type byte][payload]` (0 DATA, 3/4 DPD, 7 keepalive,
 //! 5 disconnect) — the CSTP type codes with a 1-byte header instead of the STF one.
 //! Best-effort: if the handshake doesn't complete, the caller stays on CSTP.
 //!
-//! **libgnutls is loaded at runtime with `dlopen`, never link-time.** That keeps the
-//! engine a single distro-agnostic binary: it starts everywhere with no hard
-//! dependency, uses the DTLS fast path where libgnutls is present (nearly all
-//! distros), and silently stays on CSTP where it isn't.
+//! libgnutls is loaded at runtime with `dlopen`, never link-time, so the engine
+//! stays a single distro-agnostic binary: DTLS fast path where libgnutls is present,
+//! CSTP where it isn't.
 
 use crate::gnutls::{DtlsSession, Resume};
 use std::ffi::c_int;
@@ -40,12 +37,11 @@ const GNUTLS_KX_ECDHE_RSA: c_int = 12;
 const GNUTLS_MAC_SHA1: c_int = 3;
 const GNUTLS_MAC_AEAD: c_int = 200;
 
-/// The cipher list to advertise in `X-DTLS12-CipherSuite` — openconnect's GnuTLS
-/// order, ECDHE first. The ASA echoes back the chosen name, which [`resolve`] maps.
+/// The cipher list to advertise in `X-DTLS12-CipherSuite`/// order, ECDHE first. The ASA echoes back the chosen name, which [`resolve`] maps.
 pub const DTLS12_CIPHERSUITES: &str =
     "ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-AES128-GCM-SHA256:AES128-GCM-SHA256:AES256-GCM-SHA384";
 
-/// DTLS parameters for one Cisco cipher name (mirrors openconnect `gnutls_dtls_ciphers`).
+/// DTLS parameters for one Cisco cipher name.
 struct Params {
     version: c_int,
     kx: c_int,

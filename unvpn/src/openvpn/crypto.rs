@@ -2,7 +2,7 @@
 //! channel wrapping (`tls-auth` HMAC / `tls-crypt` SIV-style AES-CTR+HMAC) and
 //! the data-channel ciphers (AEAD: AES-GCM / ChaCha20-Poly1305; legacy CBC+HMAC).
 //!
-//! Wire layouts follow OpenVPN 2.6 (`crypto.c`, `ssl_pkt.c`, `tls_crypt.c`):
+//! Wire layouts (OpenVPN 2.6):
 //!
 //! ```text
 //! tls-auth   op|sid|HMAC|pid(4)|time(4)|rest        HMAC over pid|time|op|sid|rest

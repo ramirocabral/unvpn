@@ -1,6 +1,4 @@
-//! F5 BIG-IP APM "Network Access" SSL-VPN back-end (the protocol openconnect's `f5`
-//! backend speaks), reverse-engineered from the F5 VPN client plus openconnect prior
-//! art.
+//! F5 BIG-IP APM "Network Access" SSL-VPN back-end.
 
 pub mod auth;
 pub mod config;
@@ -357,7 +355,7 @@ fn parse_launch_url(url: &str) -> Result<LaunchUrl, String> {
         }
     }
     let host = server.filter(|s| !s.is_empty()).ok_or("launch URL has no server= parameter")?;
-    // The shipped client sends `otc` as X-ACCESS-Session-Token; fall back to `token`.
+    // `otc` is sent as X-ACCESS-Session-Token; fall back to `token`.
     let token = otc
         .filter(|s| !s.is_empty())
         .or(token)
@@ -444,7 +442,7 @@ mod tests {
         assert_eq!(p.host, "vpn-f5.example.com");
         assert_eq!(p.port, 443);
         assert_eq!(p.resource.as_deref(), Some("/Common/Network_Access"));
-        // otc takes precedence over token, as in the shipped client.
+        // otc takes precedence over token.
         assert_eq!(p.token, "CCCC");
     }
 

@@ -8,8 +8,7 @@
 //!  - [`connect_tls`] + [`read_response`]: a live TLS stream the tunnel layer
 //!    keeps open — after `GET /remote/sslvpn-tunnel` the same stream carries PPP.
 //!
-//! Certificates: like the Check Point probe and openfortivpn's default, we accept
-//! the gateway cert (corporate CAs are often not in the system store).
+//! The gateway cert is accepted (corporate CAs are often not in the system store).
 
 use native_tls::{TlsConnector, TlsStream};
 use std::collections::BTreeMap;
@@ -195,7 +194,7 @@ pub fn request_cancellable(
     }
     let tls = connect_tls(host, port, timeout)?;
     {
-        // Register under the same lock that cancel() takes, so a cancel between
+        // Register under the same lock that cancel takes, so a cancel between
         // the check above and here is not lost.
         let mut st = cancel.0.lock().unwrap_or_else(|e| e.into_inner());
         if st.cancelled {

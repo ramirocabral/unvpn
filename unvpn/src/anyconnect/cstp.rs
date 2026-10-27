@@ -13,9 +13,6 @@
 //! type 0 = DATA (raw IPv4 packet), 3 = DPD request, 4 = DPD reply,
 //! 5 = client disconnect, 7 = keepalive, 8 = compressed, 9 = server kick.
 //! We advertise no compression, so only DATA/DPD/KEEPALIVE/DISCONN matter.
-//!
-//! Framing and packet types follow the real client as implemented by
-//! openconnect `cstp.c`.
 
 use super::auth::Session;
 use super::config::{self, TunnelConfig};
@@ -78,8 +75,7 @@ impl Channel {
     /// Must loop until `WouldBlock`: TLS decrypts a whole record at once, so after
     /// one `read` OpenSSL can still hold several more frames in its own buffer with
     /// no new bytes on the socket — and `poll(fd)` would NOT wake us for those,
-    /// stalling the tunnel up to a full poll interval. Reading to exhaustion each
-    /// time keeps latency/throughput up (openconnect reads the same way).
+    /// stalling the tunnel up to a full poll interval.
     fn fill(&mut self) -> Result<bool, String> {
         let mut tmp = [0u8; 16384];
         let mut got_any = false;
@@ -137,7 +133,7 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
         "# CSTP options: mtu {mtu} routes {} exclude {} default_route {} keepalive {} dpd {} rekey {} dtls_port {} dtls_cipher {:?}",
         cfg.split_include.len(), cfg.split_exclude.len(), cfg.default_route, cfg.keepalive, cfg.dpd, cfg.rekey, cfg.dtls_port, cfg.dtls_cipher
     );
-    // This exact "— IP <ip>  DNS [..]" shape is what the GUI's log parser reads.
+    // This exact "— IP <ip> DNS [..]" shape is what the GUI's log parser reads.
     println!("# CSTP up — IP {assigned}  DNS {:?}  (mtu {mtu})", dns);
     if let Some(b) = &cfg.banner {
         println!("# banner: {}", super::auth::one_line(b));
@@ -495,7 +491,7 @@ fn data_loop(
             }
             if last_dtls_rx.elapsed().as_secs() >= ka.dpd_dead_secs {
                 out!("# DTLS went quiet for {}s — falling back to CSTP", last_dtls_rx.elapsed().as_secs());
-                *dtls = None;
+            *dtls = None;
             }
         }
         if last_rx.elapsed().as_secs() >= ka.dpd_dead_secs {

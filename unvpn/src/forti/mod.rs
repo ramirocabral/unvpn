@@ -1,8 +1,6 @@
 //! Fortinet FortiGate SSL-VPN back-end for unvpn.
 //!
-//! Native, from-scratch client for the FortiGate SSL-VPN protocol (the one
-//! openfortivpn / openconnect speak), reverse-engineered from FortiClient
-//! 7.4.3 for Linux.
+//! Native, from-scratch client for the FortiGate SSL-VPN protocol.
 
 pub mod auth;
 pub mod config;
@@ -39,7 +37,7 @@ struct Args {
     /// Tunnel up but no routes/DNS (safe data-plane test).
     no_routes: bool,
     /// Reuse the SVPNCOOKIE stored in this file instead of authenticating
-    /// (like `openconnect --cookie`; a file, not argv, so `ps` can't see it).
+    /// (a file, not argv, so `ps` can't see it).
     cookie_file: Option<String>,
     /// After authenticating, store the SVPNCOOKIE in this file (mode 0600).
     save_cookie: Option<String>,
@@ -317,9 +315,8 @@ fn do_login(a: &Args) -> Result<Session, String> {
                 }
                 PushEnd::Refused(why) => {
                     // Some gateways offer ftm_push and then refuse the push request
-                    // (HTTP 405 — openfortivpn #947/#1019), which may also drop the
-                    // pending login. Start over and ask for the code instead, which is
-                    // what openfortivpn's --no-ftm-push workaround does.
+                    // (HTTP 405), which may also drop the pending login. Start over
+                    // and ask for the code instead.
                     println!("# FortiToken push refused ({why}) — logging in again to ask for the code");
                     push_allowed = false;
                     s.login(&password)?

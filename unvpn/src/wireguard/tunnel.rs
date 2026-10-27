@@ -131,7 +131,7 @@ pub fn run(cfg: Config, opts: RunOpts) -> Result<(), String> {
     }
 
     let ip = iface.addresses.first().map(|a| a.addr.to_string()).unwrap_or_default();
-    // This exact "— IP <ip>  DNS [..]" shape is what the GUI's log parser reads.
+    // This exact "— IP <ip> DNS [..]" shape is what the GUI's log parser reads.
     out!("# WireGuard up — IP {ip}  DNS {:?}  (mtu {mtu})", if opts.no_routes { &[][..] } else { &iface.dns[..] });
 
     let mut restore = sysnet::NetRestore::default();

@@ -322,7 +322,7 @@ fn parse_device_part(payload: &[u8], st: &mut DeviceState) {
                         Some(last) if last.public_key == p.public_key => {
                             // Continuation of the previous part's peer (more allowed IPs).
                             if p.last_handshake != 0 || p.rx_bytes != 0 || p.tx_bytes != 0 {
-                                *last = p;
+                            *last = p;
                             }
                         }
                         _ => st.peers.push(p),

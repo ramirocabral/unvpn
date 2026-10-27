@@ -5,10 +5,9 @@
 //!   …repeat…                    → until both `MRHSession` and `F5_ST` cookies are set
 //!
 //! `MRHSession` alone is not sufficient — APM resets it repeatedly during the flow;
-//! the presence of `F5_ST` (the session-timeout cookie) marks a completed logon
-//! (see openconnect's `f5.c` / F5 article K15387). Some portals build the form in
-//! JavaScript with no static HTML; there we fall back to a plain username+password
-//! form, exactly as openconnect does.
+//! the presence of `F5_ST` (the session-timeout cookie) marks a completed logon.
+//! Some portals build the form in JavaScript with no static HTML; there we fall back
+//! to a plain username+password form.
 
 use super::http::{self, Cookies};
 use std::time::Duration;
@@ -69,8 +68,7 @@ impl Session {
         Session { host, port, timeout, cookies: Cookies::new() }
     }
 
-    /// Session from a one-time launch token (the webtop "Start" / SSO handoff), as
-    /// the shipped client's `f5::browsers::retrieveSidfromAPM` does (verified live):
+    /// Session from a one-time launch token (the webtop "Start" / SSO handoff):
     ///
     ///   GET /vdesk/get_sessid_for_token.php3   (header `X-ACCESS-Session-Token: <otc>`)
     ///   → 200, response header `X-ACCESS-Session-ID: <MRHSession>`
@@ -153,8 +151,8 @@ pub fn try_parse_form(body: &str) -> Option<LoginForm> {
     parse_form(body)
 }
 
-/// The plain username+password form openconnect falls back to when the portal
-/// serves only a JavaScript-built form.
+/// The plain username+password form used when the portal serves only a
+/// JavaScript-built form.
 fn fallback_form() -> LoginForm {
     LoginForm {
         action: DEFAULT_ACTION.to_string(),
@@ -340,7 +338,7 @@ mod tests {
         let f = parse_form(LOGON).unwrap();
         let answers = vec![("username".to_string(), "alice".to_string()),
                            ("password".to_string(), "s3cr3t&=x".to_string())];
-        // Reconstruct the body the way submit() does, without network.
+        // Reconstruct the body the way submit does, without network.
         let mut body = String::new();
         for fld in &f.fields {
             let val = answers.iter().find(|(n, _)| n == &fld.name).map(|(_, v)| v.clone()).unwrap_or(fld.value.clone());
