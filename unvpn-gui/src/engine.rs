@@ -374,7 +374,7 @@ impl Vpn {
                     }
 
                     if disconnecting {
-                        // teardown chatter ("cancelled", …) must not override Disconnecting
+                    // teardown chatter ("cancelled", …) must not override Disconnecting
                     } else if !is_err && clean.contains("TUNNEL UP") {
                         *state.lock().unwrap() = State::Connected;
                         let _ = tx.try_send(UiMsg::Engine(EngineEvent::StateChanged));
@@ -424,7 +424,7 @@ impl Vpn {
                 self.log("disconnecting…");
             }
         } else {
-            *st = State::Disconnected;
+        *st = State::Disconnected;
         }
         let _ = self.tx.try_send(UiMsg::Engine(EngineEvent::StateChanged));
     }
@@ -459,7 +459,7 @@ impl Vpn {
                     // Exited before the tunnel came up, and the stdout parser didn't
                     // already record a specific error → pkexec cancelled or auth failed.
                     State::Connecting => {
-                        *st = State::Error(format!(
+                            *st = State::Error(format!(
                             "engine exited before connecting ({status}) — auth cancelled or failed; see log"
                         ));
                     }

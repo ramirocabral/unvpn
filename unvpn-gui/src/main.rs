@@ -100,6 +100,11 @@ struct App {
     realm_row: adw::EntryRow,
     psk_row: adw::PasswordEntryRow,
     ua_row: adw::EntryRow,
+    // FortiClient IPsec "advanced" fields, tucked into a collapsible expander so the
+    // common form stays short.
+    advanced_row: adw::ExpanderRow,
+    emssn_row: adw::EntryRow,
+    fctver_row: adw::EntryRow,
     sso_row: adw::ComboRow,
     remember_row: adw::SwitchRow,
     save_btn: gtk::Button,
@@ -214,6 +219,18 @@ impl App {
         psk_row.set_title("Pre-shared key");
         let ua_row = adw::EntryRow::builder().title("SSO User-Agent (optional)").build();
 
+        // FortiClient IPsec advanced settings, collapsed by default so the form isn't
+        // cluttered. Deployment-specific values that most profiles leave blank.
+        let emssn_row = adw::EntryRow::builder().title("EMS serial (optional)").build();
+        let fctver_row = adw::EntryRow::builder().title("FortiClient version (optional)").build();
+        let advanced_row = adw::ExpanderRow::builder()
+            .title("Advanced")
+            .subtitle("EMS serial, FortiClient version")
+            .subtitle_lines(0)
+            .build();
+        advanced_row.add_row(&emssn_row);
+        advanced_row.add_row(&fctver_row);
+
         let remember_row = adw::SwitchRow::builder()
             .title("Remember password")
             .subtitle("Store in the system keyring")
@@ -237,6 +254,7 @@ impl App {
         form_group.add(&remember_key_pass_row);
         form_group.add(&token_row);
         form_group.add(&remember_row);
+        form_group.add(&advanced_row);
 
         let connect_btn = gtk::Button::builder()
             .label("Connect")
@@ -353,6 +371,9 @@ impl App {
             realm_row,
             psk_row,
             ua_row,
+            advanced_row,
+            emssn_row,
+            fctver_row,
             sso_row,
             remember_row,
             save_btn,
@@ -503,6 +524,8 @@ impl App {
         });
         // Group PSK only applies to the FortiClient IPsec backend.
         self.psk_row.set_visible(fortiipsec);
+        // Advanced (EMS serial, FortiClient version) only applies to FortiClient IPsec.
+        self.advanced_row.set_visible(fortiipsec);
         // The SSO User-Agent override only matters for a SAML login in the embedded
         // window — show it when SSO is the chosen auth for an SSO-capable backend.
         self.ua_row.set_visible(b.has_sso() && saml);
@@ -646,6 +669,8 @@ impl App {
         // Group PSK lives in the keyring (like the password), keyed per profile.
         self.psk_row.set_text(&profiles::secret_get(&profiles::psk_account(&p.name)).unwrap_or_default());
         self.ua_row.set_text(&p.sso_user_agent);
+        self.emssn_row.set_text(&p.emssn);
+        self.fctver_row.set_text(&p.fctver);
         self.remember_row.set_active(p.remember_password);
         self.token_row.set_text("");
         let secret = if p.remember_password { profiles::secret_get(&p.name).unwrap_or_default() } else { String::new() };
@@ -697,6 +722,8 @@ impl App {
             remember_password: remember,
             remember_key_pass,
             sso_user_agent: self.ua_row.text().trim().to_string(),
+            emssn: self.emssn_row.text().trim().to_string(),
+            fctver: self.fctver_row.text().trim().to_string(),
         };
 
         let pw = self.password_row.text().to_string();
@@ -724,7 +751,7 @@ impl App {
         {
             let mut profs = self.profiles.borrow_mut();
             if let Some(slot) = profs.iter_mut().find(|e| e.name == name) {
-                *slot = p;
+            *slot = p;
             } else {
                 profs.push(p);
             }
@@ -761,6 +788,8 @@ impl App {
         self.realm_row.set_text("");
         self.psk_row.set_text("");
         self.ua_row.set_text("");
+        self.emssn_row.set_text("");
+        self.fctver_row.set_text("");
         self.token_row.set_text("");
         self.remember_row.set_active(false);
         self.update_form_visibility();
@@ -810,7 +839,7 @@ impl App {
         };
         let label = format!("connecting to {gw}");
 
-        *self.active_profile.lock().unwrap() = {
+            *self.active_profile.lock().unwrap() = {
             let n = self.name_row.text().trim().to_string();
             if n.is_empty() { gw.clone() } else { n }
         };
@@ -864,6 +893,18 @@ impl App {
                 if !psk.is_empty() {
                     args.push("--psk".into());
                     args.push(psk);
+                }
+                // EMS serial (EMS-managed gateways) and FortiClient version: advanced,
+                // usually blank. Sent in the FORTICLIENT_CONNECT payload.
+                let emssn = self.emssn_row.text().trim().to_string();
+                if !emssn.is_empty() {
+                    args.push("--emssn".into());
+                    args.push(emssn);
+                }
+                let fctver = self.fctver_row.text().trim().to_string();
+                if !fctver.is_empty() {
+                    args.push("--fctver".into());
+                    args.push(fctver);
                 }
                 args.push("-u".into());
                 args.push(user);

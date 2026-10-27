@@ -115,6 +115,15 @@ pub struct Profile {
     /// SAML login is affected; the VPN data path is unchanged.
     #[serde(default)]
     pub sso_user_agent: String,
+    /// FortiClient IPsec, EMS-managed gateways only: the endpoint's EMS serial
+    /// (`FCTEMS…`), sent in the FORTICLIENT_CONNECT payload. Empty for a plain
+    /// FortiGate IPsec dialup that is not EMS-managed.
+    #[serde(default)]
+    pub emssn: String,
+    /// FortiClient IPsec: the FortiClient version to report (`FCTVER=`). Empty ⇒ the
+    /// engine's built-in default. Only matters when a gateway pins a version.
+    #[serde(default)]
+    pub fctver: String,
 }
 
 impl Profile {
@@ -129,7 +138,7 @@ impl Profile {
             parts.push(self.group.clone());
         }
         if self.backend.uses_profile_file() {
-            // `gateway` holds the .ovpn/.conf path — the file name is what identifies it.
+            // `gateway` holds the.ovpn/.conf path — the file name is what identifies it.
             let file = std::path::Path::new(&self.gateway).file_name().map(|f| f.to_string_lossy().into_owned());
             parts.extend(file);
         } else if !self.gateway.is_empty() {
