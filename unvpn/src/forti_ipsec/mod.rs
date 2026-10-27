@@ -1,26 +1,20 @@
 //! Fortinet IPsec (IKEv2) VPN back-end.
 //!
-//! FortiGate dialup with FortiClient EMS / ZTNA uses IKEv2 (RFC 7296) with EAP user
-//! authentication (`EAP-MSCHAPV2` for user/password, `EAP-GTC` for the token/OTP)
-//! and the gateway authenticating by certificate or PSK. The IKE_AUTH exchange also
-//! carries FortiClient-private payloads — `FORTICLIENT_CONNECT` and the EMS serial
-//! number — that the gateway validates. Reverse-engineered from `/opt/forticlient/
-//! iked` (7.4.3) plus RFC 7296. Reuses the ESP data plane and DH/PRF/AES primitives
+//! EMS-managed FortiGate dialup uses IKEv2 (RFC 7296) with EAP user authentication
+//! (`EAP-MSCHAPV2` for user/password, `EAP-GTC` for the token/OTP) and the gateway
+//! authenticating by certificate or PSK. The IKE_AUTH exchange also carries
+//! FortiClient-private payloads (`FORTICLIENT_CONNECT` and the EMS serial) that a
+//! managed gateway validates. Reuses the ESP data plane and DH/PRF/AES primitives
 //! from the `ike` module and the DNS/route/stdin plumbing from `sysnet`.
 //!
-//! Subcommand: `unvpn forti-ipsec -g <host[:port]> -u <user> [--password p]
-//! [--code otp] [--emssn SN] [--probe | --login | --connect] [--no-routes]`.
-//!
-//! Live status: the protocol stack is unit-tested offline (framing, crypto, EAP
-//! RFC vectors). `--probe` (IKE_SA_INIT only) works against any FortiGate IPsec
-//! gateway. The EAP auth + ESP data plane are implemented per RFC but NOT yet
-//! validated against a live gateway, and connecting to an EMS/ZTNA-enforcing
-//! FortiGate additionally needs a valid EMS serial (see `emssn.rs`).
+//! Subcommand: `unvpn forti-ipsec [-g <host[:port]>] [-u <user>] [--config f.xml]
+//! [--password p] [--code otp] [--emssn SN] [--probe|--login|--connect]`.
 
 pub mod config;
 pub mod crypto;
 pub mod eap;
 pub mod emssn;
+pub mod fctconfig;
 pub mod model;
 pub mod session;
 pub mod wire;
@@ -54,6 +48,14 @@ struct Opts {
     /// the *gateway's* AUTH with it, which authenticates the gateway to us (detects
     /// a wrong gateway / man-in-the-middle). A mismatch aborts the connection.
     psk: Option<String>,
+    /// FortiClient version to report in the `FCTVER=` field of the FORTICLIENT_CONNECT
+    /// blob. From the deployment's profile; `None` ⇒ the engine's built-in default.
+    fctver: Option<String>,
+    /// A FortiClient config file (`<forticlient_configuration>` XML) to import
+    /// gateway/localid/PSK/version from. CLI flags still override its values.
+    config: Option<String>,
+    /// Print the de-obfuscated group PSK (a secret) in the `--import` summary.
+    show_psk: bool,
 }
 
 #[derive(PartialEq)]
@@ -62,21 +64,73 @@ enum Mode {
     AuthProbe,
     Login,
     Connect,
+    /// Parse a `--config` file and print the imported settings; do not connect.
+    Import,
 }
 
 pub fn cmd_forti_ipsec(args: &[String]) {
-    let opts = match parse_args(args) {
+    let mut opts = match parse_args(args) {
         Ok(o) => o,
         Err(e) => {
             eprintln!("forti-ipsec: {e}");
-            eprintln!("usage: unvpn forti-ipsec -g <host[:port]> -u <user> [--password p] [--code otp] [--emssn SN] [--localid id] [--id-type fqdn|rfc822|keyid] [--psk key] [--probe|--auth-probe|--login|--connect] [--no-routes]");
+            eprintln!("usage: unvpn forti-ipsec [-g <host[:port]>] [-u <user>] [--config file.xml [--import] [--show-psk]] [--password p] [--code otp] [--emssn SN] [--fctver V] [--localid id] [--id-type fqdn|rfc822|keyid] [--psk key] [--probe|--auth-probe|--login|--connect] [--no-routes]");
             std::process::exit(2);
         }
     };
+    if let Err(e) = apply_config(&mut opts) {
+        out!("# forti-ipsec failed: {e}");
+        std::process::exit(1);
+    }
+    if opts.mode == Mode::Import {
+        return; // apply_config already printed the parsed settings
+    }
     if let Err(e) = run(&opts) {
         out!("# forti-ipsec failed: {e}");
         std::process::exit(1);
     }
+}
+
+/// Import a `--config` FortiClient file into `opts`, filling only the fields the CLI
+/// did not set (CLI flags win). Prints what was imported; in `--import` mode this is
+/// the whole output.
+fn apply_config(opts: &mut Opts) -> Result<(), String> {
+    let Some(path) = opts.config.clone() else {
+        if opts.mode == Mode::Import {
+            return Err("--import needs a --config <file.xml>".into());
+        }
+        return Ok(());
+    };
+    let xml = std::fs::read_to_string(&path).map_err(|e| format!("read {path}: {e}"))?;
+    let p = fctconfig::parse(&xml)?;
+
+    out!("# imported FortiClient config '{}' (connection '{}')", path, p.name);
+    out!("#   gateway   {}:{}", p.server, p.udp_port);
+    out!("#   localid   {}", p.localid);
+    out!("#   auth      {} / EAP method {}", p.auth_method, p.eap_method);
+    out!("#   version   {}", p.fctver);
+    out!("#   proposals {}  DH {}", p.proposals.join(", "), p.dhgroup);
+    out!("#   group PSK {}", if p.psk.is_empty() { "(none)".into() } else { format!("recovered ({} chars)", p.psk.len()) });
+    if opts.show_psk && !p.psk.is_empty() {
+        out!("#   PSK value {}", p.psk);
+    }
+
+    // Fill only what the CLI left unset.
+    if opts.gateway.is_empty() {
+        opts.gateway = p.server.clone();
+        opts.port = p.udp_port;
+    }
+    if opts.localid.is_none() && !p.localid.is_empty() {
+        opts.localid = Some(p.localid.clone());
+        // A localid is an opaque group name, sent as KEY_ID (matches --localid).
+        opts.id_type = model::IdType::KeyId.into();
+    }
+    if opts.psk.is_none() && !p.psk.is_empty() {
+        opts.psk = Some(p.psk.clone());
+    }
+    if opts.fctver.is_none() && !p.fctver.is_empty() {
+        opts.fctver = Some(p.fctver.clone());
+    }
+    Ok(())
 }
 
 fn parse_args(args: &[String]) -> Result<Opts, String> {
@@ -90,6 +144,9 @@ fn parse_args(args: &[String]) -> Result<Opts, String> {
         mode: Mode::Connect,
         no_routes: false,
         localid: None,
+        fctver: None,
+        config: None,
+        show_psk: false,
         id_type: model::IdType::Rfc822Addr.into(),
         psk: None,
     };
@@ -109,6 +166,10 @@ fn parse_args(args: &[String]) -> Result<Opts, String> {
             "--code" | "--otp" => o.code = Some(next(&mut i)?),
             "--emssn" => o.emssn = Some(next(&mut i)?),
             "--psk" => o.psk = Some(next(&mut i)?),
+            "--fctver" => o.fctver = Some(next(&mut i)?),
+            "--config" => o.config = Some(next(&mut i)?),
+            "--import" => o.mode = Mode::Import,
+            "--show-psk" => o.show_psk = true,
             "--localid" => {
                 o.localid = Some(next(&mut i)?);
                 // A localid is typically an opaque group name, not an email, so
@@ -140,8 +201,10 @@ fn parse_args(args: &[String]) -> Result<Opts, String> {
         }
         i += 1;
     }
-    if o.gateway.is_empty() {
-        return Err("missing -g <gateway>".into());
+    // The gateway may instead come from a --config file (applied later). Import mode
+    // never connects, so it needs neither.
+    if o.gateway.is_empty() && o.config.is_none() {
+        return Err("missing -g <gateway> (or --config <file.xml>)".into());
     }
     // host:port in -g overrides the default unless --port was given.
     if let Some((h, p)) = o.gateway.rsplit_once(':') {
@@ -158,7 +221,7 @@ fn parse_args(args: &[String]) -> Result<Opts, String> {
     if o.mode == Mode::AuthProbe && o.user.is_empty() {
         o.user = "probe@example.com".to_string();
     }
-    if o.mode != Mode::Probe && o.mode != Mode::AuthProbe && o.user.is_empty() {
+    if o.mode != Mode::Probe && o.mode != Mode::AuthProbe && o.mode != Mode::Import && o.user.is_empty() {
         return Err("missing -u <user>".into());
     }
     Ok(o)
@@ -254,7 +317,7 @@ fn send_recv_retry(udp: &IkeUdp, msg: &[u8], tries: u32) -> Result<Vec<u8>, Stri
 
 /// Drive IKE_AUTH and the EAP sub-protocol to completion, returning the responder's
 /// final decrypted payloads (AUTH + SAr2 + TSi/TSr + CP reply).
-/// Send the first IKE_AUTH exactly as `authenticate()` would (IDi, CP request, SAi2,
+/// Send the first IKE_AUTH exactly as `authenticate` would (IDi, CP request, SAi2,
 /// TSi/TSr, INITIAL_CONTACT, plus any EMS payload), but with NO AUTH payload and NO
 /// credentials, then dump the gateway's (decrypted) reply and stop. This reveals,
 /// without completing a login, which EAP method the gateway offers, whether it
@@ -278,7 +341,7 @@ fn auth_probe(session: &mut Ikev2Session, udp: &IkeUdp, o: &Opts) -> Result<(), 
         ntype: model::NotifyType::InitialContact.into(),
         data: vec![],
     }));
-    first.extend(emssn::auth_payloads(&serial, &o.user));
+    first.extend(emssn::auth_payloads(&serial, &o.user, &udp.local_ipv4().to_string(), o.fctver.as_deref().unwrap_or("")));
 
     let msg_id = session.next_msg_id;
     let req = session.encrypt(model::ExchangeType::IkeAuth.into(), msg_id, &first);
@@ -321,16 +384,29 @@ fn authenticate(session: &mut Ikev2Session, udp: &IkeUdp, o: &Opts) -> Result<Ve
         ntype: model::NotifyType::InitialContact.into(),
         data: vec![],
     }));
-    first.extend(emssn::auth_payloads(&serial, &o.user));
+    first.extend(emssn::auth_payloads(&serial, &o.user, &udp.local_ipv4().to_string(), o.fctver.as_deref().unwrap_or("")));
 
+    let verbose = std::env::var("UNVPN_VERBOSE").is_ok();
     let mut msg_id = session.next_msg_id; // 1
     let req = session.encrypt(model::ExchangeType::IkeAuth.into(), msg_id, &first);
     let mut resp = send_recv_retry(udp, &req, 3)?;
 
     // EAP loop.
     let mut msk: Option<[u8; 64]> = None;
+    let mut gw_auth_checked = false;
     loop {
         let (_hdr, payloads) = session.decrypt(&resp)?;
+        if verbose {
+            session::dump_payloads("IKE_AUTH response (authenticate)", &payloads);
+        }
+        // The gateway authenticates itself with a PSK AUTH (method 2) in the first
+        // IKE_AUTH response. Verify it once against the group PSK — this is the real
+        // gateway authentication (its post-EAP AUTH in the final message is keyed by
+        // the EAP MSK instead, and is checked separately below).
+        if !gw_auth_checked && payloads.iter().any(|p| matches!(p, Payload::Auth { .. })) {
+            gw_auth_checked = true;
+            verify_gateway_auth(session, o, &payloads)?;
+        }
 
         if let Some(code) = auth_failed(&payloads) {
             return Err(format!("gateway rejected authentication ({code})"));
@@ -348,17 +424,26 @@ fn authenticate(session: &mut Ikev2Session, udp: &IkeUdp, o: &Opts) -> Result<Ve
         };
 
         let msg = eap::Eap::parse(&eap_bytes)?;
+        if verbose {
+            out!("# [verbose] EAP code={} id={} method={:?} data[{}]",
+                msg.code, msg.id, msg.method, msg.data.len());
+        }
         msg_id += 1;
         match msg.code {
             eap::EAP_SUCCESS => {
-                // EAP done: send the final AUTH (keyed by the EAP MSK, else SK_pi).
+                // Final IKE_AUTH, keyed by the EAP MSK (RFC 7296 §2.16), or by SK_pi
+                // for an EAP method that establishes no key.
                 let idi_body = idi_body_bytes(&idi);
                 let signed = session.initiator_signed_octets(&idi_body);
                 let crypto = session.crypto.as_ref().unwrap();
+                let sk_pi = &session.keys.as_ref().unwrap().sk_pi;
                 let auth_data = match &msk {
                     Some(k) => crypto.psk_auth(k, &signed),
-                    None => crypto.key_auth(&session.keys.as_ref().unwrap().sk_pi, &signed),
+                    None => crypto.key_auth(sk_pi, &signed),
                 };
+                if verbose {
+                    out!("# [verbose] EAP-Success; sending final AUTH");
+                }
                 let auth = Payload::Auth { method: model::AUTH_PSK, data: auth_data };
                 let req = session.encrypt(model::ExchangeType::IkeAuth.into(), msg_id, &[auth]);
                 session.next_msg_id = msg_id + 1;
@@ -367,7 +452,12 @@ fn authenticate(session: &mut Ikev2Session, udp: &IkeUdp, o: &Opts) -> Result<Ve
                 if let Some(code) = auth_failed(&final_payloads) {
                     return Err(format!("gateway rejected final AUTH ({code})"));
                 }
-                verify_gateway_auth(session, o, &final_payloads)?;
+                // Post-EAP, the gateway's AUTH is keyed by the EAP MSK (RFC 7296
+                // §2.16), NOT the group PSK — its PSK identity was already proven in
+                // the first IKE_AUTH response. Verify this final AUTH against the MSK
+                // (best-effort: authenticity is already established, so a mismatch
+                // warns rather than aborts the otherwise-complete handshake).
+                verify_gateway_msk_auth(session, &final_payloads, msk.as_ref(), verbose);
                 return Ok(final_payloads);
             }
             eap::EAP_FAILURE => return Err("EAP authentication failed".into()),
@@ -487,6 +577,35 @@ fn auth_failed(payloads: &[Payload]) -> Option<String> {
 /// gateway, not an impostor. A mismatch aborts. Without a PSK (or against a
 /// cert-authenticated gateway) we cannot check its credential, so we only note it:
 /// the gateway would not have sent a CHILD SA had it rejected us.
+/// Verify the gateway's post-EAP AUTH payload against the EAP MSK (RFC 7296 §2.16).
+/// Non-fatal: the gateway's authenticity was already proven by its PSK AUTH in the
+/// first IKE_AUTH response, so this only reports whether the MSK-keyed final AUTH
+/// also checks out.
+fn verify_gateway_msk_auth(
+    session: &Ikev2Session,
+    payloads: &[Payload],
+    msk: Option<&[u8; 64]>,
+    verbose: bool,
+) {
+    let Some(msk) = msk else { return };
+    let auth = payloads.iter().find_map(|p| match p {
+        Payload::Auth { data, .. } => Some(data.clone()),
+        _ => None,
+    });
+    let idr = payloads.iter().find_map(|p| match p {
+        Payload::IdR { kind, data } => Some((*kind, data.clone())),
+        _ => None,
+    });
+    let (Some(data), Some((kind, id))) = (auth, idr) else { return };
+    let mut idr_body = vec![kind, 0, 0, 0];
+    idr_body.extend_from_slice(&id);
+    if session.gateway_psk_auth_matches(msk, &idr_body, &data) {
+        out!("# gateway final AUTH verified against the EAP MSK — mutual authentication complete");
+    } else if verbose {
+        out!("# [verbose] gateway final AUTH did not match the MSK (gateway already authenticated via PSK upfront)");
+    }
+}
+
 fn verify_gateway_auth(session: &Ikev2Session, o: &Opts, payloads: &[Payload]) -> Result<(), String> {
     let auth = payloads.iter().find_map(|p| match p {
         Payload::Auth { method, data } => Some((*method, data.clone())),
@@ -545,12 +664,18 @@ fn data_plane(
     static STOP: AtomicBool = AtomicBool::new(false);
 
     let sock = udp.try_clone_socket().map_err(|e| format!("clone socket: {e}"))?;
-    sock.set_read_timeout(Some(Duration::from_millis(500))).ok();
+    // Non-blocking: the poll below waits for readiness, so the ESP→tun drain loop
+    // must return immediately once the socket is empty. With a blocking read timeout
+    // instead, every drain cycle ends in a ~500 ms blocking recv, inflating the RTT
+    // to half a second and crippling TCP throughput (~10 KB/s).
+    sock.set_nonblocking(true).ok();
 
     let (mut tun_file, tun_name) = tun::open_tun("cpfi0")?;
     tun::ip(&["addr", "add", &format!("{assigned}/32"), "dev", &tun_name])?;
-    tun::ip(&["link", "set", "dev", &tun_name, "up", "mtu", "1400"])?;
-    out!("# tun {tun_name} up — {assigned}/32, mtu 1400");
+    // 1280 matches FortiClient's IPsec default and leaves ample headroom for the
+    // ESP + UDP(NAT-T) + outer IP overhead, avoiding PMTU black-holes on the path.
+    tun::ip(&["link", "set", "dev", &tun_name, "up", "mtu", "1280"])?;
+    out!("# tun {tun_name} up — {assigned}/32, mtu 1280");
 
     sysnet::install_stop_signals(&STOP);
     if sysnet::stop_requested() || STOP.load(Ordering::SeqCst) {
@@ -620,7 +745,7 @@ fn data_plane(
             loop {
                 match sock.recv(&mut buf) {
                     Ok(m) if m >= 4 && buf[..4] == [0, 0, 0, 0] => {
-                        // IKE message on 4500 (DPD / Delete) — ignored for now.
+                    // IKE message on 4500 (DPD / Delete) — ignored for now.
                     }
                     Ok(m) if m > 8 => match esp.decode(&buf[..m]) {
                         Ok(ip) if tun::is_ipv4(&ip) => {

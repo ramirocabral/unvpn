@@ -1,14 +1,9 @@
-//! IKEv2 numeric registries (RFC 7296 + IANA "Internet Key Exchange Version 2
-//! (IKEv2) Parameters") used by the Fortinet IPsec back-end, plus the FortiClient
-//! private extensions reverse-engineered from `/opt/forticlient/iked` (7.4.3):
-//! the IKE_AUTH exchange carries `FORTICLIENT_CONNECT` and the EMS serial number
-//! (`EMSSN=…`, emitted by `ikev2_add_adc_emssn`), which the gateway validates
-//! alongside the PSK/certificate ("IPsec VPN login failed due to mismatched
-//! pre-shared key, client certificate, or EMS serial number").
+//! IKEv2 numeric registries (RFC 7296 + IANA) used by the Fortinet IPsec back-end,
+//! plus FortiClient's private notify types.
 //!
-//! FortiGate dialup with EMS/ZTNA uses IKEv2 (the `ikev2_*` path in iked) with
-//! EAP user authentication (`EAP-MSCHAPV2` for user/password, `EAP-GTC` for the
-//! token/OTP) and the gateway authenticating by certificate or PSK.
+//! EMS-managed FortiGate dialup uses IKEv2 with EAP user authentication
+//! (`EAP-MSCHAPV2` for user/password, `EAP-GTC` for the token/OTP) and the gateway
+//! authenticating by certificate or PSK.
 
 #![allow(dead_code)]
 
@@ -179,6 +174,7 @@ reg! {
         MobikeSupported = 16396,
         EapOnlyAuthentication = 16417,
         RedirectSupported = 16406,
+        IkeFragmentationSupported = 16430,
     }
 }
 
@@ -207,8 +203,7 @@ reg! {
         InternalIp4Subnet = 13,  // split-include network (addr + mask)
         InternalIp6Subnet = 15,
         InternalDnsDomain = 25,  // split-DNS / default domain
-        // FortiGate private (0x4000-range, from iked) — split DNS / banner; exact
-        // use pending RE, decoded best-effort.
+        // FortiGate private (0x4000-range) — split DNS / banner, decoded best-effort.
         FortiSplitDns = 0x4003,
     }
 }
@@ -217,19 +212,16 @@ reg! {
 pub const TS_IPV4_ADDR_RANGE: u8 = 7;
 pub const TS_IPV6_ADDR_RANGE: u8 = 8;
 
-/// FortiClient private Notify message types, recovered from `iked`'s name/value
-/// table (`.rodata` @ ~0xbf6a40: `VPN_NETWORK_ID`→`0xF050`, `FORTICLIENT_CONNECT`→
-/// `0xF100`, `DEV_ID_NOTIFY`→`0xF103`, `CLIENT_RESUME`→`0xF118`; 0xF118 is also used
-/// as an immediate in the code, confirming these are the real wire values).
+// FortiClient private Notify message types.
 pub const N_FORTINET_VPN_NETWORK_ID: u16 = 0xF050;
-/// Carries the FortiClient endpoint info blob, incl. the EMS serial the gateway
-/// validates. Payload = `\n`-separated `KEY=value` text (see emssn.rs).
+/// Carries the FortiClient endpoint info blob (incl. the EMS serial the gateway
+/// validates). Payload = `\n`-separated `KEY=value` text (see emssn.rs).
 pub const N_FORTINET_FORTICLIENT_CONNECT: u16 = 0xF100;
 pub const N_FORTINET_DEV_ID_NOTIFY: u16 = 0xF103;
 pub const N_FORTINET_CLIENT_RESUME: u16 = 0xF118;
 
-/// The FortiClient version string `iked` 7.4.3 embeds as the `TVER=` field.
-pub const FORTICLIENT_TVER: &str = "7.4.3.5411";
+/// Default FortiClient version reported in the `FCTVER=` field.
+pub const FORTICLIENT_TVER: &str = "7.2.15.1309";
 
 #[cfg(test)]
 mod tests {

@@ -12,6 +12,14 @@ use crate::ike::crypto::{random, IkeCrypto};
 use openssl::hash::{Hasher, MessageDigest};
 use std::net::Ipv4Addr;
 
+/// FortiClient IKE_SA_INIT vendor-ID payloads (constant per build). A managed
+/// FortiGate needs these to treat the peer as a FortiClient.
+const FORTINET_VENDOR_IDS: [[u8; 16]; 3] = [
+    [0x4c, 0x53, 0x42, 0x7b, 0x6d, 0x46, 0x5d, 0x1b, 0x33, 0x7b, 0xb7, 0x55, 0xa3, 0x7a, 0x7f, 0xef],
+    [0xb4, 0xf0, 0x1c, 0xa9, 0x51, 0xe9, 0xda, 0x8d, 0x0b, 0xaf, 0xbb, 0xd3, 0x4a, 0xd3, 0x04, 0x4e],
+    [0xc1, 0xdc, 0x43, 0x50, 0x47, 0x6b, 0x98, 0xa4, 0x29, 0xb9, 0x17, 0x81, 0x91, 0x4c, 0xa4, 0x3e],
+];
+
 /// The IKE SA transforms we offer and, once chosen, run with.
 #[derive(Debug, Clone, Copy)]
 pub struct IkeSuite {
@@ -135,11 +143,15 @@ impl Ikev2Session {
         payloads.push(Payload::Sa(vec![self.ike_proposal()]));
         payloads.push(Payload::Ke { group: self.suite.dh, data: self.dh.public_key() });
         payloads.push(Payload::Nonce(self.ni.clone()));
-        // NAT detection: hashes of our and the gateway's address/port.
+        // A managed FortiGate requires these to accept the peer as a FortiClient.
+        for vid in FORTINET_VENDOR_IDS {
+            payloads.push(Payload::VendorId(vid.to_vec()));
+        }
         let src = nat_hash(&self.spi_i, &self.spi_r, local, local_port);
         let dst = nat_hash(&self.spi_i, &self.spi_r, gw, gw_port);
         payloads.push(Payload::Notify(Notify { protocol: 0, spi: vec![], ntype: NotifyType::NatDetectionSourceIp.into(), data: src }));
         payloads.push(Payload::Notify(Notify { protocol: 0, spi: vec![], ntype: NotifyType::NatDetectionDestinationIp.into(), data: dst }));
+        payloads.push(Payload::Notify(Notify { protocol: 0, spi: vec![], ntype: N_FORTINET_VPN_NETWORK_ID, data: vec![0] }));
 
         let msg = Message {
             init_spi: self.spi_i,
@@ -279,19 +291,20 @@ impl Ikev2Session {
     pub fn make_esp_sa(&self) -> Result<crate::ike::esp::EspSa, String> {
         let per_dir = self.esp.key_bytes();
         let (i2r, r2i) = self.crypto().child_keymat(&self.keys().sk_d, &self.ni, &self.nr, per_dir);
-        // EspSa::new wants (transform_id, auth_alg, key_bits, spi_in, km_in, spi_out, km_out).
         let transform_id = u8::from(crate::ike::model::TransformId::EspAesCbc);
         let esp_auth = esp_auth_alg(self.esp.integ);
+        // A packet's SPI names the SA at its receiver: inbound carries our SPI with the
+        // r2i keys, outbound carries the gateway's SPI with the i2r keys.
+        // EspSa::new(transform_id, auth_alg, key_bits, spi_in, km_in, spi_out, km_out).
         crate::ike::esp::EspSa::new(
             transform_id,
             esp_auth,
             self.esp.encr_key_bits,
-            self.esp_spi_r, // inbound packets carry the gateway's SPI? No: inbound SPI is OURS.
-            &r2i,
             self.esp_spi_i,
+            &r2i,
+            self.esp_spi_r,
             &i2r,
         )
-
     }
 }
 
@@ -525,10 +538,11 @@ mod tests {
         assert_eq!(hdr.exchange, u8::from(ExchangeType::IkeSaInit));
         assert_eq!(hdr.flags, FLAG_INITIATOR);
         let ps = wire::parse_payloads(hdr.first_payload, rest).unwrap();
-        // SA, KE, Nonce, NAT-D source, NAT-D destination.
         assert!(matches!(ps[0], Payload::Sa(_)));
         assert!(ps.iter().any(|p| matches!(p, Payload::Ke { .. })));
-        assert_eq!(ps.iter().filter(|p| matches!(p, Payload::Notify(_))).count(), 2);
+        assert_eq!(ps.iter().filter(|p| matches!(p, Payload::VendorId(_))).count(), 3);
+        // NAT-D source, NAT-D destination, overlay id.
+        assert_eq!(ps.iter().filter(|p| matches!(p, Payload::Notify(_))).count(), 3);
     }
 
     #[test]

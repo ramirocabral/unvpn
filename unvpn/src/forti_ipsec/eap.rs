@@ -1,12 +1,10 @@
-//! EAP (RFC 3748) as carried in IKEv2 IKE_AUTH, with the two methods FortiClient's
-//! `iked` wires for VPN user authentication: **EAP-GTC** (RFC 2284, the token/OTP
-//! prompt — a plain challenge/response string) and **EAP-MSCHAPV2** (RFC 2759, the
-//! username/password method; its MSK keys the final IKE AUTH per RFC 7296 §2.16).
+//! EAP (RFC 3748) carried in IKEv2 IKE_AUTH, with the two methods used for VPN user
+//! authentication: **EAP-GTC** (RFC 2284, the token/OTP challenge/response) and
+//! **EAP-MSCHAPV2** (RFC 2759; its MSK keys the final IKE AUTH per RFC 7296 §2.16).
 //!
-//! MD4 (the NT hash) is implemented here rather than via OpenSSL, whose 3.x default
-//! provider dropped MD4/DES to the legacy provider — a single static binary must not
-//! depend on that being loaded. DES (for the MS-CHAP-v2 challenge response) and
-//! SHA1/MD5 come from OpenSSL (still in the default provider).
+//! MD4 (the NT hash) and DES (the MS-CHAP-v2 challenge response) are implemented
+//! here because OpenSSL 3's default provider moved them to the legacy provider,
+//! which a single static binary cannot assume is loaded. SHA1/MD5 come from OpenSSL.
 
 #![allow(dead_code)]
 
@@ -216,9 +214,8 @@ fn des_ecb_encrypt(key: &[u8; 8], block: &[u8; 8]) -> [u8; 8] {
     des::encrypt_block(u64::from_be_bytes(*key), u64::from_be_bytes(*block)).to_be_bytes()
 }
 
-/// Single-block DES (FIPS 46-3), ECB. Implemented here because OpenSSL 3's default
-/// provider dropped DES to the legacy provider, which a single static binary cannot
-/// assume is loaded. Only the one block MS-CHAP-v2 needs is encrypted.
+/// Single-block DES (FIPS 46-3), ECB — the one block MS-CHAP-v2 needs. Local because
+/// OpenSSL 3 moved DES to the legacy provider.
 mod des {
     // All tables are 1-based bit positions counted from the MSB of the input word.
     const IP: [u8; 64] = [
@@ -321,7 +318,7 @@ mod des {
             let s = SHIFTS[i];
             c = ((c << s) | (c >> (28 - s))) & 0x0fff_ffff;
             d = ((d << s) | (d >> (28 - s))) & 0x0fff_ffff;
-            *sk = permute((c << 28) | d, &PC2, 56);
+        *sk = permute((c << 28) | d, &PC2, 56);
         }
         let ip = permute(block, &IP, 64);
         let mut l = (ip >> 32) as u32;
@@ -340,8 +337,7 @@ mod des {
         use super::*;
         #[test]
         fn des_fips_known_answer() {
-            // FIPS: key 0x133457799BBCDFF1, plaintext 0x0123456789ABCDEF →
-            // ciphertext 0x85E813540F0AB405.
+            // FIPS 46-3 test vector.
             assert_eq!(encrypt_block(0x133457799BBCDFF1, 0x0123456789ABCDEF), 0x85E813540F0AB405);
         }
     }
@@ -441,7 +437,7 @@ fn md4(input: &[u8]) -> [u8; 16] {
 
         // Round 1
         let r1 = |a: &mut u32, b: u32, c: u32, d: u32, k: usize, s: u32| {
-            *a = a.wrapping_add(f(b, c, d)).wrapping_add(x[k]).rotate_left(s);
+        *a = a.wrapping_add(f(b, c, d)).wrapping_add(x[k]).rotate_left(s);
         };
         for &(k, s) in &[(0, 3), (1, 7), (2, 11), (3, 19), (4, 3), (5, 7), (6, 11), (7, 19),
                          (8, 3), (9, 7), (10, 11), (11, 19), (12, 3), (13, 7), (14, 11), (15, 19)] {
@@ -456,7 +452,7 @@ fn md4(input: &[u8]) -> [u8; 16] {
 
         // Round 2
         let r2 = |a: &mut u32, b: u32, c: u32, d: u32, k: usize, s: u32| {
-            *a = a.wrapping_add(g(b, c, d)).wrapping_add(x[k]).wrapping_add(0x5a82_7999).rotate_left(s);
+        *a = a.wrapping_add(g(b, c, d)).wrapping_add(x[k]).wrapping_add(0x5a82_7999).rotate_left(s);
         };
         for (i, &(k, s)) in [(0, 3), (4, 5), (8, 9), (12, 13), (1, 3), (5, 5), (9, 9), (13, 13),
                              (2, 3), (6, 5), (10, 9), (14, 13), (3, 3), (7, 5), (11, 9), (15, 13)]
@@ -473,7 +469,7 @@ fn md4(input: &[u8]) -> [u8; 16] {
 
         // Round 3
         let r3 = |a: &mut u32, b: u32, c: u32, d: u32, k: usize, s: u32| {
-            *a = a.wrapping_add(h(b, c, d)).wrapping_add(x[k]).wrapping_add(0x6ed9_eba1).rotate_left(s);
+        *a = a.wrapping_add(h(b, c, d)).wrapping_add(x[k]).wrapping_add(0x6ed9_eba1).rotate_left(s);
         };
         for (i, &(k, s)) in [(0, 3), (8, 9), (4, 11), (12, 15), (2, 3), (10, 9), (6, 11), (14, 15),
                              (1, 3), (9, 9), (5, 11), (13, 15), (3, 3), (11, 9), (7, 11), (15, 15)]
@@ -578,9 +574,7 @@ mod tests {
         let msk = derive_msk(PASS, &nt);
         assert_eq!(msk.len(), 64);
         assert_ne!(&msk[..16], &msk[16..32]); // send != recv
-        // Known-answer for USER/PASS = "User"/"clientPass": MSK = MasterSendKey |
-        // MasterReceiveKey | 32 zero octets. This exact ordering was confirmed live
-        // against a strongSwan responder (recv|send makes the EAP-keyed AUTH fail).
+        // MSK = MasterSendKey | MasterReceiveKey | 32 zero octets (RFC 3079).
         assert_eq!(
             hex(&msk),
             "d5f0e9521e3ea9589645e86051c822268b7cdc149b993a1ba118cb153f56dccb\

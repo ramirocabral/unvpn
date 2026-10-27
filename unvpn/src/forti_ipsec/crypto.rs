@@ -284,7 +284,7 @@ impl Ikev2Crypto {
 /// public value and a closure-free handle via [`IkeCrypto`].
 pub fn dh_new(group: u16) -> Result<IkeCrypto, String> {
     // IkeCrypto bundles a digest+cipher we don't use here; pass SHA256/AES256 as
-    // inert placeholders. Only public_key()/shared_secret() are called.
+    // inert placeholders. Only public_key/shared_secret are called.
     IkeCrypto::new(group, IKE_HASH_SHA256_PLACEHOLDER, IKE_ENC_AES_CBC_PLACEHOLDER, 256)
 }
 
