@@ -12,6 +12,7 @@ Supported VPNs:
 
 - Check Point
 - Fortinet FortiGate SSL-VPN
+- Fortinet FortiClient IPsec (IKEv2 + EAP)
 - F5 BIG-IP APM
 - Cisco AnyConnect
 - Palo Alto GlobalProtect
@@ -64,6 +65,7 @@ PREFIX=~/.local ./install.sh    # or just for your user
 sudo unvpn ike -g 203.0.113.10 -u alice --connect                    # Check Point
 sudo unvpn forti -g vpn.example.com -u alice --connect               # Fortinet
 sudo unvpn forti -g vpn.example.com --saml --connect                 # Fortinet with SSO
+sudo unvpn forti-ipsec -g vpn.example.com -u alice --connect         # Fortinet IPsec (FortiClient)
 sudo unvpn f5 -g vpn.example.com -u alice --connect                  # F5
 sudo unvpn anyconnect -g https://vpn.example.com -u alice --connect  # AnyConnect
 sudo unvpn gp -g vpn.example.com -u alice --connect                  # GlobalProtect
