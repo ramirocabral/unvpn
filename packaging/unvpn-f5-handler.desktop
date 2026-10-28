@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=unvpn F5 launcher
+Comment=Handle f5-vpn:// links from the BIG-IP webtop "Start" button
+Exec=unvpn-f5-launch %u
+Icon=unvpn
+Terminal=false
+NoDisplay=true
+MimeType=x-scheme-handler/f5-vpn;
+Categories=Network;Security;

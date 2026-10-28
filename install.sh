@@ -17,8 +17,8 @@ sudo_if_needed() {
 uninstall() {
     local S; S="$(sudo_if_needed "$PREFIX/bin")"
     echo "Removing unvpn from $PREFIX …"
-    $S rm -f "$PREFIX/bin/unvpn" "$PREFIX/bin/unvpn-gui"
-    $S rm -f "$PREFIX/share/applications/unvpn.desktop"
+    $S rm -f "$PREFIX/bin/unvpn" "$PREFIX/bin/unvpn-gui" "$PREFIX/bin/unvpn-f5-launch"
+    $S rm -f "$PREFIX/share/applications/unvpn.desktop" "$PREFIX/share/applications/unvpn-f5-handler.desktop"
     for sz in 32 48 64 128 256; do
         $S rm -f "$PREFIX/share/icons/hicolor/${sz}x${sz}/apps/unvpn.png"
     done
@@ -45,6 +45,14 @@ for sz in 32 48 64 128 256; do
 done
 $S install -Dm644 "$REPO/packaging/unvpn.desktop" "$PREFIX/share/applications/unvpn.desktop"
 
+# f5-vpn:// scheme handler (webtop "Start" → native tunnel). Bake the installed
+# engine path as the wrapper's default so it works even off PATH.
+wtmp="$(mktemp)"
+sed "s#/usr/local/bin/unvpn#$PREFIX/bin/unvpn#" "$REPO/packaging/unvpn-f5-launch" > "$wtmp"
+$S install -Dm755 "$wtmp" "$PREFIX/bin/unvpn-f5-launch"
+rm -f "$wtmp"
+$S install -Dm644 "$REPO/packaging/unvpn-f5-handler.desktop" "$PREFIX/share/applications/unvpn-f5-handler.desktop"
+
 printf "Install polkit rule (connect prompts for admin once, then caches)? [y/N] "
 read -r ans
 if [ "$ans" = y ] || [ "$ans" = Y ]; then
@@ -56,7 +64,11 @@ fi
 
 command -v gtk-update-icon-cache >/dev/null && $S gtk-update-icon-cache -qtf "$PREFIX/share/icons/hicolor" 2>/dev/null || true
 command -v update-desktop-database >/dev/null && $S update-desktop-database -q "$PREFIX/share/applications" 2>/dev/null || true
+# Make unvpn the default handler for f5-vpn:// links (writes the invoking user's
+# mimeapps.list — best effort; run manually if installed as root for another user).
+command -v xdg-mime >/dev/null && xdg-mime default unvpn-f5-handler.desktop x-scheme-handler/f5-vpn 2>/dev/null || true
 
 echo
 echo "Installed. Launch 'unvpn-gui', or find 'unvpn' in your application menu."
 echo "  CLI engine: 'unvpn' (see 'unvpn --help')."
+echo "  F5 webtop 'Start' → 'unvpn' is now the handler for f5-vpn:// links."

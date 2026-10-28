@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Scheme handler for f5-vpn:// — the Linux equivalent of the webtop "Start"
+# button. The browser hands us the one-time-token URL; we exchange it for a
+# session and bring the tunnel up (as root), publishing a status file the GUI
+# reads to show and stop the tunnel.
+#
+# Registered by unvpn-f5-handler.desktop (MimeType x-scheme-handler/f5-vpn).
+#
+# Engine binary:     $UNVPN_BIN, else `unvpn` on PATH, else /usr/local/bin/unvpn
+# Privilege escalation: $UNVPN_PRIV = pkexec|sudo, else auto (passwordless sudo
+#                    when available — minimal WMs usually lack a polkit agent —
+#                    otherwise pkexec).
+set -euo pipefail
+
+url="${1:-}"
+case "$url" in
+    f5-vpn:*) ;;
+    *) echo "usage: unvpn-f5-launch f5-vpn://…" >&2; exit 2 ;;
+esac
+
+cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/unvpn-f5"
+mkdir -p "$cache_dir"
+status_file="$cache_dir/tunnel.status"
+log="$cache_dir/launch.log"
+
+engine="${UNVPN_BIN:-}"
+if [ -z "$engine" ]; then
+    engine="$(command -v unvpn || true)"
+fi
+[ -z "$engine" ] && engine="/usr/local/bin/unvpn"
+if [ ! -x "$engine" ]; then
+    echo "unvpn engine not found (set UNVPN_BIN): $engine" >&2
+    exit 1
+fi
+
+priv="${UNVPN_PRIV:-}"
+if [ -z "$priv" ]; then
+    if sudo -n true >/dev/null 2>&1; then priv="sudo"; else priv="pkexec"; fi
+fi
+case "$priv" in
+    sudo)   set -- sudo -n "$engine" ;;
+    pkexec) set -- pkexec "$engine" ;;
+    *) echo "UNVPN_PRIV must be pkexec or sudo" >&2; exit 2 ;;
+esac
+
+{
+    echo "=== $(date -Is) launch $url (engine=$engine priv=$priv) ==="
+} >>"$log"
+
+# New session so closing the browser/launcher doesn't SIGHUP the tunnel.
+exec setsid "$@" f5 --launch "$url" --status-file "$status_file" >>"$log" 2>&1
