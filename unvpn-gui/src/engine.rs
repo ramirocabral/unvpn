@@ -463,7 +463,17 @@ impl Vpn {
                             "engine exited before connecting ({status}) — auth cancelled or failed; see log"
                         ));
                     }
-                    State::Connected => *st = State::Disconnected,
+                    // Exited on its own while up: a clean peer close is a plain
+                    // disconnect; a non-zero exit means the tunnel dropped and the
+                    // engine gave up (e.g. an IKE session that can't rekey) — surface
+                    // it so the user knows to reconnect.
+                    State::Connected => {
+                        *st = if status.success() {
+                            State::Disconnected
+                        } else {
+                            State::Error("tunnel lost — reconnect (see log)".into())
+                        };
+                    }
                     _ => {} // keep a specific Error already set by the parser
                 }
                 return true;

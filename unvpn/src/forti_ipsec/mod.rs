@@ -696,10 +696,20 @@ fn data_plane(
     out!("# TUNNEL UP (ESP over NAT-T). (send 'disconnect' on stdin or SIGTERM to stop)");
     let tun_fd = tun_file.as_raw_fd();
     let sock_fd = sock.as_raw_fd();
+    let kick_fd = crate::netmon::kick_fd();
     let mut buf = [0u8; 2048];
     let (mut tin, mut tout, mut derr) = (0u64, 0u64, 0u64);
     let mut last_ka = Instant::now();
     let mut last_stats = Instant::now();
+    // Dead-peer detection: with no IKEv2 DPD/rekey implemented, the drop signals are
+    // a resume/network-change kick, and "sending ESP but getting nothing back for a
+    // while". There is no silent recovery (a fresh IKE_AUTH needs a new OTP), so a
+    // drop ends the session with a clear error for the user to reconnect.
+    const DEAD_SECS: u64 = 60;
+    const MIN_SENT_NO_REPLY: u64 = 4;
+    let mut last_rx_at = Instant::now();
+    let (mut last_tin, mut last_tout, mut sent_since_rx) = (0u64, 0u64, 0u64);
+    let mut lost: Option<String> = None;
 
     loop {
         if STOP.load(Ordering::SeqCst) {
@@ -708,13 +718,18 @@ fn data_plane(
         let mut fds = [
             libc::pollfd { fd: tun_fd, events: libc::POLLIN, revents: 0 },
             libc::pollfd { fd: sock_fd, events: libc::POLLIN, revents: 0 },
+            libc::pollfd { fd: kick_fd, events: libc::POLLIN, revents: 0 },
         ];
-        let n = unsafe { libc::poll(fds.as_mut_ptr(), 2, 500) };
+        let n = unsafe { libc::poll(fds.as_mut_ptr(), 3, 500) };
         if n < 0 {
             let e = std::io::Error::last_os_error();
             if e.kind() == std::io::ErrorKind::Interrupted {
                 continue;
             }
+            break;
+        }
+        if let Some(why) = crate::netmon::took_kick() {
+            lost = Some(format!("link event ({why})"));
             break;
         }
 
@@ -774,11 +789,29 @@ fn data_plane(
             out!("#  stats: esp_in={tin} esp_out={tout} dec_err={derr}");
             last_stats = Instant::now();
         }
+
+        // Dead-peer heuristic: ESP coming back resets the timer; otherwise, if we
+        // have sent a handful of packets with no reply for DEAD_SECS, the peer is
+        // gone (a NAT rebind or a path change the gateway didn't follow).
+        if tin > last_tin {
+            last_tin = tin;
+            last_rx_at = Instant::now();
+            sent_since_rx = 0;
+        }
+        sent_since_rx += tout - last_tout;
+        last_tout = tout;
+        if last_rx_at.elapsed().as_secs() >= DEAD_SECS && sent_since_rx >= MIN_SENT_NO_REPLY {
+            lost = Some(format!("no reply from the gateway for {}s while sending", last_rx_at.elapsed().as_secs()));
+            break;
+        }
     }
 
     out!("# disconnecting — restoring DNS/routes …");
     drop(restore);
-    Ok(())
+    match lost {
+        Some(why) => Err(format!("tunnel lost ({why}) — reconnect to re-authenticate")),
+        None => Ok(()),
+    }
 }
 
 /// Pin the gateway to its pre-VPN path, then install split routes (or a full tunnel

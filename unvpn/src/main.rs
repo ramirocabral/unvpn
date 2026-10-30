@@ -198,6 +198,10 @@ fn ike_send_recv_mid(
 }
 
 static TUNNEL_STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Set when the control loop gives up recovering the tunnel (the IKE SA is gone and
+/// re-auth needs a fresh passcode): the main loop turns this into an error exit so
+/// the GUI shows the drop instead of a silent stop.
+static TUNNEL_LOST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 extern "C" fn tunnel_sig_handler(_sig: libc::c_int) {
     TUNNEL_STOP.store(true, std::sync::atomic::Ordering::SeqCst);
 }
@@ -296,6 +300,7 @@ fn run_tunnel(
     };
     _restore.leak = leakguard::enable(&tun_name, &gw_v4.into_iter().collect::<Vec<_>>())?;
     TUNNEL_STOP.store(false, Ordering::SeqCst);
+    TUNNEL_LOST.store(false, Ordering::SeqCst);
     unsafe {
         let h = tunnel_sig_handler as extern "C" fn(libc::c_int) as libc::sighandler_t;
         libc::signal(libc::SIGTERM, h);
@@ -424,9 +429,9 @@ fn run_tunnel(
         });
     }
     if let (Some(session), Some(ike_rx)) = (session, ike_rx) {
-        let (esp_c, sock_c) = (esp.clone(), sock.clone());
+        let (esp_c, sock_c, uin_c) = (esp.clone(), sock.clone(), uin.clone());
         std::thread::spawn(move || {
-            ike_control_loop(session, sock_c, esp_c, om_ip, ike_rx, rekey_secs, lease_secs, mac)
+            ike_control_loop(session, sock_c, esp_c, om_ip, ike_rx, rekey_secs, lease_secs, mac, uin_c)
         });
     }
 
@@ -447,7 +452,11 @@ fn run_tunnel(
         }
     }
     out!("# disconnecting — restoring DNS, tearing down tun/routes…");
-    Ok(()) // `_restore` puts DNS back as it drops
+    // `_restore` puts DNS/routes/leak back as it drops.
+    if TUNNEL_LOST.load(Ordering::SeqCst) {
+        return Err("tunnel lost and the IKE session could not be recovered — reconnect".into());
+    }
+    Ok(())
 }
 
 fn rekey_interval(lifetime_secs: u32) -> std::time::Duration {
@@ -480,10 +489,21 @@ fn ike_control_loop(
     mut lifetime_secs: u32,
     mut lease_secs: u32,
     mac: Vec<u8>,
+    uin: std::sync::Arc<std::sync::atomic::AtomicU64>,
 ) {
     use std::sync::atomic::Ordering;
     use std::sync::mpsc::RecvTimeoutError;
     use std::time::{Duration, Instant};
+
+    // No decrypted ESP for this long → probe the gateway with a Quick Mode exchange;
+    // if that fails this many times in a row the IKE SA is gone (give up, no re-auth
+    // — the passcode is single-use). A resume/network-change kick probes at once.
+    const LIVENESS_STALE_SECS: u64 = 45;
+    const MAX_RECOVER_FAILS: u32 = 2;
+    let _ = crate::netmon::kick_fd(); // arm the resume / network-change watchers
+    let mut last_uin = uin.load(Ordering::Relaxed);
+    let mut last_progress = Instant::now();
+    let mut recover_fails = 0u32;
 
     let mut esp_interval = rekey_interval(lifetime_secs);
     let mut esp_next = Instant::now() + esp_interval;
@@ -501,6 +521,47 @@ fn ike_control_loop(
         if TUNNEL_STOP.load(Ordering::SeqCst) {
             break;
         }
+
+        // Liveness: track decrypted-ESP progress; on a stall or a resume/network
+        // kick, probe-and-recover with a Quick Mode exchange under the live IKE SA.
+        let cur_uin = uin.load(Ordering::Relaxed);
+        if cur_uin != last_uin {
+            last_uin = cur_uin;
+            last_progress = Instant::now();
+            recover_fails = 0;
+        }
+        let kicked = crate::netmon::took_kick();
+        let stale = last_progress.elapsed() >= Duration::from_secs(LIVENESS_STALE_SECS);
+        if kicked.is_some() || stale {
+            match kicked {
+                Some(why) => out!("# link event ({why}) — probing the gateway"),
+                None => out!("# no data from the gateway for {}s — probing", last_progress.elapsed().as_secs()),
+            }
+            match do_rekey(&mut session, &sock, &esp, om_ip, &ike_rx) {
+                Ok((si, so, life)) => {
+                    if life > 0 {
+                        lifetime_secs = life;
+                        esp_interval = rekey_interval(lifetime_secs);
+                    }
+                    esp_next = Instant::now() + esp_interval;
+                    recover_fails = 0;
+                    last_progress = Instant::now();
+                    out!("# tunnel recovered (ESP SA refreshed spi_in={si:#010x} spi_out={so:#010x})");
+                }
+                Err(e) => {
+                    recover_fails += 1;
+                    out!("# recovery attempt {recover_fails}/{MAX_RECOVER_FAILS} failed: {e}");
+                    if recover_fails >= MAX_RECOVER_FAILS {
+                        out!("# giving up — the IKE session is gone (reconnect to re-authenticate)");
+                        TUNNEL_LOST.store(true, Ordering::SeqCst);
+                        TUNNEL_STOP.store(true, Ordering::SeqCst);
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+
         let mut wait = esp_next.saturating_duration_since(Instant::now());
         if let Some(ln) = lease_next {
             wait = wait.min(ln.saturating_duration_since(Instant::now()));
