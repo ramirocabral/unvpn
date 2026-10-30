@@ -582,6 +582,7 @@ fn data_loop(
     // window despite us sending, treat it as dead so the caller reconnects over TLS.
     let started = Instant::now();
     let mut buf = [0u8; 2048];
+    let kick_fd = crate::netmon::kick_fd();
 
     loop {
         if F5_STOP.load(Ordering::SeqCst) {
@@ -593,14 +594,18 @@ fn data_loop(
         let mut fds = [
             libc::pollfd { fd: tun_fd, events: libc::POLLIN, revents: 0 },
             libc::pollfd { fd: sock_fd, events: libc::POLLIN, revents: 0 },
+            libc::pollfd { fd: kick_fd, events: libc::POLLIN, revents: 0 },
         ];
-        let n = unsafe { libc::poll(fds.as_mut_ptr(), 2, 1000) };
+        let n = unsafe { libc::poll(fds.as_mut_ptr(), 3, 1000) };
         if n < 0 {
             let e = std::io::Error::last_os_error();
             if e.kind() == std::io::ErrorKind::Interrupted {
                 continue;
             }
             return Err(format!("poll: {e}"));
+        }
+        if let Some(why) = crate::netmon::took_kick() {
+            return Err(format!("link kicked ({why})"));
         }
 
         if fds[0].revents & libc::POLLIN != 0 {

@@ -30,6 +30,7 @@ Supported VPNs:
 - Export / import of all profiles (with their passwords and VPN files) as one passphrase-encrypted file, to move them to another machine.
 - Tray icon that shows the connection state.
 - Leak protection: an optional kill switch and, by default, an IPv6 egress block (see below).
+- Auto-reconnect: the Fortinet SSL, F5, GlobalProtect, AnyConnect and OpenVPN back-ends rebuild a dropped tunnel on their own, and react within about a second to a resume from sleep or a network change (Wi-Fi ↔ cable) instead of waiting for a keepalive to time out. The session is reused, so no re-auth — unless the gateway has expired it, in which case unvpn reports it and you reconnect.
 
 ## Leak protection
 

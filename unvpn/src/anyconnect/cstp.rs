@@ -354,25 +354,31 @@ fn data_loop(
     let mut last_dtls_rx = now;
     let mut last_dtls_dpd = now;
     let mut buf = [0u8; 2048];
+    let kick_fd = crate::netmon::kick_fd();
 
     loop {
         if AC_STOP.load(Ordering::SeqCst) {
             return Ok(());
         }
         let dtls_fd = dtls.as_ref().map(|d| d.fd()).unwrap_or(-1);
+        // The DTLS slot stays at index 2 (fd = -1 is ignored by poll when absent);
+        // the kick fd is always polled at index 3.
         let mut fds = [
             libc::pollfd { fd: tun_fd, events: libc::POLLIN, revents: 0 },
             libc::pollfd { fd: sock_fd, events: libc::POLLIN, revents: 0 },
             libc::pollfd { fd: dtls_fd, events: libc::POLLIN, revents: 0 },
+            libc::pollfd { fd: kick_fd, events: libc::POLLIN, revents: 0 },
         ];
-        let nfds = if dtls_fd >= 0 { 3 } else { 2 };
-        let n = unsafe { libc::poll(fds.as_mut_ptr(), nfds, 1000) };
+        let n = unsafe { libc::poll(fds.as_mut_ptr(), 4, 1000) };
         if n < 0 {
             let e = std::io::Error::last_os_error();
             if e.kind() == std::io::ErrorKind::Interrupted {
                 continue;
             }
             return Err(format!("poll: {e}"));
+        }
+        if let Some(why) = crate::netmon::took_kick() {
+            return Err(format!("link kicked ({why})"));
         }
 
         // tun → tunnel: prefer DTLS; on a DTLS send error, drop to CSTP for good.

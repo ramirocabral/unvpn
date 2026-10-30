@@ -325,6 +325,7 @@ fn esp_loop(l: &mut EspLink, tun_file: &mut std::fs::File, rekey_at: Option<Inst
     let (mut last_rx, mut last_probe, mut last_stats) = (now, now, now);
     let (mut tin, mut tout) = (0u64, 0u64);
     let mut buf = [0u8; 2048];
+    let kick_fd = crate::netmon::kick_fd();
     loop {
         if GP_STOP.load(Ordering::SeqCst) {
             return End::Stop;
@@ -332,13 +333,17 @@ fn esp_loop(l: &mut EspLink, tun_file: &mut std::fs::File, rekey_at: Option<Inst
         let mut fds = [
             libc::pollfd { fd: tun_fd, events: libc::POLLIN, revents: 0 },
             libc::pollfd { fd: sock_fd, events: libc::POLLIN, revents: 0 },
+            libc::pollfd { fd: kick_fd, events: libc::POLLIN, revents: 0 },
         ];
-        if unsafe { libc::poll(fds.as_mut_ptr(), 2, 1000) } < 0 {
+        if unsafe { libc::poll(fds.as_mut_ptr(), 3, 1000) } < 0 {
             let e = std::io::Error::last_os_error();
             if e.kind() != std::io::ErrorKind::Interrupted {
                 return End::Dropped(format!("poll: {e}"));
             }
             continue;
+        }
+        if let Some(why) = crate::netmon::took_kick() {
+            return End::Dropped(format!("link kicked ({why})"));
         }
         if fds[0].revents & libc::POLLIN != 0 {
             for _ in 0..64 {
@@ -499,6 +504,7 @@ fn ssl_pump(l: &mut SslLink, tun_file: &mut std::fs::File, rekey_at: Option<Inst
     let (mut last_rx, mut last_tx, mut last_stats) = (now, now, now);
     let (mut tin, mut tout) = (0u64, 0u64);
     let mut buf = [0u8; 2048];
+    let kick_fd = crate::netmon::kick_fd();
     loop {
         if GP_STOP.load(Ordering::SeqCst) {
             return Ok(End::Stop);
@@ -506,13 +512,17 @@ fn ssl_pump(l: &mut SslLink, tun_file: &mut std::fs::File, rekey_at: Option<Inst
         let mut fds = [
             libc::pollfd { fd: tun_fd, events: libc::POLLIN, revents: 0 },
             libc::pollfd { fd: l.fd, events: libc::POLLIN, revents: 0 },
+            libc::pollfd { fd: kick_fd, events: libc::POLLIN, revents: 0 },
         ];
-        if unsafe { libc::poll(fds.as_mut_ptr(), 2, 1000) } < 0 {
+        if unsafe { libc::poll(fds.as_mut_ptr(), 3, 1000) } < 0 {
             let e = std::io::Error::last_os_error();
             if e.kind() != std::io::ErrorKind::Interrupted {
                 return Err(format!("poll: {e}"));
             }
             continue;
+        }
+        if let Some(why) = crate::netmon::took_kick() {
+            return Err(format!("link kicked ({why})"));
         }
         if fds[0].revents & libc::POLLIN != 0 {
             for _ in 0..64 {

@@ -586,6 +586,7 @@ fn data_loop(
     let mut last_stats = Instant::now();
     let mut key_born = Instant::now();
     eng.last_rx = Instant::now();
+    let kick_fd = crate::netmon::kick_fd();
 
     loop {
         if stopped() {
@@ -598,14 +599,18 @@ fn data_loop(
         let mut fds = [
             libc::pollfd { fd: tun_fd, events: libc::POLLIN, revents: 0 },
             libc::pollfd { fd: eng.link.fd(), events: libc::POLLIN, revents: 0 },
+            libc::pollfd { fd: kick_fd, events: libc::POLLIN, revents: 0 },
         ];
-        let n = unsafe { libc::poll(fds.as_mut_ptr(), 2, timeout_ms) };
+        let n = unsafe { libc::poll(fds.as_mut_ptr(), 3, timeout_ms) };
         if n < 0 {
             let e = std::io::Error::last_os_error();
             if e.kind() == std::io::ErrorKind::Interrupted {
                 continue;
             }
             return Err(format!("poll: {e}"));
+        }
+        if let Some(why) = crate::netmon::took_kick() {
+            return Err(format!("link kicked ({why})"));
         }
 
         if fds[0].revents & libc::POLLIN != 0 {
