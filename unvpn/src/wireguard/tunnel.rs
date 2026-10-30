@@ -140,6 +140,12 @@ pub fn run(cfg: Config, opts: RunOpts) -> Result<(), String> {
     } else {
         restore.routes = setup_routes(&cfg, &ifname, &endpoints);
         restore.dns = sysnet::set_dns(&iface.dns, &iface.search.join(" "));
+        if crate::leakguard::killswitch_requested() {
+            // WireGuard is dual-stack and the kernel owns its routing; a crude v4/v6
+            // egress firewall would break a legitimate IPv6 tunnel. Use the profile's
+            // AllowedIPs / Table / fwmark for fail-closed routing instead.
+            out!("# note: --killswitch does not apply to WireGuard — use AllowedIPs/Table/fwmark for a kill switch");
+        }
     }
     if stopped() {
         drop(restore);

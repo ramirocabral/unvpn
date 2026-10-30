@@ -17,6 +17,7 @@ mod gnutls;
 mod f5;
 mod gp;
 mod ike;
+mod leakguard;
 mod openvpn;
 mod sysnet;
 mod tun;
@@ -283,7 +284,16 @@ fn run_tunnel(
 
     // Restores DNS when dropped — also on an early return or a panic (e.g. a print
     // to the GUI's stdout pipe after the GUI is gone).
-    let _restore = sysnet::NetRestore { dns: sysnet::set_dns(&dns, &domains), routes: Vec::new() };
+    let gw_v4 = sock.peer_addr().ok().and_then(|a| match a.ip() {
+        std::net::IpAddr::V4(v) => Some(v),
+        std::net::IpAddr::V6(_) => None,
+    });
+    let mut _restore = sysnet::NetRestore {
+        dns: sysnet::set_dns(&dns, &domains),
+        routes: Vec::new(),
+        leak: None,
+    };
+    _restore.leak = leakguard::enable(&tun_name, &gw_v4.into_iter().collect::<Vec<_>>())?;
     TUNNEL_STOP.store(false, Ordering::SeqCst);
     unsafe {
         let h = tunnel_sig_handler as extern "C" fn(libc::c_int) as libc::sighandler_t;
@@ -1137,7 +1147,28 @@ fn cmd_ike(args: &[String]) {
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    // Session-wide leak protection, parsed out before the sub-command so every
+    // back-end sees the same policy without each parsing these itself.
+    //   --killswitch   fail-closed firewall (default off)
+    //   --allow-ipv6   keep IPv6 egress (default: blocked, since the tunnels are v4)
+    let mut killswitch = false;
+    let mut block_ipv6 = true;
+    let args: Vec<String> = std::env::args()
+        .skip(1)
+        .filter(|a| match a.as_str() {
+            "--killswitch" => {
+                killswitch = true;
+                false
+            }
+            "--allow-ipv6" => {
+                block_ipv6 = false;
+                false
+            }
+            _ => true,
+        })
+        .collect();
+    leakguard::configure(killswitch, block_ipv6);
+
     match args.first().map(String::as_str) {
         Some("hello") => cmd_hello(&args[1..]),
         Some("login") => cmd_login(&args[1..]),
@@ -1166,6 +1197,9 @@ fn main() {
             eprintln!("  unvpn gp -g <portal> -u <user> [--connect]            # Palo Alto GlobalProtect back-end");
             eprintln!("  unvpn openvpn -c <profile.ovpn> [-u <user>] [--connect] # OpenVPN back-end");
             eprintln!("  unvpn wireguard -c <profile.conf> --connect            # WireGuard (kernel) back-end");
+            eprintln!("\nglobal flags (any back-end):");
+            eprintln!("  --killswitch   fail-closed firewall: block all egress but the tunnel, gateway, LAN and DHCP");
+            eprintln!("  --allow-ipv6   keep IPv6 egress (default: blocked, since the tunnels are IPv4-only)");
             std::process::exit(2);
         }
     }

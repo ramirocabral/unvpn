@@ -108,6 +108,7 @@ struct App {
     fctver_row: adw::EntryRow,
     sso_row: adw::ComboRow,
     remember_row: adw::SwitchRow,
+    killswitch_row: adw::SwitchRow,
     save_btn: gtk::Button,
 
     connect_btn: gtk::Button,
@@ -240,6 +241,12 @@ impl App {
             .subtitle_lines(0)
             .build();
 
+        let killswitch_row = adw::SwitchRow::builder()
+            .title("Kill switch")
+            .subtitle("Block all traffic outside the tunnel if it drops (LAN and DHCP stay reachable)")
+            .subtitle_lines(0)
+            .build();
+
         let save_btn = gtk::Button::builder().label("Save").css_classes(["flat"]).build();
         let form_group = adw::PreferencesGroup::builder().title("Connection").build();
         form_group.set_header_suffix(Some(&save_btn));
@@ -257,6 +264,7 @@ impl App {
         form_group.add(&remember_key_pass_row);
         form_group.add(&token_row);
         form_group.add(&remember_row);
+        form_group.add(&killswitch_row);
         form_group.add(&advanced_row);
 
         let connect_btn = gtk::Button::builder()
@@ -379,6 +387,7 @@ impl App {
             fctver_row,
             sso_row,
             remember_row,
+            killswitch_row,
             save_btn,
             connect_btn,
             status_group,
@@ -535,6 +544,8 @@ impl App {
         self.user_row.set_visible(need_creds);
         self.password_row.set_visible(need_creds);
         self.remember_row.set_visible(need_creds);
+        // WireGuard is dual-stack and kernel-routed; the kill switch doesn't apply.
+        self.killswitch_row.set_visible(!wireguard);
         let key_pass = openvpn && profiles::ovpn_key_may_need_pass(self.gateway_row.text().trim());
         self.key_pass_row.set_visible(key_pass);
         self.remember_key_pass_row.set_visible(key_pass);
@@ -675,6 +686,7 @@ impl App {
         self.emssn_row.set_text(&p.emssn);
         self.fctver_row.set_text(&p.fctver);
         self.remember_row.set_active(p.remember_password);
+        self.killswitch_row.set_active(p.killswitch);
         self.token_row.set_text("");
         let secret = if p.remember_password { profiles::secret_get(&p.name).unwrap_or_default() } else { String::new() };
         self.password_row.set_text(&secret);
@@ -727,6 +739,7 @@ impl App {
             sso_user_agent: self.ua_row.text().trim().to_string(),
             emssn: self.emssn_row.text().trim().to_string(),
             fctver: self.fctver_row.text().trim().to_string(),
+            killswitch: backend != Backend::WireGuard && self.killswitch_row.is_active(),
         };
 
         let pw = self.password_row.text().to_string();
@@ -1005,6 +1018,7 @@ impl App {
         self.fctver_row.set_text("");
         self.token_row.set_text("");
         self.remember_row.set_active(false);
+        self.killswitch_row.set_active(false);
         self.update_form_visibility();
         self.sync_ui();
         self.name_row.grab_focus();
@@ -1057,7 +1071,7 @@ impl App {
             if n.is_empty() { gw.clone() } else { n }
         };
 
-        let (args, stdin_lines, saml): (Vec<String>, Vec<String>, Option<String>) = match self.backend() {
+        let (mut args, stdin_lines, saml): (Vec<String>, Vec<String>, Option<String>) = match self.backend() {
             Backend::CheckPoint => {
                 let passcode = format!("{}{}", self.password_row.text(), self.token_row.text().trim());
                 self.token_row.set_text(""); // one-time code
@@ -1179,6 +1193,12 @@ impl App {
                 }
             }
         };
+
+        // Fail-closed firewall, as a session-wide flag the engine strips before
+        // dispatch. Not for WireGuard (dual-stack, kernel-routed).
+        if self.backend() != Backend::WireGuard && self.killswitch_row.is_active() {
+            args.push("--killswitch".into());
+        }
 
         self.vpn.borrow_mut().connect(args, stdin_lines, label, saml, sso_ua);
         self.sync_ui();

@@ -165,6 +165,7 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
         };
         restore.routes = setup_routes(gw, &tun_name, &cfg);
         restore.dns = sysnet::set_dns(&sysnet::tunnelled_dns(&dns, &tun_name), &cfg.domains);
+        restore.leak = crate::leakguard::enable(&tun_name, &gw.into_iter().collect::<Vec<_>>())?;
     }
 
     // The F5 protocol expects the tunnel to drop and the client to transparently

@@ -124,6 +124,11 @@ pub struct Profile {
     /// engine's built-in default. Only matters when a gateway pins a version.
     #[serde(default)]
     pub fctver: String,
+    /// Fail-closed firewall: block every packet that isn't the tunnel, the gateway,
+    /// the LAN or DHCP while connected, so a dropped tunnel can't leak traffic in
+    /// clear. Off by default; not used by the WireGuard back-end.
+    #[serde(default)]
+    pub killswitch: bool,
 }
 
 impl Profile {

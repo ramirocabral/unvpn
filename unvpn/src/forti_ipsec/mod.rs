@@ -688,6 +688,7 @@ fn data_plane(
     } else {
         restore.routes = setup_routes(gw, &tun_name, cfg);
         restore.dns = sysnet::set_dns(&sysnet::tunnelled_dns(&cfg.dns, &tun_name), &cfg.domains);
+        restore.leak = crate::leakguard::enable(&tun_name, &[gw])?;
     }
     sysnet::spawn_stdin_disconnect(&STOP);
     tun::set_nonblocking(&tun_file);

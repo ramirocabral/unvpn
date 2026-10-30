@@ -169,12 +169,16 @@ pub struct NetRestore {
     pub dns: Option<DnsBackup>,
     /// `route del …` lines for `ip -batch`.
     pub routes: Vec<String>,
+    /// The kill-switch / IPv6 nftables table, removed last so the link stays
+    /// fail-closed until DNS and routes are back to their pre-VPN state.
+    pub leak: Option<crate::leakguard::LeakGuard>,
 }
 
 impl Drop for NetRestore {
     fn drop(&mut self) {
         restore_dns(self.dns.take());
         let _ = crate::tun::ip_batch(&self.routes);
+        drop(self.leak.take());
     }
 }
 
