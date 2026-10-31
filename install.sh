@@ -23,6 +23,8 @@ uninstall() {
         $S rm -f "$PREFIX/share/icons/hicolor/${sz}x${sz}/apps/unvpn.png"
     done
     [ -f /etc/polkit-1/rules.d/49-unvpn.rules ] && sudo rm -f /etc/polkit-1/rules.d/49-unvpn.rules || true
+    rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/autostart/unvpn.desktop"
+    [ -f /etc/xdg/autostart/unvpn.desktop ] && sudo rm -f /etc/xdg/autostart/unvpn.desktop || true
     echo "Done."
 }
 
@@ -60,6 +62,20 @@ if [ "$ans" = y ] || [ "$ans" = Y ]; then
     sed "s#/usr/local/bin/unvpn#$PREFIX/bin/unvpn#" "$REPO/packaging/49-unvpn.rules" > "$tmp"
     sudo install -Dm644 "$tmp" /etc/polkit-1/rules.d/49-unvpn.rules
     rm -f "$tmp"
+fi
+
+printf "Start unvpn in the tray automatically at login? [y/N] "
+read -r ans
+if [ "$ans" = y ] || [ "$ans" = Y ]; then
+    case "$PREFIX" in
+        /usr|/usr/*|/opt|/opt/*) AUTOSTART_DIR=/etc/xdg/autostart; AS=sudo ;;
+        *) AUTOSTART_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/autostart"; AS= ;;
+    esac
+    $AS install -Dm644 "$REPO/packaging/unvpn-autostart.desktop" "$AUTOSTART_DIR/unvpn.desktop"
+    echo "==> Autostart entry: $AUTOSTART_DIR/unvpn.desktop"
+    echo "    GNOME/KDE honor it automatically. On bare Sway/i3 the compositor does not"
+    echo "    read XDG autostart — add 'exec unvpn-gui --tray' to your WM config, or run an"
+    echo "    autostart helper such as 'dex -a'."
 fi
 
 command -v gtk-update-icon-cache >/dev/null && $S gtk-update-icon-cache -qtf "$PREFIX/share/icons/hicolor" 2>/dev/null || true

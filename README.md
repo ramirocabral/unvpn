@@ -77,6 +77,24 @@ PREFIX=~/.local ./install.sh    # or just for your user
 ./install.sh --uninstall
 ```
 
+## Start at login
+
+The installer can drop an XDG autostart entry (`Exec=unvpn-gui --tray`) that opens
+unvpn minimized in the tray at login — in `/etc/xdg/autostart` for a system install
+or `~/.config/autostart` for a user one. GNOME, KDE and other full desktops honor it
+automatically. A bare compositor like Sway or i3 does not read XDG autostart, so add
+
+```sh
+exec unvpn-gui --tray
+```
+
+to your WM config instead (or run an autostart helper such as `dex -a`). On Sway,
+start it once the tray is up to avoid a race with the bar:
+
+```sh
+exec gdbus wait --session --timeout 30 org.kde.StatusNotifierWatcher && unvpn-gui --tray
+```
+
 ## Command line
 
 ```sh

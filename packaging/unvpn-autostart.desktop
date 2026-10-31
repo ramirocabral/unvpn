@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=unvpn
+GenericName=VPN Client
+Comment=Start unvpn minimized in the system tray at login
+Exec=unvpn-gui --tray
+Icon=unvpn
+Terminal=false
+Categories=Network;Security;
+X-GNOME-Autostart-enabled=true
