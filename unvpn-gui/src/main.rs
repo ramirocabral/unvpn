@@ -77,6 +77,44 @@ fn disconnect_external_f5() {
     }
 }
 
+/// Read a tunnel interface's byte counter from the kernel (world-readable). `iface`
+/// is validated to a safe device-name charset so it can't escape the /sys path.
+fn iface_bytes(iface: &str, which: &str) -> Option<u64> {
+    if iface.is_empty() || !iface.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.')) {
+        return None;
+    }
+    std::fs::read_to_string(format!("/sys/class/net/{iface}/statistics/{which}"))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+fn human_bytes(b: u64) -> String {
+    const U: [&str; 4] = ["B", "KiB", "MiB", "GiB"];
+    let mut v = b as f64;
+    let mut i = 0;
+    while v >= 1024.0 && i < U.len() - 1 {
+        v /= 1024.0;
+        i += 1;
+    }
+    if i == 0 {
+        format!("{b} B")
+    } else {
+        format!("{v:.1} {}", U[i])
+    }
+}
+
+fn human_duration(d: std::time::Duration) -> String {
+    let s = d.as_secs();
+    let (h, m, sec) = (s / 3600, (s % 3600) / 60, s % 60);
+    if h > 0 {
+        format!("{h}h {m:02}m {sec:02}s")
+    } else {
+        format!("{m}m {sec:02}s")
+    }
+}
+
 struct App {
     window: adw::ApplicationWindow,
     toast: adw::ToastOverlay,
@@ -116,6 +154,11 @@ struct App {
     status_group: adw::PreferencesGroup,
     ip_row: adw::ActionRow,
     dns_row: adw::ActionRow,
+    transfer_row: adw::ActionRow,
+    uptime_row: adw::ActionRow,
+    /// The live tunnel's interface name and when it came up, for the stats rows.
+    iface: RefCell<Option<String>>,
+    conn_since: RefCell<Option<std::time::Instant>>,
 
     ext_group: adw::PreferencesGroup,
     ext_gw_row: adw::ActionRow,
@@ -277,9 +320,13 @@ impl App {
 
         let ip_row = adw::ActionRow::builder().title("Internal IP").css_classes(["property"]).build();
         let dns_row = adw::ActionRow::builder().title("DNS").css_classes(["property"]).build();
+        let transfer_row = adw::ActionRow::builder().title("Transfer").css_classes(["property"]).build();
+        let uptime_row = adw::ActionRow::builder().title("Connected for").css_classes(["property"]).build();
         let status_group = adw::PreferencesGroup::builder().title("Active connection").visible(false).build();
         status_group.add(&ip_row);
         status_group.add(&dns_row);
+        status_group.add(&transfer_row);
+        status_group.add(&uptime_row);
 
         let ext_gw_row = adw::ActionRow::builder().title("Gateway").css_classes(["property"]).build();
         let ext_ip_row = adw::ActionRow::builder().title("Internal IP").css_classes(["property"]).build();
@@ -393,6 +440,10 @@ impl App {
             status_group,
             ip_row,
             dns_row,
+            transfer_row,
+            uptime_row,
+            iface: RefCell::new(None),
+            conn_since: RefCell::new(None),
             ext_group,
             ext_gw_row,
             ext_ip_row,
@@ -1031,7 +1082,7 @@ impl App {
                 self.from_tray.set(false);
                 self.start_connect()
             }
-            State::Connecting | State::Connected => {
+            State::Connecting | State::Connected | State::Reconnecting => {
                 self.vpn.borrow_mut().disconnect();
                 self.sync_ui();
             }
@@ -1223,6 +1274,13 @@ impl App {
                 EngineEvent::SsoBrowser { login, watch, user_agent } => {
                     self.open_sso_window(&login, &watch, user_agent.as_deref())
                 }
+                EngineEvent::Iface(name) => {
+                    self.iface.replace(Some(name));
+                    if self.conn_since.borrow().is_none() {
+                        self.conn_since.replace(Some(std::time::Instant::now()));
+                    }
+                    self.status_group.set_visible(true);
+                }
                 EngineEvent::StateChanged => self.sync_ui(),
             },
             UiMsg::Tray(cmd) => self.handle_tray(cmd),
@@ -1257,7 +1315,7 @@ impl App {
                 self.pending_switch.replace(Some(name.to_string()));
                 return;
             }
-            State::Connecting | State::Connected => {
+            State::Connecting | State::Connected | State::Reconnecting => {
                 if *self.active_profile.lock().unwrap() != name {
                     self.pending_switch.replace(Some(name.to_string()));
                 }
@@ -1330,6 +1388,7 @@ impl App {
         if self.vpn.borrow_mut().poll_exit() {
             self.sync_ui();
         }
+        self.update_stats();
         match detect_external_f5() {
             Some(e) => {
                 self.ext_gw_row.set_subtitle(&e.gateway);
@@ -1339,6 +1398,22 @@ impl App {
                 self.ext_group.set_visible(true);
             }
             None => self.ext_group.set_visible(false),
+        }
+    }
+
+    /// Refresh the live-connection stats (transfer counters from the tunnel device,
+    /// and how long it has been up). A no-op unless a tunnel is up.
+    fn update_stats(&self) {
+        if !matches!(self.vpn.borrow().state(), State::Connected | State::Reconnecting) {
+            return;
+        }
+        if let Some(iface) = self.iface.borrow().as_ref() {
+            if let (Some(rx), Some(tx)) = (iface_bytes(iface, "rx_bytes"), iface_bytes(iface, "tx_bytes")) {
+                self.transfer_row.set_subtitle(&format!("↓ {}    ↑ {}", human_bytes(rx), human_bytes(tx)));
+            }
+        }
+        if let Some(since) = *self.conn_since.borrow() {
+            self.uptime_row.set_subtitle(&human_duration(since.elapsed()));
         }
     }
 
@@ -1578,6 +1653,7 @@ impl App {
             State::Disconnected => ("Disconnected", "st-off"),
             State::Connecting => ("Connecting…", "st-busy"),
             State::Connected => ("Connected", "st-on"),
+            State::Reconnecting => ("Reconnecting…", "st-busy"),
             State::Disconnecting => ("Disconnecting…", "st-busy"),
             State::Error(_) => ("Error", "st-err"),
         };
@@ -1588,7 +1664,7 @@ impl App {
             self.store_key_pass();
         }
 
-        if matches!(state, State::Connected) {
+        if matches!(state, State::Connected | State::Reconnecting) {
             let name = self.active_profile.lock().unwrap().clone();
             self.status_pill.set_tooltip_text((!name.is_empty()).then_some(name.as_str()));
         } else {
@@ -1617,8 +1693,12 @@ impl App {
                 self.status_group.set_visible(false);
                 self.ip_row.set_subtitle("");
                 self.dns_row.set_subtitle("");
+                self.transfer_row.set_subtitle("");
+                self.uptime_row.set_subtitle("");
+                self.iface.replace(None);
+                self.conn_since.replace(None);
             }
-            State::Connecting | State::Connected => {
+            State::Connecting | State::Connected | State::Reconnecting => {
                 self.connect_btn.set_label("Disconnect");
                 self.connect_btn.set_css_classes(&["destructive-action", "pill"]);
                 self.connect_btn.set_sensitive(true);
@@ -1784,4 +1864,25 @@ fn main() -> glib::ExitCode {
     });
     app.connect_activate(move |app| build_ui(app, start_hidden));
     app.run_with_args(&gtk_args)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{human_bytes, human_duration};
+    use std::time::Duration;
+
+    #[test]
+    fn bytes_are_human_readable() {
+        assert_eq!(human_bytes(512), "512 B");
+        assert_eq!(human_bytes(1536), "1.5 KiB");
+        assert_eq!(human_bytes(5 * 1024 * 1024), "5.0 MiB");
+        assert_eq!(human_bytes(3 * 1024 * 1024 * 1024), "3.0 GiB");
+    }
+
+    #[test]
+    fn durations_are_human_readable() {
+        assert_eq!(human_duration(Duration::from_secs(45)), "0m 45s");
+        assert_eq!(human_duration(Duration::from_secs(125)), "2m 05s");
+        assert_eq!(human_duration(Duration::from_secs(3661)), "1h 01m 01s");
+    }
 }

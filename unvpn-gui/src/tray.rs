@@ -39,7 +39,7 @@ impl ksni::Tray for VpnTray {
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
         let color = match &*self.state.lock().unwrap() {
             State::Connected => [46, 194, 126],
-            State::Connecting | State::Disconnecting => [245, 194, 17],
+            State::Connecting | State::Reconnecting | State::Disconnecting => [245, 194, 17],
             State::Error(_) => [224, 27, 36],
             State::Disconnected => [154, 153, 150],
         };
@@ -52,6 +52,10 @@ impl ksni::Tray for VpnTray {
                 if p.is_empty() { "Connected".to_string() } else { p }
             }
             State::Connecting => "Connecting…".to_string(),
+            State::Reconnecting => {
+                let p = self.profile.lock().unwrap().clone();
+                if p.is_empty() { "Reconnecting…".to_string() } else { format!("Reconnecting — {p}") }
+            }
             State::Disconnecting => "Disconnecting…".to_string(),
             State::Error(_) => "Error".to_string(),
             State::Disconnected => "Disconnected".to_string(),
@@ -70,11 +74,12 @@ impl ksni::Tray for VpnTray {
         use ksni::menu::*;
         let state = self.state.lock().unwrap().clone();
         let active = self.profile.lock().unwrap().clone();
-        let up = matches!(state, State::Connected | State::Connecting);
+        let up = matches!(state, State::Connected | State::Connecting | State::Reconnecting);
 
         let status = match &state {
             State::Connected => format!("Connected — {active}"),
             State::Connecting => format!("Connecting to {active}…"),
+            State::Reconnecting => format!("Reconnecting — {active}…"),
             State::Disconnecting => "Disconnecting…".to_string(),
             State::Error(_) => "Connection failed".to_string(),
             State::Disconnected => "Disconnected".to_string(),

@@ -19,6 +19,9 @@ pub enum State {
     Disconnected,
     Connecting,
     Connected,
+    /// The tunnel dropped and the back-end is rebuilding it (reconnect / rekey /
+    /// address change). The engine is still running; the data plane is briefly down.
+    Reconnecting,
     /// `disconnect` sent; the engine is tearing down (DNS/routes) and will exit.
     Disconnecting,
     Error(String),
@@ -43,6 +46,9 @@ pub enum EngineEvent {
     /// `sso` prompt with what `watch` captures. `user_agent`, when set, overrides
     /// the sign-in window's User-Agent (e.g. to present as Windows).
     SsoBrowser { login: String, watch: SsoWatch, user_agent: Option<String> },
+    /// The tunnel device name ("tun <name> up" / "interface <name> up"), so the UI
+    /// can read its byte counters from /sys and time the session.
+    Iface(String),
     StateChanged,
 }
 
@@ -84,6 +90,27 @@ fn parse_auth_prompt(line: &str) -> Option<AuthPrompt> {
     let rest = line.strip_prefix("AUTH-PROMPT: ")?;
     let (kind, message) = rest.split_once(": ").unwrap_or((rest, ""));
     Some(AuthPrompt { kind: kind.trim().to_string(), message: message.trim().to_string() })
+}
+
+/// A back-end log line that means the live tunnel dropped and a rebuild has begun.
+fn is_reconnect_start(line: &str) -> bool {
+    [
+        "tunnel dropped",
+        "link dropped",
+        "link event",
+        "reconnecting in",
+        "rebinding the tunnel socket",
+        "probing the gateway",
+    ]
+    .iter()
+    .any(|m| line.contains(m))
+}
+
+/// A back-end log line that means the tunnel came back up after a reconnect. (The
+/// scheduled "CHILD SA rekeyed (lifetime)" also matches, but only flips the state
+/// back when we were actually Reconnecting, so a healthy rekey is a no-op.)
+fn is_reconnect_done(line: &str) -> bool {
+    ["tunnel recovered", "reconnected", "tunnel back up", "CHILD SA rekeyed"].iter().any(|m| line.contains(m))
 }
 
 /// The SSO entry point the engine prints for `gateway` (`host[:port]`, default 443):
@@ -204,7 +231,7 @@ impl Vpn {
         self.child.is_some()
             || matches!(
                 *self.state.lock().unwrap(),
-                State::Connecting | State::Connected | State::Disconnecting
+                State::Connecting | State::Connected | State::Reconnecting | State::Disconnecting
             )
     }
 
@@ -371,6 +398,11 @@ impl Vpn {
                             let dns = rest.split(']').next().unwrap_or("").to_string();
                             let _ = tx.try_send(UiMsg::Engine(EngineEvent::Dns(dns)));
                         }
+                        // The tunnel device: "tun <name> up …" / "interface <name> up …".
+                        let toks: Vec<&str> = clean.split_whitespace().collect();
+                        if toks.len() >= 3 && (toks[0] == "tun" || toks[0] == "interface") && toks[2] == "up" {
+                            let _ = tx.try_send(UiMsg::Engine(EngineEvent::Iface(toks[1].to_string())));
+                        }
                     }
 
                     if disconnecting {
@@ -378,6 +410,20 @@ impl Vpn {
                     } else if !is_err && clean.contains("TUNNEL UP") {
                         *state.lock().unwrap() = State::Connected;
                         let _ = tx.try_send(UiMsg::Engine(EngineEvent::StateChanged));
+                    } else if is_reconnect_done(&clean) {
+                        let mut st = state.lock().unwrap();
+                        if *st == State::Reconnecting {
+                            *st = State::Connected;
+                            drop(st);
+                            let _ = tx.try_send(UiMsg::Engine(EngineEvent::StateChanged));
+                        }
+                    } else if is_reconnect_start(&clean) {
+                        let mut st = state.lock().unwrap();
+                        if *st == State::Connected {
+                            *st = State::Reconnecting;
+                            drop(st);
+                            let _ = tx.try_send(UiMsg::Engine(EngineEvent::StateChanged));
+                        }
                     } else if clean.contains("AUTH FAILED")
                         || clean.starts_with("IKE failed")
                         || clean.starts_with("forti failed")
@@ -463,11 +509,11 @@ impl Vpn {
                             "engine exited before connecting ({status}) — auth cancelled or failed; see log"
                         ));
                     }
-                    // Exited on its own while up: a clean peer close is a plain
-                    // disconnect; a non-zero exit means the tunnel dropped and the
-                    // engine gave up (e.g. an IKE session that can't rekey) — surface
+                    // Exited on its own while up (or mid-reconnect): a clean peer close
+                    // is a plain disconnect; a non-zero exit means the tunnel dropped and
+                    // the engine gave up (e.g. an IKE session that can't rekey) — surface
                     // it so the user knows to reconnect.
-                    State::Connected => {
+                    State::Connected | State::Reconnecting => {
                         *st = if status.success() {
                             State::Disconnected
                         } else {
@@ -480,5 +526,39 @@ impl Vpn {
             }
         }
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reconnect_markers_from_real_backend_logs() {
+        // Drop / rebuild starts (lines the back-ends actually print).
+        for l in [
+            "warning: link dropped (udp timeout) — reconnecting over TLS …",
+            "tunnel dropped (link kicked (network changed))",
+            "reconnecting in 1s (attempt 1/10) …",
+            "link event (network changed) — rekeying the CHILD SA",
+            "local address changed to 203.0.113.9 — rebinding the tunnel socket",
+            "link event (network changed) — probing the gateway",
+        ] {
+            assert!(is_reconnect_start(l), "should start: {l}");
+            assert!(!is_reconnect_done(l), "should not be done: {l}");
+        }
+        // Back-up / recovered.
+        for l in [
+            "reconnected — tunnel back up (IP 10.0.0.2)",
+            "reconnected over TLS",
+            "tunnel recovered (ESP SA refreshed spi_in=0x1 spi_out=0x2)",
+            "CHILD SA rekeyed — tunnel recovered",
+        ] {
+            assert!(is_reconnect_done(l), "should be done: {l}");
+        }
+        // Steady-state chatter must not flip the state.
+        for l in ["stats: esp_in=1 esp_out=2 dec_err=0", "TUNNEL UP (ESP over NAT-T)."] {
+            assert!(!is_reconnect_start(l), "false start: {l}");
+        }
     }
 }
