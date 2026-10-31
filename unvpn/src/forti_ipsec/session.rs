@@ -7,7 +7,7 @@
 
 use super::crypto::{self, Ikev2Crypto, SaKeys};
 use super::model::*;
-use super::wire::{self, Message, Notify, Payload, Proposal, Transform};
+use super::wire::{self, Message, Notify, Payload, Proposal, TrafficSelector, Transform};
 use crate::ike::crypto::{random, IkeCrypto};
 use openssl::hash::{Hasher, MessageDigest};
 use std::net::Ipv4Addr;
@@ -306,6 +306,114 @@ impl Ikev2Session {
             &i2r,
         )
     }
+
+    /// ESP proposal for a CREATE_CHILD_SA rekey, carrying a fresh inbound SPI, and a
+    /// D-H group transform when PFS is used.
+    fn esp_proposal_with_spi(&self, spi: u32, pfs_group: Option<u16>) -> Proposal {
+        let mut transforms = vec![
+            Transform::with_key_len(TransformType::Encryption, self.esp.encr, self.esp.encr_key_bits as u16),
+            Transform::new(TransformType::Integrity, self.esp.integ),
+        ];
+        if let Some(g) = pfs_group {
+            transforms.push(Transform::new(TransformType::DiffieHellman, g));
+        }
+        transforms.push(Transform::new(TransformType::Esn, ESN_NONE));
+        Proposal { num: 1, protocol: PROTO_ESP, spi: spi.to_be_bytes().to_vec(), transforms }
+    }
+
+    /// Inner payloads for a CREATE_CHILD_SA that rekeys the current ESP CHILD SA
+    /// (RFC 7296 §1.3.3): REKEY_SA names the SA being replaced, SA offers a fresh
+    /// inbound SPI, Nonce seeds the new key material, the TS mirror the originals.
+    /// `pfs` adds a D-H group + KE payload for Perfect Forward Secrecy (FortiGate's
+    /// phase-2 default; without it the rekey is refused with NO_PROPOSAL_CHOSEN).
+    pub fn rekey_child_payloads(&self, new_spi_i: u32, ni_new: &[u8], pfs: Option<(u16, Vec<u8>)>) -> Vec<Payload> {
+        let group = pfs.as_ref().map(|(g, _)| *g);
+        let mut ps = vec![
+            Payload::Notify(Notify {
+                protocol: PROTO_ESP,
+                spi: self.esp_spi_i.to_be_bytes().to_vec(),
+                ntype: NotifyType::RekeySa.into(),
+                data: vec![],
+            }),
+            Payload::Sa(vec![self.esp_proposal_with_spi(new_spi_i, group)]),
+            Payload::Nonce(ni_new.to_vec()),
+        ];
+        if let Some((g, pubkey)) = pfs {
+            ps.push(Payload::Ke { group: g, data: pubkey });
+        }
+        ps.push(Payload::Tsi(vec![TrafficSelector::ipv4_any()]));
+        ps.push(Payload::Tsr(vec![TrafficSelector::ipv4_any()]));
+        ps
+    }
+
+    /// Read a CREATE_CHILD_SA response: the gateway's new ESP SPI, its nonce, and its
+    /// KE payload (present only under PFS).
+    pub fn parse_child_response(&self, payloads: &[Payload]) -> Result<(u32, Vec<u8>, Option<Vec<u8>>), String> {
+        if let Some(t) = payloads.iter().find_map(|p| match p {
+            Payload::Notify(n) if n.ntype < 16384 => Some(n.ntype),
+            _ => None,
+        }) {
+            return Err(format!("gateway rejected the rekey (NOTIFY {t})"));
+        }
+        let spi = payloads
+            .iter()
+            .find_map(|p| match p {
+                Payload::Sa(props) => props.iter().find(|p| p.protocol == PROTO_ESP).and_then(|pr| {
+                    (pr.spi.len() == 4).then(|| u32::from_be_bytes(pr.spi[..4].try_into().unwrap()))
+                }),
+                _ => None,
+            })
+            .ok_or("CREATE_CHILD_SA reply without an ESP SPI")?;
+        let nr = payloads
+            .iter()
+            .find_map(|p| match p {
+                Payload::Nonce(n) => Some(n.clone()),
+                _ => None,
+            })
+            .ok_or("CREATE_CHILD_SA reply without a Nonce")?;
+        let ke = payloads.iter().find_map(|p| match p {
+            Payload::Ke { data, .. } => Some(data.clone()),
+            _ => None,
+        });
+        Ok((spi, nr, ke))
+    }
+
+    /// Build the rekeyed ESP SA from the fresh SPIs and nonces. With PFS the D-H
+    /// shared secret prefixes the seed: KEYMAT = prf+(SK_d, [g^ir |] Ni | Nr).
+    pub fn rekeyed_esp_sa(&self, new_spi_i: u32, new_spi_r: u32, dh_shared: Option<&[u8]>, ni_new: &[u8], nr_new: &[u8]) -> Result<crate::ike::esp::EspSa, String> {
+        let per_dir = self.esp.key_bytes();
+        let mut seed = Vec::new();
+        if let Some(g) = dh_shared {
+            seed.extend_from_slice(g);
+        }
+        seed.extend_from_slice(ni_new);
+        seed.extend_from_slice(nr_new);
+        let km = self.crypto().prf_plus(&self.keys().sk_d, &seed, 2 * per_dir);
+        // prf+ yields the i→r key first, then r→i. Inbound (gateway→us) uses r2i with
+        // our SPI; outbound (us→gateway) uses i2r with the gateway's SPI — same split
+        // as the initial CHILD SA in make_esp_sa.
+        let (i2r, r2i) = (&km[..per_dir], &km[per_dir..2 * per_dir]);
+        let transform_id = u8::from(crate::ike::model::TransformId::EspAesCbc);
+        let esp_auth = esp_auth_alg(self.esp.integ);
+        crate::ike::esp::EspSa::new(transform_id, esp_auth, self.esp.encr_key_bits, new_spi_i, r2i, new_spi_r, i2r)
+    }
+
+    /// Wrap `inner` as an SK response. We are still the IKE SA initiator, so the I
+    /// bit stays set; the R bit marks this a response to a gateway-initiated exchange
+    /// (e.g. answering the gateway's DPD so it keeps the SA alive).
+    pub fn encrypt_resp(&self, exchange: u8, message_id: u32, inner: &[Payload]) -> Vec<u8> {
+        encrypt_message(
+            self.crypto(),
+            &self.keys().sk_ei,
+            &self.keys().sk_ai,
+            self.spi_i,
+            self.spi_r,
+            exchange,
+            FLAG_INITIATOR | FLAG_RESPONSE,
+            message_id,
+            inner,
+        )
+    }
 }
 
 /// Map an IKEv2 INTEG id to the ike::esp auth-alg constant.
@@ -572,6 +680,55 @@ mod tests {
         let n = msg.len();
         msg[n - 1] ^= 0xff;
         assert!(decrypt_message(&crypto, &sk_e, &sk_a, &msg).is_err());
+    }
+
+    #[test]
+    fn rekey_child_payloads_name_old_and_new_spi() {
+        let mut s = Ikev2Session::new(IkeSuite::default_fgt(), EspSuite::default_fgt()).unwrap();
+        s.esp_spi_i = 0x0a0b0c0d; // the SA being rekeyed (our current inbound SPI)
+        let new_spi = 0x11223344u32;
+        let ps = s.rekey_child_payloads(new_spi, &[0x5a; 32], None);
+        // REKEY_SA notify over ESP, pointing at the old inbound SPI.
+        let notify = ps.iter().find_map(|p| match p {
+            Payload::Notify(n) if n.ntype == NotifyType::RekeySa.into() => Some(n),
+            _ => None,
+        }).expect("REKEY_SA notify");
+        assert_eq!(notify.protocol, PROTO_ESP);
+        assert_eq!(notify.spi, 0x0a0b0c0du32.to_be_bytes());
+        // SA proposal carries the fresh inbound SPI.
+        let sa_spi = ps.iter().find_map(|p| match p {
+            Payload::Sa(props) => Some(props[0].spi.clone()),
+            _ => None,
+        }).expect("SA proposal");
+        assert_eq!(sa_spi, new_spi.to_be_bytes());
+        assert!(ps.iter().any(|p| matches!(p, Payload::Nonce(_))));
+        assert!(ps.iter().any(|p| matches!(p, Payload::Tsi(_))));
+        assert!(ps.iter().any(|p| matches!(p, Payload::Tsr(_))));
+    }
+
+    #[test]
+    fn parse_child_response_reads_spi_and_nonce() {
+        let s = Ikev2Session::new(IkeSuite::default_fgt(), EspSuite::default_fgt()).unwrap();
+        let gw_spi = 0xdeadbeefu32;
+        let prop = Proposal {
+            num: 1,
+            protocol: PROTO_ESP,
+            spi: gw_spi.to_be_bytes().to_vec(),
+            transforms: vec![Transform::new(TransformType::Integrity, INTEG_HMAC_SHA256_128)],
+        };
+        let ok = vec![Payload::Sa(vec![prop]), Payload::Nonce(vec![0x7c; 32])];
+        let (spi, nr, ke) = s.parse_child_response(&ok).unwrap();
+        assert_eq!(spi, gw_spi);
+        assert_eq!(nr, vec![0x7c; 32]);
+        assert!(ke.is_none());
+        // An error notify (type < 16384) is a rejection.
+        let err = vec![Payload::Notify(Notify {
+            protocol: PROTO_ESP,
+            spi: vec![],
+            ntype: NotifyType::NoProposalChosen.into(),
+            data: vec![],
+        })];
+        assert!(s.parse_child_response(&err).is_err());
     }
 
     #[test]

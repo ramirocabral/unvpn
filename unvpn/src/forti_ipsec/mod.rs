@@ -279,7 +279,7 @@ fn run(o: &Opts) -> Result<(), String> {
     }
 
     let esp = session.make_esp_sa()?;
-    data_plane(natt, esp, assigned, &cfg, gw, o.no_routes)
+    data_plane(natt, session, esp, assigned, &cfg, gw, o.no_routes)
 }
 
 /// IKE_SA_INIT with COOKIE and INVALID_KE_PAYLOAD retries.
@@ -649,7 +649,8 @@ fn verify_gateway_auth(session: &Ikev2Session, o: &Opts, payloads: &[Payload]) -
 /// (NAT-T, port 4500), with routes/DNS and a NAT keepalive. Blocks until stop.
 fn data_plane(
     udp: IkeUdp,
-    esp: crate::ike::esp::EspSa,
+    mut session: Ikev2Session,
+    mut esp: crate::ike::esp::EspSa,
     assigned: Ipv4Addr,
     cfg: &config::TunnelConfig,
     gw: Ipv4Addr,
@@ -659,7 +660,7 @@ fn data_plane(
     use std::io::Read;
     use std::os::unix::io::AsRawFd;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
     static STOP: AtomicBool = AtomicBool::new(false);
 
@@ -701,14 +702,18 @@ fn data_plane(
     let (mut tin, mut tout, mut derr) = (0u64, 0u64, 0u64);
     let mut last_ka = Instant::now();
     let mut last_stats = Instant::now();
-    // Dead-peer detection: with no IKEv2 DPD/rekey implemented, the drop signals are
-    // a resume/network-change kick, and "sending ESP but getting nothing back for a
-    // while". There is no silent recovery (a fresh IKE_AUTH needs a new OTP), so a
-    // drop ends the session with a clear error for the user to reconnect.
-    const DEAD_SECS: u64 = 60;
-    const MIN_SENT_NO_REPLY: u64 = 4;
+    // Liveness and recovery. A stall with outbound traffic, or a resume/network
+    // kick, triggers a CREATE_CHILD_SA rekey (fresh ESP keys under the live IKE SA,
+    // no re-auth); a quiet tunnel is probed with DPD instead of making a new SA. The
+    // CHILD SA is also rekeyed on a timer so it doesn't expire. Only when the IKE SA
+    // itself is gone (rekey/DPD unanswered) does the session end with an error.
+    const PROBE_SECS: u64 = 45;
+    const MAX_RECOVER_FAILS: u32 = 2;
+    let child_rekey = Duration::from_secs(child_rekey_secs());
+    let mut rekey_next = Instant::now() + child_rekey;
     let mut last_rx_at = Instant::now();
-    let (mut last_tin, mut last_tout, mut sent_since_rx) = (0u64, 0u64, 0u64);
+    let mut last_tin = 0u64;
+    let mut recover_fails = 0u32;
     let mut lost: Option<String> = None;
 
     loop {
@@ -726,10 +731,6 @@ fn data_plane(
             if e.kind() == std::io::ErrorKind::Interrupted {
                 continue;
             }
-            break;
-        }
-        if let Some(why) = crate::netmon::took_kick() {
-            lost = Some(format!("link event ({why})"));
             break;
         }
 
@@ -761,7 +762,11 @@ fn data_plane(
             loop {
                 match sock.recv(&mut buf) {
                     Ok(m) if m >= 4 && buf[..4] == [0, 0, 0, 0] => {
-                    // IKE message on 4500 (DPD / Delete) — ignored for now.
+                        // A gateway-initiated IKE message (DPD request, or a Delete):
+                        // answer DPD to stay alive; a Delete ends the session.
+                        if let Some(why) = handle_inbound_ike(&udp, &session, &buf[4..m]) {
+                            lost = Some(why);
+                        }
                     }
                     Ok(m) if m > 8 => match esp.decode(&buf[..m]) {
                         Ok(ip) if tun::is_ipv4(&ip) => {
@@ -790,28 +795,220 @@ fn data_plane(
             last_stats = Instant::now();
         }
 
-        // Dead-peer heuristic: ESP coming back resets the timer; otherwise, if we
-        // have sent a handful of packets with no reply for DEAD_SECS, the peer is
-        // gone (a NAT rebind or a path change the gateway didn't follow).
+        if lost.is_some() {
+            break;
+        }
+
+        // A decrypted ESP packet is proof of life: reset the liveness timer.
         if tin > last_tin {
             last_tin = tin;
             last_rx_at = Instant::now();
-            sent_since_rx = 0;
+            recover_fails = 0;
         }
-        sent_since_rx += tout - last_tout;
-        last_tout = tout;
-        if last_rx_at.elapsed().as_secs() >= DEAD_SECS && sent_since_rx >= MIN_SENT_NO_REPLY {
-            lost = Some(format!("no reply from the gateway for {}s while sending", last_rx_at.elapsed().as_secs()));
-            break;
+
+        let kicked = crate::netmon::took_kick();
+        let stale = last_rx_at.elapsed().as_secs() >= PROBE_SECS;
+
+        if let Some(why) = kicked {
+            // Resume / network change: the ESP path (NAT mapping) may be stale, so
+            // rekey the CHILD SA to recover it under the live IKE SA (no re-auth).
+            out!("# link event ({why}) — rekeying the CHILD SA");
+            match rekey_child(&udp, &sock, &mut tun_file, &esp, &mut session) {
+                Ok(new) => {
+                    esp = new;
+                    last_rx_at = Instant::now();
+                    recover_fails = 0;
+                    rekey_next = Instant::now() + child_rekey;
+                    out!("# CHILD SA rekeyed — tunnel recovered");
+                }
+                Err(e) => {
+                    recover_fails += 1;
+                    out!("# recovery attempt {recover_fails}/{MAX_RECOVER_FAILS} failed: {e}");
+                    if recover_fails >= MAX_RECOVER_FAILS {
+                        lost = Some(format!("{why}; CHILD SA rekey failed"));
+                        break;
+                    }
+                }
+            }
+        } else if stale {
+            // No traffic for a while: probe liveness with DPD. This elicits a
+            // guaranteed reply (unlike data, which may be one-way or just idle) and
+            // makes no new SA, so it never churns a healthy tunnel.
+            match dpd(&udp, &sock, &mut tun_file, &esp, &mut session) {
+                Ok(()) => {
+                    last_rx_at = Instant::now();
+                    recover_fails = 0;
+                }
+                Err(e) => {
+                    recover_fails += 1;
+                    out!("# DPD {recover_fails}/{MAX_RECOVER_FAILS} unanswered: {e}");
+                    if recover_fails >= MAX_RECOVER_FAILS {
+                        lost = Some("gateway stopped answering DPD".to_string());
+                        break;
+                    }
+                }
+            }
+        } else if Instant::now() >= rekey_next {
+            match rekey_child(&udp, &sock, &mut tun_file, &esp, &mut session) {
+                Ok(new) => {
+                    esp = new;
+                    out!("# CHILD SA rekeyed (lifetime)");
+                }
+                Err(e) => out!("# scheduled rekey failed: {e} — keeping the current SA"),
+            }
+            rekey_next = Instant::now() + child_rekey;
         }
     }
 
     out!("# disconnecting — restoring DNS/routes …");
     drop(restore);
     match lost {
-        Some(why) => Err(format!("tunnel lost ({why}) — reconnect to re-authenticate")),
+        Some(why) => Err(format!("tunnel lost ({why}) — reconnect")),
         None => Ok(()),
     }
+}
+
+/// CHILD SA rekey interval (seconds), overridable for testing. Clamped to ≥ 20 s.
+fn child_rekey_secs() -> u64 {
+    std::env::var("UNVPN_REKEY_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(|n| n.max(20))
+        .unwrap_or(1200)
+}
+
+/// Run one initiator IKE exchange over the NAT-T socket: (re)transmit `req`, and
+/// while waiting keep forwarding ESP data both ways (a rekey must not stall user
+/// traffic). Returns the decrypted response payloads for our `msg_id`.
+#[allow(clippy::too_many_arguments)]
+fn ike_exchange(
+    udp: &IkeUdp,
+    sock: &std::net::UdpSocket,
+    tun_file: &mut std::fs::File,
+    esp: &crate::ike::esp::EspSa,
+    session: &Ikev2Session,
+    req: &[u8],
+    msg_id: u32,
+    tries: u32,
+) -> Result<Vec<Payload>, String> {
+    use std::io::{Read, Write};
+    use std::os::unix::io::AsRawFd;
+    use std::time::{Duration, Instant};
+    let (tun_fd, sock_fd) = (tun_file.as_raw_fd(), sock.as_raw_fd());
+    let mut buf = [0u8; 2048];
+    for _ in 0..tries {
+        udp.send(req)?;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            let ms = deadline.saturating_duration_since(Instant::now()).as_millis().min(500) as i32;
+            let mut fds = [
+                libc::pollfd { fd: tun_fd, events: libc::POLLIN, revents: 0 },
+                libc::pollfd { fd: sock_fd, events: libc::POLLIN, revents: 0 },
+            ];
+            if unsafe { libc::poll(fds.as_mut_ptr(), 2, ms) } <= 0 {
+                continue;
+            }
+            if fds[0].revents & libc::POLLIN != 0 {
+                for _ in 0..64 {
+                    match tun_file.read(&mut buf) {
+                        Ok(m) if crate::tun::is_ipv4(&buf[..m]) => {
+                            if let Ok(p) = esp.encode(&buf[..m]) {
+                                let _ = sock.send(&p);
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                        Err(_) => break,
+                    }
+                }
+            }
+            if fds[1].revents & libc::POLLIN != 0 {
+                loop {
+                    match sock.recv(&mut buf) {
+                        Ok(m) if m >= 4 && buf[..4] == [0, 0, 0, 0] => {
+                            if let Ok((hdr, payloads)) = session.decrypt(&buf[4..m]) {
+                                if hdr.message_id == msg_id && hdr.flags & model::FLAG_RESPONSE != 0 {
+                                    return Ok(payloads);
+                                }
+                            }
+                        }
+                        Ok(m) if m > 8 => {
+                            if let Ok(ip) = esp.decode(&buf[..m]) {
+                                if crate::tun::is_ipv4(&ip) {
+                                    let _ = tun_file.write_all(&ip);
+                                }
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => break,
+                        Err(_) => break,
+                    }
+                }
+            }
+        }
+    }
+    Err("no IKE response".into())
+}
+
+/// Rekey the ESP CHILD SA via CREATE_CHILD_SA under the live IKE SA (no re-auth),
+/// returning the fresh ESP SA to swap in. Consumes a message id up front so a
+/// failed attempt retries with a new one.
+fn rekey_child(
+    udp: &IkeUdp,
+    sock: &std::net::UdpSocket,
+    tun_file: &mut std::fs::File,
+    esp: &crate::ike::esp::EspSa,
+    session: &mut Ikev2Session,
+) -> Result<crate::ike::esp::EspSa, String> {
+    let new_spi_i = u32::from_be_bytes(crate::ike::crypto::random(4).try_into().unwrap()).max(0x1000);
+    let ni_new = crate::ike::crypto::random(32);
+    // PFS with the phase-1 D-H group (FortiGate phase-2 default). Without it the
+    // gateway refuses the rekey with NO_PROPOSAL_CHOSEN.
+    let dh = crypto::dh_new(model::DH_MODP2048)?;
+    let msg_id = session.next_msg_id;
+    session.next_msg_id = msg_id + 1;
+    let payloads = session.rekey_child_payloads(new_spi_i, &ni_new, Some((model::DH_MODP2048, dh.public_key())));
+    let req = session.encrypt(model::ExchangeType::CreateChildSa.into(), msg_id, &payloads);
+    let resp = ike_exchange(udp, sock, tun_file, esp, session, &req, msg_id, 4)?;
+    let (new_spi_r, nr, ke) = session.parse_child_response(&resp)?;
+    let shared = match ke {
+        Some(k) => Some(dh.shared_secret(&k)?),
+        None => None,
+    };
+    let new_esp = session.rekeyed_esp_sa(new_spi_i, new_spi_r, shared.as_deref(), &ni_new, &nr)?;
+    session.esp_spi_i = new_spi_i;
+    session.esp_spi_r = new_spi_r;
+    Ok(new_esp)
+}
+
+/// Liveness probe: an empty INFORMATIONAL request the gateway must answer.
+fn dpd(
+    udp: &IkeUdp,
+    sock: &std::net::UdpSocket,
+    tun_file: &mut std::fs::File,
+    esp: &crate::ike::esp::EspSa,
+    session: &mut Ikev2Session,
+) -> Result<(), String> {
+    let msg_id = session.next_msg_id;
+    session.next_msg_id = msg_id + 1;
+    let req = session.encrypt(model::ExchangeType::Informational.into(), msg_id, &[]);
+    ike_exchange(udp, sock, tun_file, esp, session, &req, msg_id, 4).map(|_| ())
+}
+
+/// Handle a gateway-initiated IKE message: answer an INFORMATIONAL (DPD) request so
+/// the gateway keeps the SA up, and report a Delete as the end of the session.
+fn handle_inbound_ike(udp: &IkeUdp, session: &Ikev2Session, raw: &[u8]) -> Option<String> {
+    let (hdr, payloads) = session.decrypt(raw).ok()?;
+    let is_request = hdr.flags & model::FLAG_RESPONSE == 0;
+    if is_request && hdr.exchange == u8::from(model::ExchangeType::Informational) {
+        let resp = session.encrypt_resp(u8::from(model::ExchangeType::Informational), hdr.message_id, &[]);
+        let _ = udp.send(&resp);
+    }
+    payloads
+        .iter()
+        .any(|p| matches!(p, Payload::Delete { .. }))
+        .then(|| "gateway deleted the SA".to_string())
 }
 
 /// Pin the gateway to its pre-VPN path, then install split routes (or a full tunnel
