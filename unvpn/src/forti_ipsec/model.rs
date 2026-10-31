@@ -172,6 +172,8 @@ reg! {
         EspTfcPaddingNotSupported = 16394,
         NonFirstFragmentsAlso = 16395,
         MobikeSupported = 16396,
+        UpdateSaAddresses = 16400,
+        Cookie2 = 16401,
         EapOnlyAuthentication = 16417,
         RedirectSupported = 16406,
         IkeFragmentationSupported = 16430,

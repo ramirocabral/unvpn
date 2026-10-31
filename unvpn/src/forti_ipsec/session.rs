@@ -86,6 +86,9 @@ pub struct Ikev2Session {
     pub esp_spi_r: u32,
     pub esp: EspSuite,
     pub nat_detected: bool,
+    /// The gateway echoed MOBIKE_SUPPORTED in IKE_AUTH, so an address change can be
+    /// signalled with UPDATE_SA_ADDRESSES instead of a full reconnect (RFC 4555).
+    pub mobike: bool,
 }
 
 impl Ikev2Session {
@@ -113,6 +116,7 @@ impl Ikev2Session {
             esp_spi_r: 0,
             esp: esp,
             nat_detected: false,
+            mobike: false,
         })
     }
 
@@ -396,6 +400,27 @@ impl Ikev2Session {
         let transform_id = u8::from(crate::ike::model::TransformId::EspAesCbc);
         let esp_auth = esp_auth_alg(self.esp.integ);
         crate::ike::esp::EspSa::new(transform_id, esp_auth, self.esp.encr_key_bits, new_spi_i, r2i, new_spi_r, i2r)
+    }
+
+    /// Payloads for a MOBIKE address update (RFC 4555 §3.5): UPDATE_SA_ADDRESSES and
+    /// fresh NAT-D hashes for the new source/destination, so the responder re-homes
+    /// the SA to the address this INFORMATIONAL arrives from.
+    pub fn mobike_update_payloads(&self, gw: Ipv4Addr, gw_port: u16, local: Ipv4Addr, local_port: u16) -> Vec<Payload> {
+        vec![
+            Payload::Notify(Notify { protocol: 0, spi: vec![], ntype: NotifyType::UpdateSaAddresses.into(), data: vec![] }),
+            Payload::Notify(Notify {
+                protocol: 0,
+                spi: vec![],
+                ntype: NotifyType::NatDetectionSourceIp.into(),
+                data: nat_hash(&self.spi_i, &self.spi_r, local, local_port),
+            }),
+            Payload::Notify(Notify {
+                protocol: 0,
+                spi: vec![],
+                ntype: NotifyType::NatDetectionDestinationIp.into(),
+                data: nat_hash(&self.spi_i, &self.spi_r, gw, gw_port),
+            }),
+        ]
     }
 
     /// Wrap `inner` as an SK response. We are still the IKE SA initiator, so the I

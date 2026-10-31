@@ -384,6 +384,14 @@ fn authenticate(session: &mut Ikev2Session, udp: &IkeUdp, o: &Opts) -> Result<Ve
         ntype: model::NotifyType::InitialContact.into(),
         data: vec![],
     }));
+    // Offer MOBIKE so a later local-address change can be signalled with
+    // UPDATE_SA_ADDRESSES instead of a full reconnect (RFC 4555).
+    first.push(Payload::Notify(wire::Notify {
+        protocol: 0,
+        spi: vec![],
+        ntype: model::NotifyType::MobikeSupported.into(),
+        data: vec![],
+    }));
     first.extend(emssn::auth_payloads(&serial, &o.user, &udp.local_ipv4().to_string(), o.fctver.as_deref().unwrap_or("")));
 
     let verbose = std::env::var("UNVPN_VERBOSE").is_ok();
@@ -398,6 +406,13 @@ fn authenticate(session: &mut Ikev2Session, udp: &IkeUdp, o: &Opts) -> Result<Ve
         let (_hdr, payloads) = session.decrypt(&resp)?;
         if verbose {
             session::dump_payloads("IKE_AUTH response (authenticate)", &payloads);
+        }
+        // The gateway echoes MOBIKE_SUPPORTED when it accepts MOBIKE.
+        if !session.mobike
+            && payloads.iter().any(|p| matches!(p, Payload::Notify(n) if n.ntype == model::NotifyType::MobikeSupported.into()))
+        {
+            session.mobike = true;
+            out!("# gateway supports MOBIKE — address changes will update the SA in place");
         }
         // The gateway authenticates itself with a PSK AUTH (method 2) in the first
         // IKE_AUTH response. Verify it once against the group PSK — this is the real
@@ -648,7 +663,7 @@ fn verify_gateway_auth(session: &Ikev2Session, o: &Opts, payloads: &[Payload]) -
 /// The ESP data plane: pump IPv4 packets between the tun device and ESP-over-UDP
 /// (NAT-T, port 4500), with routes/DNS and a NAT keepalive. Blocks until stop.
 fn data_plane(
-    udp: IkeUdp,
+    mut udp: IkeUdp,
     mut session: Ikev2Session,
     mut esp: crate::ike::esp::EspSa,
     assigned: Ipv4Addr,
@@ -664,7 +679,7 @@ fn data_plane(
 
     static STOP: AtomicBool = AtomicBool::new(false);
 
-    let sock = udp.try_clone_socket().map_err(|e| format!("clone socket: {e}"))?;
+    let mut sock = udp.try_clone_socket().map_err(|e| format!("clone socket: {e}"))?;
     // Non-blocking: the poll below waits for readiness, so the ESP→tun drain loop
     // must return immediately once the socket is empty. With a blocking read timeout
     // instead, every drain cycle ends in a ~500 ms blocking recv, inflating the RTT
@@ -696,7 +711,6 @@ fn data_plane(
 
     out!("# TUNNEL UP (ESP over NAT-T). (send 'disconnect' on stdin or SIGTERM to stop)");
     let tun_fd = tun_file.as_raw_fd();
-    let sock_fd = sock.as_raw_fd();
     let kick_fd = crate::netmon::kick_fd();
     let mut buf = [0u8; 2048];
     let (mut tin, mut tout, mut derr) = (0u64, 0u64, 0u64);
@@ -722,7 +736,7 @@ fn data_plane(
         }
         let mut fds = [
             libc::pollfd { fd: tun_fd, events: libc::POLLIN, revents: 0 },
-            libc::pollfd { fd: sock_fd, events: libc::POLLIN, revents: 0 },
+            libc::pollfd { fd: sock.as_raw_fd(), events: libc::POLLIN, revents: 0 },
             libc::pollfd { fd: kick_fd, events: libc::POLLIN, revents: 0 },
         ];
         let n = unsafe { libc::poll(fds.as_mut_ptr(), 3, 500) };
@@ -810,22 +824,55 @@ fn data_plane(
         let stale = last_rx_at.elapsed().as_secs() >= PROBE_SECS;
 
         if let Some(why) = kicked {
-            // Resume / network change: the ESP path (NAT mapping) may be stale, so
-            // rekey the CHILD SA to recover it under the live IKE SA (no re-auth).
-            out!("# link event ({why}) — rekeying the CHILD SA");
-            match rekey_child(&udp, &sock, &mut tun_file, &esp, &mut session) {
-                Ok(new) => {
-                    esp = new;
+            // Resume / network change. If our source address to the gateway changed
+            // (Wi-Fi ↔ cable, resume on a new network), rebind the socket from the new
+            // address and tell the gateway: MOBIKE's UPDATE_SA_ADDRESSES when it was
+            // negotiated (keeps the SA), otherwise a CREATE_CHILD_SA rekey from the new
+            // source. If only the path changed, rekey to recover a stale NAT mapping.
+            let moved = src_to_gateway(gw).filter(|s| *s != udp.local_ipv4());
+            let outcome = if let Some(new_src) = moved {
+                out!("# local address changed to {new_src} — rebinding the tunnel socket");
+                match rebind_socket(gw) {
+                    Ok((nu, ns)) => {
+                        udp = nu;
+                        sock = ns;
+                        if session.mobike {
+                            out!("# MOBIKE: updating the SA addresses in place");
+                            mobike_update(&udp, &sock, &mut tun_file, &esp, &mut session, gw)
+                        } else {
+                            match rekey_child(&udp, &sock, &mut tun_file, &esp, &mut session) {
+                                Ok(new) => {
+                                    esp = new;
+                                    Ok(())
+                                }
+                                Err(e) => Err(e),
+                            }
+                        }
+                    }
+                    Err(e) => Err(format!("rebind failed: {e}")),
+                }
+            } else {
+                out!("# link event ({why}) — rekeying the CHILD SA");
+                match rekey_child(&udp, &sock, &mut tun_file, &esp, &mut session) {
+                    Ok(new) => {
+                        esp = new;
+                        Ok(())
+                    }
+                    Err(e) => Err(e),
+                }
+            };
+            match outcome {
+                Ok(()) => {
                     last_rx_at = Instant::now();
                     recover_fails = 0;
                     rekey_next = Instant::now() + child_rekey;
-                    out!("# CHILD SA rekeyed — tunnel recovered");
+                    out!("# tunnel recovered");
                 }
                 Err(e) => {
                     recover_fails += 1;
                     out!("# recovery attempt {recover_fails}/{MAX_RECOVER_FAILS} failed: {e}");
                     if recover_fails >= MAX_RECOVER_FAILS {
-                        lost = Some(format!("{why}; CHILD SA rekey failed"));
+                        lost = Some(format!("{why}; recovery failed"));
                         break;
                     }
                 }
@@ -994,6 +1041,46 @@ fn dpd(
     session.next_msg_id = msg_id + 1;
     let req = session.encrypt(model::ExchangeType::Informational.into(), msg_id, &[]);
     ike_exchange(udp, sock, tun_file, esp, session, &req, msg_id, 4).map(|_| ())
+}
+
+/// MOBIKE address update (RFC 4555): an INFORMATIONAL carrying UPDATE_SA_ADDRESSES
+/// plus NAT-D for the new path, so the gateway moves the SA to our new source without
+/// a rekey. Only reached when the gateway negotiated MOBIKE.
+fn mobike_update(
+    udp: &IkeUdp,
+    sock: &std::net::UdpSocket,
+    tun_file: &mut std::fs::File,
+    esp: &crate::ike::esp::EspSa,
+    session: &mut Ikev2Session,
+    gw: Ipv4Addr,
+) -> Result<(), String> {
+    let local = udp.local_ipv4();
+    let local_port = sock.local_addr().map(|a| a.port()).unwrap_or(0);
+    let msg_id = session.next_msg_id;
+    session.next_msg_id = msg_id + 1;
+    let payloads = session.mobike_update_payloads(gw, 4500, local, local_port);
+    let req = session.encrypt(model::ExchangeType::Informational.into(), msg_id, &payloads);
+    ike_exchange(udp, sock, tun_file, esp, session, &req, msg_id, 4).map(|_| ())
+}
+
+/// The source IPv4 the kernel currently uses to reach the gateway (`ip route get`).
+fn src_to_gateway(gw: Ipv4Addr) -> Option<Ipv4Addr> {
+    let out = std::process::Command::new("ip").args(["route", "get", &gw.to_string()]).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let toks: Vec<&str> = text.split_whitespace().collect();
+    toks.windows(2).find(|w| w[0] == "src").and_then(|w| w[1].parse().ok())
+}
+
+/// Open a fresh NAT-T socket to the gateway. Binding 0.0.0.0:0 lets the kernel pick
+/// the current source address, so this re-homes the tunnel after a local-IP change.
+fn rebind_socket(gw: Ipv4Addr) -> Result<(IkeUdp, std::net::UdpSocket), String> {
+    let udp = IkeUdp::connect(&gw.to_string(), true, std::time::Duration::from_secs(5))?;
+    let sock = udp.try_clone_socket().map_err(|e| format!("clone socket: {e}"))?;
+    sock.set_nonblocking(true).ok();
+    Ok((udp, sock))
 }
 
 /// Handle a gateway-initiated IKE message: answer an INFORMATIONAL (DPD) request so
