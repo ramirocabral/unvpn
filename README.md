@@ -4,7 +4,7 @@
 
 # unvpn
 
-A native Linux client for corporate VPNs written in Rust.
+A native Linux client for corporate VPNs, written in Rust.
 
 </div>
 
@@ -25,51 +25,20 @@ Supported VPNs:
 
 ## Features
 
-- GTK4 / libadwaita app with saved connection profiles.
-- Passwords are stored in the system keyring.
-- Export / import of all profiles (with their passwords and VPN files) as one passphrase-encrypted file, to move them to another machine.
-- Tray icon that shows the connection state.
-- Leak protection: an optional kill switch and, by default, an IPv6 egress block (see below).
-- Auto-reconnect: the Fortinet SSL, F5, GlobalProtect, AnyConnect and OpenVPN back-ends rebuild a dropped tunnel on their own, and react within about a second to a resume from sleep or a network change (Wi-Fi ↔ cable) instead of waiting for a keepalive to time out. The session is reused, so no re-auth — unless the gateway has expired it, in which case unvpn reports it and you reconnect. The Check Point (IKEv1) and FortiClient IPsec (IKEv2) back-ends recover the data plane under the live IKE SA without re-auth — Check Point with a fresh Quick Mode, FortiClient IPsec with a CREATE_CHILD_SA rekey (PFS) — and use dead-peer detection (IKEv2 DPD for FortiClient IPsec) to notice a silent drop; only if the IKE SA itself is gone do they end with a clear error to reconnect.
-
-## Leak protection
-
-Every back-end except WireGuard carries IPv4 only, so while connected unvpn blocks
-all IPv6 egress (leaving loopback and link-local alone) so IPv6 traffic can't slip
-past the tunnel. Pass `--allow-ipv6` to keep IPv6 as is.
-
-The **kill switch** (`--killswitch`, or the per-profile toggle in the GUI; off by
-default) installs a fail-closed `nftables` table: while connected — and while the
-tunnel reconnects — nothing leaves the host except the tunnel itself, the VPN
-gateway, the local LAN and DHCP. It is removed on disconnect. If unvpn is killed
-hard (SIGKILL / power loss) the table can linger; clear it with
-`sudo nft delete table inet unvpn_<iface>` (unvpn prints the exact command when it
-enables the switch). Not available for WireGuard — use its `AllowedIPs` / `Table` /
-`fwmark` instead.
+- GTK4 app with saved connection profiles; passwords in the system keyring.
+- Tray icon showing the connection state.
+- Encrypted export / import of all profiles, to move them between machines.
+- Auto-reconnect after sleep or a network change, without re-auth.
+- Leak protection: optional kill switch and an IPv6 egress block.
 
 ## Install
 
-Build dependencies:
-
-- Rust and cargo.
-- A C compiler, `perl` and `make`.
-- GTK4 and libadwaita.
-- `webkitgtk-6.0` (for the built-in SSO sign-in window).
-
-Runtime dependencies:
-
-- `pkexec` (polkit).
-- `iproute2`.
-- `nftables` (for the kill switch and the IPv6 leak block).
-- A system tray, like Waybar's or GNOME's AppIndicator extension (optional).
-
-On Arch:
+Needs Rust, a C toolchain, GTK4, libadwaita, webkitgtk-6.0, polkit, iproute2 and
+nftables. On Arch:
 
 ```sh
 sudo pacman -S --needed rust base-devel perl gtk4 libadwaita webkitgtk-6.0 polkit iproute2 nftables
 ```
-
-Then:
 
 ```sh
 ./install.sh                    # installs to /usr/local (asks for sudo)
@@ -77,23 +46,7 @@ PREFIX=~/.local ./install.sh    # or just for your user
 ./install.sh --uninstall
 ```
 
-## Start at login
-
-The installer can drop an XDG autostart entry (`Exec=unvpn-gui --tray`) that opens
-unvpn minimized in the tray at login — in `/etc/xdg/autostart` for a system install
-or `~/.config/autostart` for a user one. GNOME, KDE and other full desktops honor it
-automatically. A bare compositor like Sway or i3 does not read XDG autostart, so add
-
-```sh
-exec unvpn-gui --tray
-```
-
-to your WM config instead (or run an autostart helper such as `dex -a`). On Sway,
-start it once the tray is up to avoid a race with the bar:
-
-```sh
-exec gdbus wait --session --timeout 30 org.kde.StatusNotifierWatcher && unvpn-gui --tray
-```
+The installer can also add an autostart entry so unvpn starts in the tray at login.
 
 ## Command line
 
@@ -109,8 +62,7 @@ sudo unvpn openvpn -c profile.ovpn --connect                         # OpenVPN
 sudo unvpn wireguard -c wg0.conf --connect                           # WireGuard
 ```
 
-Global flags (any back-end): `--killswitch` enables the fail-closed firewall;
-`--allow-ipv6` keeps IPv6 egress instead of blocking it for the session.
+`--killswitch` enables a fail-closed firewall; `--allow-ipv6` keeps IPv6 instead of blocking it.
 
 ## Legal
 
