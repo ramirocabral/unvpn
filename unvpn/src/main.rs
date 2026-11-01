@@ -17,6 +17,7 @@ mod gnutls;
 mod f5;
 mod gp;
 mod ike;
+mod ivanti;
 mod leakguard;
 mod netmon;
 mod openvpn;
@@ -1243,6 +1244,7 @@ fn main() {
         Some("f5") => f5::cmd_f5(&args[1..]),
         Some("anyconnect") => anyconnect::cmd_anyconnect(&args[1..]),
         Some("gp") | Some("globalprotect") => gp::cmd_gp(&args[1..]),
+        Some("ivanti") | Some("pulse") => ivanti::cmd_ivanti(&args[1..]),
         Some("openvpn") => openvpn::cmd_openvpn(&args[1..]),
         Some("wireguard") | Some("wg") => wireguard::cmd_wireguard(&args[1..]),
         _ => {
@@ -1257,6 +1259,7 @@ fn main() {
             eprintln!("  unvpn f5 -g <host[:port]> -u <user> [--connect]      # F5 BIG-IP APM SSL-VPN back-end");
             eprintln!("  unvpn anyconnect -g <url> -u <user> [--connect]       # Cisco AnyConnect SSL-VPN back-end");
             eprintln!("  unvpn gp -g <portal> -u <user> [--connect]            # Palo Alto GlobalProtect back-end");
+            eprintln!("  unvpn ivanti -g <host> -u <user> [--connect]          # Ivanti Connect Secure (Pulse) back-end");
             eprintln!("  unvpn openvpn -c <profile.ovpn> [-u <user>] [--connect] # OpenVPN back-end");
             eprintln!("  unvpn wireguard -c <profile.conf> --connect            # WireGuard (kernel) back-end");
             eprintln!("\nglobal flags (any back-end):");
