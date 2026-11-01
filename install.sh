@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # unvpn installer — builds the engine (static OpenSSL) and the GUI, then installs
-# both, the icons, the .desktop entry, and (optionally) a polkit rule.
+# both, the icons, the .desktop and login autostart entries, and (optionally) a polkit rule.
 #
 #   ./install.sh              build + install under /usr/local
 #   PREFIX=~/.local ./install.sh   user-local install (no root)
@@ -9,8 +9,6 @@ set -euo pipefail
 
 PREFIX="${PREFIX:-/usr/local}"
 REPO="$(cd "$(dirname "$0")" && pwd)"
-SWAY_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/sway/config"
-SWAY_MARK="# unvpn: start in the tray at login (added by install.sh)"
 
 sudo_if_needed() {
     if [ "$(id -u)" -ne 0 ] && [ ! -w "$1" ]; then echo sudo; fi
@@ -27,7 +25,6 @@ uninstall() {
     [ -f /etc/polkit-1/rules.d/49-unvpn.rules ] && sudo rm -f /etc/polkit-1/rules.d/49-unvpn.rules || true
     rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/autostart/unvpn.desktop"
     [ -f /etc/xdg/autostart/unvpn.desktop ] && sudo rm -f /etc/xdg/autostart/unvpn.desktop || true
-    [ -f "$SWAY_CONF" ] && sed -i --follow-symlinks "/^$SWAY_MARK\$/,+1d" "$SWAY_CONF" || true
     echo "Done."
 }
 
@@ -67,29 +64,13 @@ if [ "$ans" = y ] || [ "$ans" = Y ]; then
     rm -f "$tmp"
 fi
 
-printf "Start unvpn in the tray automatically at login? [y/N] "
-read -r ans
-if [ "$ans" = y ] || [ "$ans" = Y ]; then
-    case "$PREFIX" in
-        /usr|/usr/*|/opt|/opt/*) AUTOSTART_DIR=/etc/xdg/autostart; AS=sudo ;;
-        *) AUTOSTART_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/autostart"; AS= ;;
-    esac
-    $AS install -Dm644 "$REPO/packaging/unvpn-autostart.desktop" "$AUTOSTART_DIR/unvpn.desktop"
-    echo "==> Autostart entry: $AUTOSTART_DIR/unvpn.desktop (GNOME, KDE, …)"
-    # Sway ignores XDG autostart: it needs an exec line in its own config.
-    if [ -f "$SWAY_CONF" ]; then
-        if grep -qE '^\s*exec.*unvpn-gui.*--tray' "$SWAY_CONF"; then
-            echo "==> $SWAY_CONF already starts unvpn-gui --tray"
-        else
-            [ -n "$(tail -c1 "$SWAY_CONF")" ] && echo >> "$SWAY_CONF"
-            printf '%s\nexec %s --tray\n' "$SWAY_MARK" "$PREFIX/bin/unvpn-gui" >> "$SWAY_CONF"
-            echo "==> Added 'exec $PREFIX/bin/unvpn-gui --tray' to $SWAY_CONF (from next login)"
-        fi
-    else
-        echo "    On a bare WM that ignores XDG autostart (Sway, i3), add"
-        echo "    'exec unvpn-gui --tray' to its config."
-    fi
-fi
+# Start in the tray at login.
+case "$PREFIX" in
+    /usr|/usr/*|/opt|/opt/*) AUTOSTART_DIR=/etc/xdg/autostart ;;
+    *) AUTOSTART_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/autostart" ;;
+esac
+AS="$(sudo_if_needed "$(dirname "$AUTOSTART_DIR")")"
+$AS install -Dm644 "$REPO/packaging/unvpn-autostart.desktop" "$AUTOSTART_DIR/unvpn.desktop"
 
 command -v gtk-update-icon-cache >/dev/null && $S gtk-update-icon-cache -qtf "$PREFIX/share/icons/hicolor" 2>/dev/null || true
 command -v update-desktop-database >/dev/null && $S update-desktop-database -q "$PREFIX/share/applications" 2>/dev/null || true
@@ -97,7 +78,13 @@ command -v update-desktop-database >/dev/null && $S update-desktop-database -q "
 # mimeapps.list — best effort; run manually if installed as root for another user).
 command -v xdg-mime >/dev/null && xdg-mime default unvpn-f5-handler.desktop x-scheme-handler/f5-vpn 2>/dev/null || true
 
+case ":$PATH:" in
+    *":$PREFIX/bin:"*) ;;
+    *) echo; echo "WARNING: $PREFIX/bin is not in your PATH — add it, or the menu and autostart entries won't find unvpn-gui." ;;
+esac
+
 echo
 echo "Installed. Launch 'unvpn-gui', or find 'unvpn' in your application menu."
+echo "  It starts in the system tray at every login."
 echo "  CLI engine: 'unvpn' (see 'unvpn --help')."
 echo "  F5 webtop 'Start' → 'unvpn' is now the handler for f5-vpn:// links."
