@@ -9,6 +9,8 @@ set -euo pipefail
 
 PREFIX="${PREFIX:-/usr/local}"
 REPO="$(cd "$(dirname "$0")" && pwd)"
+SWAY_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/sway/config"
+SWAY_MARK="# unvpn: start in the tray at login (added by install.sh)"
 
 sudo_if_needed() {
     if [ "$(id -u)" -ne 0 ] && [ ! -w "$1" ]; then echo sudo; fi
@@ -25,6 +27,7 @@ uninstall() {
     [ -f /etc/polkit-1/rules.d/49-unvpn.rules ] && sudo rm -f /etc/polkit-1/rules.d/49-unvpn.rules || true
     rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/autostart/unvpn.desktop"
     [ -f /etc/xdg/autostart/unvpn.desktop ] && sudo rm -f /etc/xdg/autostart/unvpn.desktop || true
+    [ -f "$SWAY_CONF" ] && sed -i --follow-symlinks "/^$SWAY_MARK\$/,+1d" "$SWAY_CONF" || true
     echo "Done."
 }
 
@@ -72,10 +75,20 @@ if [ "$ans" = y ] || [ "$ans" = Y ]; then
         *) AUTOSTART_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/autostart"; AS= ;;
     esac
     $AS install -Dm644 "$REPO/packaging/unvpn-autostart.desktop" "$AUTOSTART_DIR/unvpn.desktop"
-    echo "==> Autostart entry: $AUTOSTART_DIR/unvpn.desktop"
-    echo "    GNOME/KDE honor it automatically. On bare Sway/i3 the compositor does not"
-    echo "    read XDG autostart — add 'exec unvpn-gui --tray' to your WM config, or run an"
-    echo "    autostart helper such as 'dex -a'."
+    echo "==> Autostart entry: $AUTOSTART_DIR/unvpn.desktop (GNOME, KDE, …)"
+    # Sway ignores XDG autostart: it needs an exec line in its own config.
+    if [ -f "$SWAY_CONF" ]; then
+        if grep -qE '^\s*exec.*unvpn-gui.*--tray' "$SWAY_CONF"; then
+            echo "==> $SWAY_CONF already starts unvpn-gui --tray"
+        else
+            [ -n "$(tail -c1 "$SWAY_CONF")" ] && echo >> "$SWAY_CONF"
+            printf '%s\nexec %s --tray\n' "$SWAY_MARK" "$PREFIX/bin/unvpn-gui" >> "$SWAY_CONF"
+            echo "==> Added 'exec $PREFIX/bin/unvpn-gui --tray' to $SWAY_CONF (from next login)"
+        fi
+    else
+        echo "    On a bare WM that ignores XDG autostart (Sway, i3), add"
+        echo "    'exec unvpn-gui --tray' to its config."
+    fi
 fi
 
 command -v gtk-update-icon-cache >/dev/null && $S gtk-update-icon-cache -qtf "$PREFIX/share/icons/hicolor" 2>/dev/null || true
