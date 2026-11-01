@@ -1808,8 +1808,6 @@ fn build_ui(app: &adw::Application, start_hidden: bool) {
     app.add_action(&export);
     app.add_action(&import);
 
-    state_app.init_tray();
-
     glib::spawn_future_local(glib::clone!(#[strong] state_app, async move {
         while let Ok(msg) = rx.recv().await {
             state_app.handle_msg(msg);
@@ -1821,9 +1819,28 @@ fn build_ui(app: &adw::Application, start_hidden: bool) {
         glib::ControlFlow::Continue
     }));
 
-    // `--tray` (autostart): stay in the tray until picked — only if there is one.
-    if !(start_hidden && state_app.tray.borrow().is_some()) {
+    if !start_hidden {
+        state_app.init_tray();
         state_app.window.present();
+        return;
+    }
+    // `--tray` (autostart): stay in the tray until picked. At login the bar hosting
+    // the tray may come up after us, so wait for it before falling back to a window.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let wait_tray = glib::clone!(#[strong] state_app, move || {
+        if !tray::tray_available() && std::time::Instant::now() < deadline {
+            return glib::ControlFlow::Continue;
+        }
+        state_app.init_tray();
+        if state_app.tray.borrow().is_none() {
+            state_app.window.present();
+        }
+        glib::ControlFlow::Break
+    });
+    if tray::tray_available() {
+        wait_tray();
+    } else {
+        glib::timeout_add_local(Duration::from_millis(500), wait_tray);
     }
 }
 

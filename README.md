@@ -46,7 +46,8 @@ PREFIX=~/.local ./install.sh    # or just for your user
 ./install.sh --uninstall
 ```
 
-The installer can also add an autostart entry so unvpn starts in the tray at login.
+The installer can also add an autostart entry so unvpn starts in the tray at login
+(on Sway/i3, which ignore XDG autostart, add `exec unvpn-gui --tray` to your config).
 
 ## Command line
 
