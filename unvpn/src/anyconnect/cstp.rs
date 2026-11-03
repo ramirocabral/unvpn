@@ -144,6 +144,10 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
     tun::ip(&["addr", "add", &format!("{assigned}/{}", cfg.prefix()), "dev", &tun_name])?;
     tun::ip(&["link", "set", "dev", &tun_name, "up", "mtu", &mtu.to_string()])?;
     println!("# tun {tun_name} up — {assigned}/{}, mtu {mtu}", cfg.prefix());
+    // Our own route/address churn on this device (72 split-include routes, re-added on
+    // every reconnect) must not read as a network change, or it kicks us into an
+    // endless reconnect loop that never passes traffic.
+    crate::netmon::ignore_iface(&tun_name);
 
     // From here every exit path must undo what we changed; a disconnect that
     // arrived during connect means we skip routes/DNS entirely.
