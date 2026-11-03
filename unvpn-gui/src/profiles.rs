@@ -74,6 +74,14 @@ impl Backend {
         matches!(self, Backend::OpenVpn | Backend::WireGuard)
     }
 
+    /// Back-ends with an optional DTLS (UDP 443) data channel that `--no-dtls`
+    /// turns off, forcing the data plane onto the TLS (TCP) tunnel. Use it when a
+    /// network lets UDP out but drops the DTLS return path (tunnel connects but no
+    /// traffic flows). The other back-ends have no DTLS to disable.
+    pub fn uses_dtls(self) -> bool {
+        matches!(self, Backend::AnyConnect | Backend::Forti | Backend::F5)
+    }
+
     /// The dropdown slot's primary backend. Slot 1 ("FortiClient") resolves to
     /// `Forti`; the form's protocol selector promotes it to `FortiIpsec`.
     pub fn from_index(i: u32) -> Backend {
@@ -129,6 +137,12 @@ pub struct Profile {
     /// clear. Off by default; not used by the WireGuard back-end.
     #[serde(default)]
     pub killswitch: bool,
+    /// Force the data channel onto TLS (TCP) by not establishing DTLS (UDP 443).
+    /// For networks that let UDP 443 out but drop its return path, where DTLS back-
+    /// ends connect but pass no traffic. Only used by back-ends with DTLS
+    /// ([`Backend::uses_dtls`]); ignored by the rest.
+    #[serde(default)]
+    pub no_dtls: bool,
 }
 
 impl Profile {

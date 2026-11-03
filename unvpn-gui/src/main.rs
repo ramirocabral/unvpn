@@ -147,6 +147,7 @@ struct App {
     sso_row: adw::ComboRow,
     remember_row: adw::SwitchRow,
     killswitch_row: adw::SwitchRow,
+    no_dtls_row: adw::SwitchRow,
     save_btn: gtk::Button,
 
     connect_btn: gtk::Button,
@@ -290,6 +291,12 @@ impl App {
             .subtitle_lines(0)
             .build();
 
+        let no_dtls_row = adw::SwitchRow::builder()
+            .title("Disable DTLS")
+            .subtitle("Force the data channel over TLS (TCP). Turn on when the tunnel connects but no traffic flows (the network drops UDP 443)")
+            .subtitle_lines(0)
+            .build();
+
         let save_btn = gtk::Button::builder().label("Save").css_classes(["flat"]).build();
         let form_group = adw::PreferencesGroup::builder().title("Connection").build();
         form_group.set_header_suffix(Some(&save_btn));
@@ -308,6 +315,7 @@ impl App {
         form_group.add(&token_row);
         form_group.add(&remember_row);
         form_group.add(&killswitch_row);
+        form_group.add(&no_dtls_row);
         form_group.add(&advanced_row);
 
         let connect_btn = gtk::Button::builder()
@@ -435,6 +443,7 @@ impl App {
             sso_row,
             remember_row,
             killswitch_row,
+            no_dtls_row,
             save_btn,
             connect_btn,
             status_group,
@@ -597,6 +606,9 @@ impl App {
         self.remember_row.set_visible(need_creds);
         // WireGuard is dual-stack and kernel-routed; the kill switch doesn't apply.
         self.killswitch_row.set_visible(!wireguard);
+        // Disabling DTLS only means something for back-ends that have a DTLS data
+        // channel (AnyConnect, FortiClient SSL-VPN, F5).
+        self.no_dtls_row.set_visible(b.uses_dtls());
         let key_pass = openvpn && profiles::ovpn_key_may_need_pass(self.gateway_row.text().trim());
         self.key_pass_row.set_visible(key_pass);
         self.remember_key_pass_row.set_visible(key_pass);
@@ -738,6 +750,7 @@ impl App {
         self.fctver_row.set_text(&p.fctver);
         self.remember_row.set_active(p.remember_password);
         self.killswitch_row.set_active(p.killswitch);
+        self.no_dtls_row.set_active(p.no_dtls);
         self.token_row.set_text("");
         let secret = if p.remember_password { profiles::secret_get(&p.name).unwrap_or_default() } else { String::new() };
         self.password_row.set_text(&secret);
@@ -791,6 +804,7 @@ impl App {
             emssn: self.emssn_row.text().trim().to_string(),
             fctver: self.fctver_row.text().trim().to_string(),
             killswitch: backend != Backend::WireGuard && self.killswitch_row.is_active(),
+            no_dtls: backend.uses_dtls() && self.no_dtls_row.is_active(),
         };
 
         let pw = self.password_row.text().to_string();
@@ -1070,6 +1084,7 @@ impl App {
         self.token_row.set_text("");
         self.remember_row.set_active(false);
         self.killswitch_row.set_active(false);
+        self.no_dtls_row.set_active(false);
         self.update_form_visibility();
         self.sync_ui();
         self.name_row.grab_focus();
@@ -1249,6 +1264,12 @@ impl App {
         // dispatch. Not for WireGuard (dual-stack, kernel-routed).
         if self.backend() != Backend::WireGuard && self.killswitch_row.is_active() {
             args.push("--killswitch".into());
+        }
+
+        // Force the data channel onto TLS. A per-back-end flag (not a top-level one):
+        // only the DTLS-capable back-ends parse it, so gate it on uses_dtls().
+        if self.backend().uses_dtls() && self.no_dtls_row.is_active() {
+            args.push("--no-dtls".into());
         }
 
         self.vpn.borrow_mut().connect(args, stdin_lines, label, saml, sso_ua);
