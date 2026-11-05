@@ -34,6 +34,9 @@ const CSS: &str = "
 .st-off { color: #9a9fab; }
 .st-busy{ color: #e5a50a; }
 .st-err { color: #e01b24; }
+row.drop-above { box-shadow: inset 0 2px @accent_color; }
+row.drop-below { box-shadow: inset 0 -2px @accent_color; }
+row.dragging { opacity: 0.5; }
 ";
 
 /// An F5 tunnel started outside the GUI (by the `f5-vpn://` scheme handler), read
@@ -715,6 +718,10 @@ impl App {
                 .build();
             row.add_suffix(&conn);
             row.add_suffix(&del);
+            let handle = gtk::Image::from_icon_name("list-drag-handle-symbolic");
+            handle.set_tooltip_text(Some("Drag to reorder"));
+            row.add_prefix(&handle);
+            self.setup_profile_dnd(&row, &p.name);
 
             let app_rc = self.rc();
             let p1 = p.clone();
@@ -732,6 +739,83 @@ impl App {
             self.profiles_group.add(&row);
             self.profile_rows.borrow_mut().push(row);
         }
+    }
+
+    /// Drag a profile row onto another to move it there; the order is saved.
+    fn setup_profile_dnd(&self, row: &adw::ActionRow, name: &str) {
+        let src = gtk::DragSource::new();
+        src.set_actions(gdk::DragAction::MOVE);
+        let hot = Rc::new(Cell::new((0.0, 0.0)));
+        let n = name.to_string();
+        src.connect_prepare(glib::clone!(#[strong] hot, move |_, x, y| {
+            hot.set((x, y));
+            Some(gdk::ContentProvider::for_value(&n.to_value()))
+        }));
+        src.connect_drag_begin(glib::clone!(#[weak] row, move |src, _| {
+            let (x, y) = hot.get();
+            src.set_icon(Some(&gtk::WidgetPaintable::new(Some(&row))), x as i32, y as i32);
+            row.add_css_class("dragging");
+        }));
+        src.connect_drag_end(glib::clone!(#[weak] row, move |_, _, _| row.remove_css_class("dragging")));
+        row.add_controller(src);
+
+        let target = gtk::DropTarget::new(String::static_type(), gdk::DragAction::MOVE);
+        let set_marker = |row: &adw::ActionRow, y: f64| {
+            let above = y < row.height() as f64 / 2.0;
+            if above {
+                row.remove_css_class("drop-below");
+                row.add_css_class("drop-above");
+            } else {
+                row.remove_css_class("drop-above");
+                row.add_css_class("drop-below");
+            }
+        };
+        target.connect_enter(glib::clone!(#[weak] row, #[upgrade_or] gdk::DragAction::empty(), move |_, _, y| {
+            set_marker(&row, y);
+            gdk::DragAction::MOVE
+        }));
+        target.connect_motion(glib::clone!(#[weak] row, #[upgrade_or] gdk::DragAction::empty(), move |_, _, y| {
+            set_marker(&row, y);
+            gdk::DragAction::MOVE
+        }));
+        target.connect_leave(glib::clone!(#[weak] row, move |_| {
+            row.remove_css_class("drop-above");
+            row.remove_css_class("drop-below");
+        }));
+        let app = self.rc();
+        let dest = name.to_string();
+        target.connect_drop(glib::clone!(#[weak] row, #[upgrade_or] false, move |_, value, _, y| {
+            row.remove_css_class("drop-above");
+            row.remove_css_class("drop-below");
+            let Ok(moved) = value.get::<String>() else { return false };
+            let below = y >= row.height() as f64 / 2.0;
+            let (app, dest) = (app.clone(), dest.clone());
+            // Rebuilding the list destroys this row; do it outside its signal.
+            glib::idle_add_local_once(move || app.move_profile(&moved, &dest, below));
+            true
+        }));
+        row.add_controller(target);
+    }
+
+    fn move_profile(&self, moved: &str, dest: &str, below: bool) {
+        if moved == dest {
+            return;
+        }
+        {
+            let mut profs = self.profiles.borrow_mut();
+            let Some(from) = profs.iter().position(|p| p.name == moved) else { return };
+            let p = profs.remove(from);
+            let Some(to) = profs.iter().position(|p| p.name == dest) else {
+                profs.insert(from, p);
+                return;
+            };
+            profs.insert(if below { to + 1 } else { to }, p);
+            if let Err(e) = profiles::save(&profs) {
+                drop(profs);
+                self.toast(&format!("Couldn't save profiles: {e}"));
+            }
+        }
+        self.refresh_profiles_list();
     }
 
     fn load_profile(&self, p: &Profile) {
