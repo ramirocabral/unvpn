@@ -145,7 +145,7 @@ fn sso_origin(url: &str) -> Option<&str> {
 /// Resolve the engine binary to an absolute path (pkexec requires absolute).
 /// Order: $UNVPN_BIN, the engine built in the same source tree as this GUI
 /// (running from `unvpn-gui/target/<profile>/`), $PATH, then a sensible default.
-fn unvpn_bin() -> String {
+pub fn unvpn_bin() -> String {
     if let Ok(p) = std::env::var("UNVPN_BIN") {
         return p;
     }

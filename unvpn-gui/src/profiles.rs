@@ -143,13 +143,29 @@ pub struct Profile {
     /// ([`Backend::uses_dtls`]); ignored by the rest.
     #[serde(default)]
     pub no_dtls: bool,
+    /// Check Point: log in with a certificate instead of a SecurID token. `realm`
+    /// then holds the gateway login option to use (empty ⇒ the engine picks the
+    /// first certificate one).
+    #[serde(default)]
+    pub cp_cert: bool,
+    /// Check Point certificate login: the PKCS#12 file. Its password is the
+    /// profile's keyring secret.
+    #[serde(default)]
+    pub cert_path: String,
 }
 
 impl Profile {
+    /// A Check Point profile that logs in with a certificate.
+    pub fn uses_cp_cert(&self) -> bool {
+        self.backend == Backend::CheckPoint && self.cp_cert
+    }
+
     pub fn subtitle(&self) -> String {
         let mut parts = vec![self.backend.label().to_string()];
         if self.backend.has_sso() && self.sso {
             parts.push("SSO".to_string());
+        } else if self.uses_cp_cert() {
+            parts.push("certificate".to_string());
         } else if !self.user.is_empty() {
             parts.push(self.user.clone());
         }
@@ -247,11 +263,15 @@ pub fn files_dir() -> std::path::PathBuf {
 
 /// Removes a profile's file directory if it is one of ours (under [`files_dir`]).
 pub fn remove_owned_files(p: &Profile) {
-    if !p.backend.uses_profile_file() {
+    let file = if p.backend.uses_profile_file() {
+        &p.gateway
+    } else if p.uses_cp_cert() {
+        &p.cert_path
+    } else {
         return;
-    }
+    };
     let root = files_dir();
-    if let Some(dir) = std::path::Path::new(&p.gateway).parent() {
+    if let Some(dir) = std::path::Path::new(file).parent() {
         if dir.parent() == Some(root.as_path()) {
             let _ = std::fs::remove_dir_all(dir);
         }

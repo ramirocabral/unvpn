@@ -11,6 +11,7 @@ macro_rules! out {
 
 mod anyconnect;
 mod ccc;
+mod cpcert;
 mod forti;
 mod forti_ipsec;
 mod gnutls;
@@ -857,11 +858,68 @@ fn cmd_tunnel_up(args: &[String]) {
     }
 }
 
+/// A certificate login, prepared before IKE starts.
+struct CertLogin {
+    key: openssl::pkey::PKey<openssl::pkey::Private>,
+    /// The user's certificate first, then the rest of the file's chain.
+    chain: Vec<openssl::x509::X509>,
+    realm: String,
+    secondary_realm_hash: Option<String>,
+    common_name: String,
+}
+
+/// Open the certificate file (password from stdin) and pick the login option.
+fn prepare_cert_login(host: &str, path: &str, wanted_realm: Option<&str>) -> Result<CertLogin, String> {
+    let pw = anyconnect::read_secret("Certificate password: ").ok_or("no certificate password given")?;
+    let id = cpcert::p12::load(path, &pw)?;
+    let subject = cpcert::p12::dn_string(id.cert.subject_name());
+    let common_name = id
+        .cert
+        .subject_name()
+        .entries_by_nid(openssl::nid::Nid::COMMONNAME)
+        .next()
+        .map(|e| String::from_utf8_lossy(e.data().as_slice()).into_owned())
+        .unwrap_or_default();
+    let now = openssl::asn1::Asn1Time::days_from_now(0).map_err(|e| e.to_string())?;
+    if id.cert.not_after() < now {
+        println!("# warning: the certificate expired on {}", id.cert.not_after());
+    }
+    println!("# certificate: {subject} (valid until {})", id.cert.not_after());
+
+    let info = match gateway_hello(host) {
+        Ok(p) => cpcert::GatewayInfo::from_hello(&p),
+        Err(e) if wanted_realm.is_some() => {
+            println!("# warning: could not read the gateway's login options: {e}");
+            cpcert::GatewayInfo::default()
+        }
+        Err(e) => return Err(format!("could not read the gateway's login options: {e}")),
+    };
+    let (realm, secondary_realm_hash) = match wanted_realm {
+        Some(r) if info.login_options.is_empty() => (r.to_string(), None),
+        w => {
+            let o = info.certificate_option(w)?;
+            println!("# login option: {} \"{}\" [{}]", o.id, o.display_name, o.factors.join(" + "));
+            (o.id, Some(o.secondary_realm_hash).filter(|h| !h.is_empty()))
+        }
+    };
+    if let Some(ca) = id.chain.first() {
+        let fp = cpcert::enroll::ca_fingerprint(ca);
+        if !info.ca_fingerprints.is_empty() && !info.ca_fingerprints.contains(&fp) {
+            println!("# warning: the certificate's CA ({fp}) is not the gateway's internal CA");
+        }
+    }
+    let mut chain = vec![id.cert];
+    chain.extend(id.chain);
+    Ok(CertLogin { key: id.key, chain, realm, secondary_realm_hash, common_name })
+}
+
 fn cmd_ike(args: &[String]) {
     let mut gateway: Option<String> = None;
     let mut user = String::new();
-    let mut realm = "vpn".to_string();
+    let mut realm: Option<String> = None;
     let mut passcode: Option<String> = None;
+    let mut cert: Option<String> = None;
+    let mut probe_sig = false;
     let mut connect = false;
     let mut natt = false;
     let mut save_session: Option<String> = None;
@@ -870,8 +928,10 @@ fn cmd_ike(args: &[String]) {
         match a.as_str() {
             "--gateway" | "-g" => gateway = it.next().cloned(),
             "--user" | "-u" => user = it.next().cloned().unwrap_or(user),
-            "--realm" | "-r" => realm = it.next().cloned().unwrap_or(realm),
+            "--realm" | "-r" => realm = it.next().cloned().filter(|r| !r.is_empty()),
             "--passcode" | "-p" => passcode = it.next().cloned(),
+            "--cert" | "-c" => cert = it.next().cloned(),
+            "--probe-sig" => probe_sig = true,
             "--connect" => connect = true,
             "--natt" => natt = true,
             "--save-session" => save_session = it.next().cloned(),
@@ -885,8 +945,8 @@ fn cmd_ike(args: &[String]) {
         eprintln!("ike requires --gateway <host>");
         std::process::exit(2);
     });
-    if user.is_empty() {
-        eprintln!("ike requires --user <user>");
+    if user.is_empty() && cert.is_none() && !probe_sig {
+        eprintln!("ike requires --user <user> (or --cert <file.p12>)");
         std::process::exit(2);
     }
 
@@ -897,6 +957,23 @@ fn cmd_ike(args: &[String]) {
             std::process::exit(2);
         }
     };
+
+    let cert_login = match &cert {
+        Some(path) => match prepare_cert_login(&host, path, realm.as_deref()) {
+            Ok(c) => Some(c),
+            Err(e) => {
+                eprintln!("IKE failed: {e}");
+                std::process::exit(1);
+            }
+        },
+        None => None,
+    };
+    let realm = cert_login.as_ref().map(|c| c.realm.clone()).or(realm).unwrap_or_else(|| "vpn".to_string());
+    if user.is_empty() {
+        if let Some(c) = &cert_login {
+            user = c.common_name.clone();
+        }
+    }
 
     let mut run = || -> Result<(), String> {
         use ike::model::{AttributesPayloadType, ConfigAttributeType, ExchangeType};
@@ -916,7 +993,12 @@ fn cmd_ike(args: &[String]) {
         let mut session = Ikev1Session::new();
 
         // msg 1/2 — SA proposal / chosen transform.
-        let msg1 = service::build_sa_msg(&session, 28800);
+        let auth_method = if cert_login.is_some() || probe_sig {
+            ike::model::IKE_AUTH_RSA_SIG
+        } else {
+            ike::model::IKE_AUTH_HYBRID_INIT_RSA
+        };
+        let msg1 = service::build_sa_msg(&session, 28800, auth_method);
         session.set_sa_bytes(&service::sa_body(&msg1).ok_or("no SA body")?);
         let m2 = IsakmpMessage::decode(&udp.send_recv(&msg1.encode())?)?;
         let suite = service::parse_chosen_suite(&m2).map_err(|e| {
@@ -936,7 +1018,12 @@ fn cmd_ike(args: &[String]) {
         session.set_suite(suite.group, suite.hash_alg, suite.enc_alg, suite.key_bits)?;
 
         // msg 3/4 — KE + Nonce + NAT-D.
-        let msg3 = service::build_ke(&session, local, gw_ip);
+        let cert_requests: Vec<Vec<u8>> = match &cert_login {
+            Some(c) => vec![c.chain[0].issuer_name().to_der().map_err(|e| e.to_string())?, Vec::new()],
+            None if probe_sig => vec![Vec::new()],
+            None => Vec::new(),
+        };
+        let msg3 = service::build_ke(&session, local, gw_ip, &cert_requests);
         let m4 = IsakmpMessage::decode(&udp.send_recv(&msg3.encode())?)?;
         let gw_pub = service::find_key_exchange(&m4).ok_or("no KE in msg4")?;
         let gw_nonce = service::find_nonce(&m4).ok_or("no nonce in msg4")?;
@@ -947,6 +1034,23 @@ fn cmd_ike(args: &[String]) {
             service::find_natds(&m4).len()
         );
 
+        if probe_sig {
+            let kinds: Vec<u8> = m4.payloads.iter().map(|p| p.payload_type()).collect();
+            println!("# msg4 payload types: {kinds:?}");
+            for p in &m4.payloads {
+                if let Payload::CertificateRequest(d) = p {
+                    let dn = d
+                        .get(1..)
+                        .filter(|b| !b.is_empty())
+                        .and_then(|b| openssl::x509::X509Name::from_der(b).ok())
+                        .map(|n| cpcert::p12::dn_string(&n))
+                        .unwrap_or_else(|| "(any)".into());
+                    println!("# gateway asks for a certificate (encoding {}) from: {dn}", d.first().copied().unwrap_or(0));
+                }
+            }
+            println!("# the gateway accepts certificate (RSA signature) authentication; stopping before any identity is sent");
+            return Ok(());
+        }
         session.compute_keys(&gw_pub, &gw_nonce)?;
         println!(
             "# Phase 1 key material derived: SKEYID={}B d={}B a={}B e={}B",
@@ -956,8 +1060,16 @@ fn cmd_ike(args: &[String]) {
             session.skeyid_e.len()
         );
 
-        // msg 5/6 — ID protection + Check Point hybrid auth (encrypted).
-        let auth_payloads = service::build_auth_payloads(&session, &realm);
+        // msg 5/6 — ID protection + Check Point hybrid or certificate auth (encrypted).
+        let auth_payloads = match &cert_login {
+            Some(c) => service::build_cert_auth_payloads(
+                &session,
+                &service::auth_blob(&c.realm, c.secondary_realm_hash.as_deref()),
+                &c.key,
+                &c.chain,
+            )?,
+            None => service::build_auth_payloads(&session, &realm),
+        };
         let msg5 = service::encrypt_message(
             &mut session,
             u8::from(ExchangeType::IdentityProtection),
@@ -988,218 +1100,260 @@ fn cmd_ike(args: &[String]) {
             },
         }
 
-        // After msg6, skip any msg6 retransmits and drive the config-mode SecurID
-        // exchange (one message_id throughout; reply with the requested attribute).
-        println!("# Phase 1 done; driving config-mode SecurID auth...");
-        let mut req = loop {
-            let r = udp.recv()?;
-            if r == raw6 {
-                continue; // msg6 retransmit while the gateway waits for us
+        // After msg6, skip any msg6 retransmits and drive the config-mode exchange
+        // (SecurID, or the second factor of a certificate login; one message_id
+        // throughout; reply with the requested attribute). A certificate login
+        // without a second factor gets no config-mode request at all.
+        if cert_login.is_some() {
+            if let (Some(ca), Some(gw_cert)) = (
+                cert_login.as_ref().and_then(|c| c.chain.get(1)),
+                service::find_certificates(&m6).first().and_then(|d| openssl::x509::X509::from_der(d).ok()),
+            ) {
+                let ok = ca.public_key().ok().map(|k| gw_cert.verify(&k).unwrap_or(false)).unwrap_or(false);
+                if !ok {
+                    println!("# warning: the gateway certificate is not issued by the certificate's CA");
+                }
             }
-            break service::decrypt_message(&mut session, &r)?;
-        };
-
+        }
+        println!("# Phase 1 done; waiting for the gateway's authentication requests...");
+        let mut first = None;
         loop {
-            let attrs = service::find_attributes(&req).ok_or("expected config attributes after Phase 1")?;
-            let message_id = req.message_id;
-            let identifier = attrs.identifier;
-
-            if let Some(status) = service::get_short_attr(&attrs, ConfigAttributeType::Status) {
-                if status == 1 {
-                    let ack = service::build_config_payloads(
-                        &session,
-                        u8::from(AttributesPayloadType::Ack),
-                        message_id,
-                        identifier,
-                        vec![Attribute::short(u16::from(ConfigAttributeType::Status), 1)],
-                    );
-                    let ack_msg = service::encrypt_message(
-                        &mut session,
-                        u8::from(ExchangeType::Transaction),
-                        message_id,
-                        &ack,
-                    )?;
-                    udp.send(&ack_msg)?;
-                    println!("# SecurID AUTH SUCCEEDED via native IKE (Status=1).");
-
-                    let mac = ike::crypto::random(6);
-                    let (om_mid, _om_id, om_pl) =
-                        service::build_om_request(&session, &mac, std::net::Ipv4Addr::UNSPECIFIED);
-                    let om_msg = service::encrypt_message(
-                        &mut session,
-                        u8::from(ExchangeType::Transaction),
-                        om_mid,
-                        &om_pl,
-                    )?;
-                    let om_raw = ike_send_recv_mid(&udp, &om_msg, om_mid)?;
-                    let om_reply = service::decrypt_message(&mut session, &om_raw)?;
-                    let oma = service::find_attributes(&om_reply).ok_or("no Office Mode reply")?;
-                    let to_ip = |v: Vec<u8>| -> Option<std::net::Ipv4Addr> {
-                        (v.len() == 4).then(|| std::net::Ipv4Addr::new(v[0], v[1], v[2], v[3]))
-                    };
-                    let om_ip = service::get_long_attr(&oma, ConfigAttributeType::Ipv4Address)
-                        .and_then(to_ip)
-                        .ok_or("no Office Mode IP assigned")?;
-                    let om_mask = service::get_long_attr(&oma, ConfigAttributeType::Ipv4Netmask)
-                        .and_then(to_ip)
-                        .unwrap_or(std::net::Ipv4Addr::new(255, 255, 255, 255));
-                    let dns: Vec<std::net::Ipv4Addr> = service::get_long_attrs(&oma, ConfigAttributeType::Ipv4Dns)
-                        .into_iter()
-                        .filter_map(to_ip)
-                        .collect();
-                    let domains = service::get_long_attr(&oma, ConfigAttributeType::InternalDomainName)
-                        .map(|v| String::from_utf8_lossy(&v).trim_matches('\0').to_string())
-                        .unwrap_or_default();
-                    let to_secs = |v: Vec<u8>| -> Option<u32> {
-                        match v.len() {
-                            4 => Some(u32::from_be_bytes([v[0], v[1], v[2], v[3]])),
-                            2 => Some(u16::from_be_bytes([v[0], v[1]]) as u32),
-                            _ => None,
-                        }
-                    };
-                    let lease_secs = service::get_long_attr(&oma, ConfigAttributeType::CccVariableLeaseTime)
-                        .and_then(to_secs)
-                        .or_else(|| service::get_long_attr(&oma, ConfigAttributeType::AddressExpiry).and_then(to_secs))
-                        .unwrap_or(0);
-                    println!("# Office Mode: IP {om_ip} / {om_mask}  DNS {dns:?}  domains \"{domains}\"  lease={lease_secs}s");
-
-                    let our_spi = ike::crypto::random_u32();
-                    let qm_nonce = ike::crypto::random(32);
-                    let qm_mid = ike::crypto::random_u32();
-                    let qm1 = service::build_quick_mode(&session, our_spi, &qm_nonce, om_ip, qm_mid, 3600);
-                    let qm1_msg = service::encrypt_message(&mut session, u8::from(ExchangeType::Quick), qm_mid, &qm1)?;
-                    udp.send(&qm1_msg)?;
-                    let stale = [0u32, om_mid, message_id];
-                    let mut qm2_opt: Option<ike::wire::IsakmpMessage> = None;
-                    for _ in 0..8 {
-                        let r = match udp.recv() {
-                            Ok(r) => r,
-                            Err(_) => break,
-                        };
-                        if r.len() < 28 {
-                            continue;
-                        }
-                        let rmid = u32::from_be_bytes(r[20..24].try_into().unwrap());
-                        if stale.contains(&rmid) {
-                            continue;
-                        }
-                        match service::decrypt_message(&mut session, &r) {
-                            Ok(m) => {
-                                qm2_opt = Some(m);
-                                break;
-                            }
-                            Err(e) => println!("#  decrypt failed: {e}"),
-                        }
-                    }
-                    let qm2 = qm2_opt.ok_or("no Quick Mode reply")?;
-                    for p in &qm2.payloads {
-                        if let ike::wire::Payload::Notification(n) = p {
-                            return Err(format!(
-                                "Quick Mode rejected: NOTIFY {} (msg_id {:#x}): {}",
-                                n.message_type,
-                                qm2.message_id,
-                                String::from_utf8_lossy(&n.data)
-                            ));
-                        }
-                    }
-                    let esp = service::parse_esp_proposal(&qm2)?;
-                    println!(
-                        "# Quick Mode ESP SA: transform={} auth={} key_bits={} encap={:#x} gw_spi={:#010x} our_spi={:#010x} lifetime={}s",
-                        esp.transform_id, esp.auth_alg, esp.key_bits, esp.encap, esp.gateway_spi, our_spi, esp.lifetime_secs
-                    );
-
-                    let qm3 = service::build_qm_ack(&session, qm_mid, &qm_nonce, &esp.nonce_r);
-                    udp.send(&service::encrypt_message(&mut session, u8::from(ExchangeType::Quick), qm_mid, &qm3)?)?;
-                    let enc_len = if esp.key_bits > 0 { esp.key_bits / 8 } else { 24 };
-                    let auth_len = match esp.auth_alg {
-                        a if a == ike::model::ESP_AUTH_HMAC_SHA96 || a == ike::model::ESP_AUTH_HMAC_SHA160 => 20,
-                        _ => 32,
-                    };
-                    let km_in = session.gen_esp_keymat(our_spi, &qm_nonce, &esp.nonce_r, enc_len + auth_len);
-                    let km_out = session.gen_esp_keymat(esp.gateway_spi, &qm_nonce, &esp.nonce_r, enc_len + auth_len);
-                    let esp_sa = std::sync::Arc::new(ike::esp::EspSa::new(
-                        esp.transform_id,
-                        esp.auth_alg,
-                        esp.key_bits,
-                        our_spi,
-                        &km_in,
-                        esp.gateway_spi,
-                        &km_out,
-                    )?);
-                    println!("# FULL IKE/IPSec HANDSHAKE COMPLETE — ESP SA ready.");
-
-                    if let Some(path) = &save_session {
-                        save_session_file(path, &host, om_ip, om_mask, &esp, our_spi, &km_in, &km_out, &dns, &domains)?;
-                        println!("# session saved to {path} (reuse: sudo unvpn tunnel-up --session {path})");
-                    }
-                    if connect {
-                        let sock = std::sync::Arc::new(udp.try_clone_socket().map_err(|e| e.to_string())?);
-                        return run_tunnel(
-                            om_ip, om_mask, esp_sa, sock, dns, domains,
-                            esp.lifetime_secs, lease_secs, mac, Some(session),
-                        );
-                    }
-                    println!("# Office Mode IP {om_ip} ready. (--connect brings up the tunnel; needs sudo)");
+            match udp.recv() {
+                Ok(r) if r == raw6 => continue, // msg6 retransmit while the gateway waits for us
+                Ok(r) => {
+                    first = Some(service::decrypt_message(&mut session, &r)?);
                     break;
                 }
-                return Err(format!("SecurID auth failed (Status={status})"));
-            }
-
-            let ctype_raw = service::challenge_attr_type(&attrs);
-            let ctype = ConfigAttributeType::from(ctype_raw);
-            let prompt = service::get_long_attr(&attrs, ConfigAttributeType::Challenge)
-                .or_else(|| service::get_long_attr(&attrs, ConfigAttributeType::Message))
-                .map(|b| String::from_utf8_lossy(&b).replace('\0', " | "))
-                .unwrap_or_default();
-
-            let input = match ctype {
-                ConfigAttributeType::UserName => {
-                    println!("# gateway requests UserName → sending {user}");
-                    user.clone()
+                Err(e) if cert_login.is_some() => {
+                    println!("# no further authentication requested ({e})");
+                    break;
                 }
-                _ => {
-                    println!("# gateway challenge [{:?}]: {}", ctype, prompt);
-                    match passcode.take() {
-                        Some(p) => p,
-                        None => {
-                            // Read the passcode from stdin: the GUI pipes it; a TTY prompts.
-                            // (Only a TTY gets the label: on the GUI's pipe it would glue
-                            // itself to the next stderr line and hide "IKE failed".)
-                            if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-                                eprint!("Passcode (PIN+tokencode): ");
-                                let _ = std::io::stderr().flush();
+                Err(e) => return Err(e),
+            }
+        }
+
+        let mut cfg_mid = 0u32;
+        if let Some(mut req) = first {
+            loop {
+                let attrs = service::find_attributes(&req).ok_or("expected config attributes after Phase 1")?;
+                let message_id = req.message_id;
+                cfg_mid = message_id;
+                let identifier = attrs.identifier;
+
+                if let Some(status) = service::get_short_attr(&attrs, ConfigAttributeType::Status) {
+                    if status == 1 {
+                        let ack = service::build_config_payloads(
+                            &session,
+                            u8::from(AttributesPayloadType::Ack),
+                            message_id,
+                            identifier,
+                            vec![Attribute::short(u16::from(ConfigAttributeType::Status), 1)],
+                        );
+                        let ack_msg = service::encrypt_message(
+                            &mut session,
+                            u8::from(ExchangeType::Transaction),
+                            message_id,
+                            &ack,
+                        )?;
+                        udp.send(&ack_msg)?;
+                        println!("# AUTH SUCCEEDED via native IKE (Status=1).");
+                        break;
+                    }
+                    return Err(format!("authentication failed (Status={status})"));
+                }
+
+                let ctype_raw = service::challenge_attr_type(&attrs);
+                let ctype = ConfigAttributeType::from(ctype_raw);
+                let prompt = service::get_long_attr(&attrs, ConfigAttributeType::Challenge)
+                    .or_else(|| service::get_long_attr(&attrs, ConfigAttributeType::Message))
+                    .map(|b| String::from_utf8_lossy(&b).replace('\0', " | "))
+                    .unwrap_or_default();
+
+                let input = match ctype {
+                    ConfigAttributeType::UserName => {
+                        println!("# gateway requests UserName → sending {user}");
+                        user.clone()
+                    }
+                    _ if cert_login.is_some() => {
+                        println!("# gateway challenge [{:?}]: {}", ctype, prompt);
+                        let label = if prompt.trim().is_empty() { "Verification code".to_string() } else { prompt.clone() };
+                        match passcode.take() {
+                            Some(p) => p,
+                            None => {
+                                println!("# AUTH-PROMPT: code: {}", label.replace(['\n', '\r'], " ").trim());
+                                match anyconnect::read_secret("Code: ") {
+                                    Some(c) => c.trim().to_string(),
+                                    None => {
+                                        println!("# no code provided; stopping.");
+                                        return Ok(());
+                                    }
+                                }
                             }
-                            let mut line = String::new();
-                            if std::io::stdin().read_line(&mut line).unwrap_or(0) == 0
-                                || line.trim().is_empty()
-                            {
-                                println!("# no passcode provided; stopping.");
-                                return Ok(());
-                            }
-                            line.trim().to_string()
                         }
                     }
-                }
-            };
+                    _ => {
+                        println!("# gateway challenge [{:?}]: {}", ctype, prompt);
+                        match passcode.take() {
+                            Some(p) => p,
+                            None => {
+                                // Read the passcode from stdin: the GUI pipes it; a TTY prompts.
+                                // (Only a TTY gets the label: on the GUI's pipe it would glue
+                                // itself to the next stderr line and hide "IKE failed".)
+                                if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+                                    eprint!("Passcode (PIN+tokencode): ");
+                                    let _ = std::io::stderr().flush();
+                                }
+                                let mut line = String::new();
+                                if std::io::stdin().read_line(&mut line).unwrap_or(0) == 0
+                                    || line.trim().is_empty()
+                                {
+                                    println!("# no passcode provided; stopping.");
+                                    return Ok(());
+                                }
+                                line.trim().to_string()
+                            }
+                        }
+                    }
+                };
 
-            let reply = service::build_config_payloads(
-                &session,
-                u8::from(AttributesPayloadType::Reply),
-                message_id,
-                identifier,
-                vec![
-                    Attribute::short(u16::from(ConfigAttributeType::AuthType), 0),
-                    Attribute::long(ctype_raw, input.into_bytes()),
-                ],
-            );
-            let reply_msg = service::encrypt_message(
-                &mut session,
-                u8::from(ExchangeType::Transaction),
-                message_id,
-                &reply,
-            )?;
-            req = service::decrypt_message(&mut session, &udp.send_recv(&reply_msg)?)?;
+                let reply = service::build_config_payloads(
+                    &session,
+                    u8::from(AttributesPayloadType::Reply),
+                    message_id,
+                    identifier,
+                    vec![
+                        Attribute::short(u16::from(ConfigAttributeType::AuthType), 0),
+                        Attribute::long(ctype_raw, input.into_bytes()),
+                    ],
+                );
+                let reply_msg = service::encrypt_message(
+                    &mut session,
+                    u8::from(ExchangeType::Transaction),
+                    message_id,
+                    &reply,
+                )?;
+                req = service::decrypt_message(&mut session, &udp.send_recv(&reply_msg)?)?;
+            }
         }
+
+        let mac = ike::crypto::random(6);
+        let (om_mid, _om_id, om_pl) =
+            service::build_om_request(&session, &mac, std::net::Ipv4Addr::UNSPECIFIED);
+        let om_msg = service::encrypt_message(
+            &mut session,
+            u8::from(ExchangeType::Transaction),
+            om_mid,
+            &om_pl,
+        )?;
+        let om_raw = ike_send_recv_mid(&udp, &om_msg, om_mid)?;
+        let om_reply = service::decrypt_message(&mut session, &om_raw)?;
+        let oma = service::find_attributes(&om_reply).ok_or("no Office Mode reply")?;
+        let to_ip = |v: Vec<u8>| -> Option<std::net::Ipv4Addr> {
+            (v.len() == 4).then(|| std::net::Ipv4Addr::new(v[0], v[1], v[2], v[3]))
+        };
+        let om_ip = service::get_long_attr(&oma, ConfigAttributeType::Ipv4Address)
+            .and_then(to_ip)
+            .ok_or("no Office Mode IP assigned")?;
+        let om_mask = service::get_long_attr(&oma, ConfigAttributeType::Ipv4Netmask)
+            .and_then(to_ip)
+            .unwrap_or(std::net::Ipv4Addr::new(255, 255, 255, 255));
+        let dns: Vec<std::net::Ipv4Addr> = service::get_long_attrs(&oma, ConfigAttributeType::Ipv4Dns)
+            .into_iter()
+            .filter_map(to_ip)
+            .collect();
+        let domains = service::get_long_attr(&oma, ConfigAttributeType::InternalDomainName)
+            .map(|v| String::from_utf8_lossy(&v).trim_matches('\0').to_string())
+            .unwrap_or_default();
+        let to_secs = |v: Vec<u8>| -> Option<u32> {
+            match v.len() {
+                4 => Some(u32::from_be_bytes([v[0], v[1], v[2], v[3]])),
+                2 => Some(u16::from_be_bytes([v[0], v[1]]) as u32),
+                _ => None,
+            }
+        };
+        let lease_secs = service::get_long_attr(&oma, ConfigAttributeType::CccVariableLeaseTime)
+            .and_then(to_secs)
+            .or_else(|| service::get_long_attr(&oma, ConfigAttributeType::AddressExpiry).and_then(to_secs))
+            .unwrap_or(0);
+        println!("# Office Mode: IP {om_ip} / {om_mask}  DNS {dns:?}  domains \"{domains}\"  lease={lease_secs}s");
+
+        let our_spi = ike::crypto::random_u32();
+        let qm_nonce = ike::crypto::random(32);
+        let qm_mid = ike::crypto::random_u32();
+        let qm1 = service::build_quick_mode(&session, our_spi, &qm_nonce, om_ip, qm_mid, 3600);
+        let qm1_msg = service::encrypt_message(&mut session, u8::from(ExchangeType::Quick), qm_mid, &qm1)?;
+        udp.send(&qm1_msg)?;
+        let stale = [0u32, om_mid, cfg_mid];
+        let mut qm2_opt: Option<ike::wire::IsakmpMessage> = None;
+        for _ in 0..8 {
+            let r = match udp.recv() {
+                Ok(r) => r,
+                Err(_) => break,
+            };
+            if r.len() < 28 {
+                continue;
+            }
+            let rmid = u32::from_be_bytes(r[20..24].try_into().unwrap());
+            if stale.contains(&rmid) {
+                continue;
+            }
+            match service::decrypt_message(&mut session, &r) {
+                Ok(m) => {
+                    qm2_opt = Some(m);
+                    break;
+                }
+                Err(e) => println!("#  decrypt failed: {e}"),
+            }
+        }
+        let qm2 = qm2_opt.ok_or("no Quick Mode reply")?;
+        for p in &qm2.payloads {
+            if let ike::wire::Payload::Notification(n) = p {
+                return Err(format!(
+                    "Quick Mode rejected: NOTIFY {} (msg_id {:#x}): {}",
+                    n.message_type,
+                    qm2.message_id,
+                    String::from_utf8_lossy(&n.data)
+                ));
+            }
+        }
+        let esp = service::parse_esp_proposal(&qm2)?;
+        println!(
+            "# Quick Mode ESP SA: transform={} auth={} key_bits={} encap={:#x} gw_spi={:#010x} our_spi={:#010x} lifetime={}s",
+            esp.transform_id, esp.auth_alg, esp.key_bits, esp.encap, esp.gateway_spi, our_spi, esp.lifetime_secs
+        );
+
+        let qm3 = service::build_qm_ack(&session, qm_mid, &qm_nonce, &esp.nonce_r);
+        udp.send(&service::encrypt_message(&mut session, u8::from(ExchangeType::Quick), qm_mid, &qm3)?)?;
+        let enc_len = if esp.key_bits > 0 { esp.key_bits / 8 } else { 24 };
+        let auth_len = match esp.auth_alg {
+            a if a == ike::model::ESP_AUTH_HMAC_SHA96 || a == ike::model::ESP_AUTH_HMAC_SHA160 => 20,
+            _ => 32,
+        };
+        let km_in = session.gen_esp_keymat(our_spi, &qm_nonce, &esp.nonce_r, enc_len + auth_len);
+        let km_out = session.gen_esp_keymat(esp.gateway_spi, &qm_nonce, &esp.nonce_r, enc_len + auth_len);
+        let esp_sa = std::sync::Arc::new(ike::esp::EspSa::new(
+            esp.transform_id,
+            esp.auth_alg,
+            esp.key_bits,
+            our_spi,
+            &km_in,
+            esp.gateway_spi,
+            &km_out,
+        )?);
+        println!("# FULL IKE/IPSec HANDSHAKE COMPLETE — ESP SA ready.");
+
+        if let Some(path) = &save_session {
+            save_session_file(path, &host, om_ip, om_mask, &esp, our_spi, &km_in, &km_out, &dns, &domains)?;
+            println!("# session saved to {path} (reuse: sudo unvpn tunnel-up --session {path})");
+        }
+        if connect {
+            let sock = std::sync::Arc::new(udp.try_clone_socket().map_err(|e| e.to_string())?);
+            return run_tunnel(
+                om_ip, om_mask, esp_sa, sock, dns, domains,
+                esp.lifetime_secs, lease_secs, mac, Some(session),
+            );
+        }
+        println!("# Office Mode IP {om_ip} ready. (--connect brings up the tunnel; needs sudo)");
         Ok(())
     };
 
@@ -1238,6 +1392,7 @@ fn main() {
         Some("deob") => cmd_deob(&args[1..]),
         Some("tunnel") => cmd_tunnel(&args[1..]),
         Some("ike") => cmd_ike(&args[1..]),
+        Some("cp-enroll") => cpcert::cmd_enroll(&args[1..]),
         Some("tunnel-up") => cmd_tunnel_up(&args[1..]),
         Some("forti") => forti::cmd_forti(&args[1..]),
         Some("forti-ipsec") | Some("fortiipsec") => forti_ipsec::cmd_forti_ipsec(&args[1..]),
@@ -1255,6 +1410,10 @@ fn main() {
             eprintln!("  unvpn tunnel --gateway <host> --active-key <obfuscated-hex> [--om-ip <ip>]");
             eprintln!("  unvpn ike --gateway <host> [--passcode <PIN+tokencode>] [--connect]");
             eprintln!("       # M3/M4: IKEv1 handshake; with --connect (sudo) brings up the tun tunnel");
+            eprintln!("  unvpn ike --gateway <host> --cert <file.p12> [--realm <login-option>] [--connect]");
+            eprintln!("       # certificate login; the file password is read from stdin");
+            eprintln!("  unvpn cp-enroll -g <host> -r <registration-key> -o <file.p12>");
+            eprintln!("       # get a Check Point user certificate with a one-time registration key");
             eprintln!("  unvpn forti -g <host[:port]> -u <user> [--connect]   # Fortinet SSL-VPN back-end");
             eprintln!("  unvpn f5 -g <host[:port]> -u <user> [--connect]      # F5 BIG-IP APM SSL-VPN back-end");
             eprintln!("  unvpn anyconnect -g <url> -u <user> [--connect]       # Cisco AnyConnect SSL-VPN back-end");
@@ -1573,6 +1732,13 @@ fn post(host: &str, request: &str) -> Result<String, String> {
     let mut buf = Vec::new();
     tls.read_to_end(&mut buf).map_err(|e| e.to_string())?;
     Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// The gateway's CCC ClientHello answer (site information, login options).
+pub(crate) fn gateway_hello(host: &str) -> Result<ccc::Packet, String> {
+    let body = ccc::client_hello(new_request_id()).serialize();
+    let raw = post(host, &http_request(host, CCC_PATH, &body))?;
+    ccc::parse(split_http_body(&raw)).map_err(|e| format!("bad ClientHello answer: {e}"))
 }
 
 fn split_http_body(resp: &str) -> &str {

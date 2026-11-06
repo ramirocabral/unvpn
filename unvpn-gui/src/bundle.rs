@@ -109,6 +109,12 @@ fn collect_one(p: &Profile, secret: impl Fn(&str) -> Option<String>) -> Result<E
         files.push(EmbeddedFile { name: main_name.clone(), data: B64.encode(main) });
         files.extend(refs.into_iter().map(|(name, data)| EmbeddedFile { name, data: B64.encode(data) }));
         profile.gateway = main_name;
+    } else if p.uses_cp_cert() && !p.cert_path.is_empty() {
+        let path = Path::new(&p.cert_path);
+        let data = std::fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+        let name = file_name(path, "certificate.p12");
+        files.push(EmbeddedFile { name: name.clone(), data: B64.encode(data) });
+        profile.cert_path = name;
     }
     let password = if p.remember_password { secret(&p.name) } else { None };
     let key_pass = if p.remember_key_pass { secret(&profiles::keypass_account(&p.name)) } else { None };
@@ -180,10 +186,12 @@ fn derive_key(passphrase: &str, salt: &[u8], m: u32, t: u32, p: u32) -> Result<[
 pub fn install_files(entry: &Entry, name: &str, root: &Path) -> Result<Profile, String> {
     let mut p = entry.profile.clone();
     p.name = name.to_string();
-    if !p.backend.uses_profile_file() {
+    let cert = p.uses_cp_cert() && !p.cert_path.is_empty();
+    if !p.backend.uses_profile_file() && !cert {
         return Ok(p);
     }
-    if !entry.files.iter().any(|f| f.name == p.gateway) {
+    let main = if cert { &p.cert_path } else { &p.gateway };
+    if !entry.files.iter().any(|f| &f.name == main) {
         return Err(format!("{name}: profile file missing from the export"));
     }
     let dir = fresh_dir(root, &slug(name));
@@ -197,7 +205,11 @@ pub fn install_files(entry: &Entry, name: &str, root: &Path) -> Result<Profile, 
         let path = dir.join(&f.name);
         write_private(&path, &data).map_err(|e| format!("write {}: {e}", path.display()))?;
     }
-    p.gateway = dir.join(&p.gateway).to_string_lossy().into_owned();
+    if cert {
+        p.cert_path = dir.join(&p.cert_path).to_string_lossy().into_owned();
+    } else {
+        p.gateway = dir.join(&p.gateway).to_string_lossy().into_owned();
+    }
     Ok(p)
 }
 
@@ -309,7 +321,7 @@ fn file_name(path: &Path, fallback: &str) -> String {
     }
 }
 
-fn slug(name: &str) -> String {
+pub fn slug(name: &str) -> String {
     let s: String = name
         .chars()
         .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
@@ -321,7 +333,7 @@ fn slug(name: &str) -> String {
     }
 }
 
-fn fresh_dir(root: &Path, base: &str) -> PathBuf {
+pub fn fresh_dir(root: &Path, base: &str) -> PathBuf {
     let mut dir = root.join(base);
     let mut i = 2;
     while dir.exists() {
@@ -410,6 +422,7 @@ mod tests {
             Backend::OpenVpn => "openvpn",
             Backend::WireGuard => "wireguard",
             Backend::FortiIpsec => "fortiipsec",
+            Backend::CheckPoint => "checkpoint",
             _ => "anyconnect",
         }
     }
@@ -473,6 +486,27 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join("client.key")).unwrap(), "KEY");
         assert_eq!(std::fs::read_to_string(dir.join("ca.crt")).unwrap(), "CA");
         assert_eq!(std::fs::read_to_string(&p.gateway).unwrap(), main);
+    }
+
+    #[test]
+    fn checkpoint_certificate_is_embedded_and_installed() {
+        let src = tempfile::tempdir().unwrap();
+        let cert = src.path().join("certificate.p12");
+        std::fs::write(&cert, b"P12DATA").unwrap();
+        let mut p = profile("office", Backend::CheckPoint, "vpn.example.com");
+        p.cp_cert = true;
+        p.cert_path = cert.to_string_lossy().into_owned();
+
+        let e = collect_one(&p, |_| None).unwrap();
+        assert_eq!(e.profile.gateway, "vpn.example.com");
+        assert_eq!(e.profile.cert_path, "certificate.p12");
+        assert_eq!(e.files.len(), 1);
+
+        let dst = tempfile::tempdir().unwrap();
+        let q = install_files(&e, "office", dst.path()).unwrap();
+        assert_eq!(q.gateway, "vpn.example.com");
+        assert!(q.cert_path.starts_with(dst.path().to_str().unwrap()));
+        assert_eq!(std::fs::read(&q.cert_path).unwrap(), b"P12DATA");
     }
 
     #[test]

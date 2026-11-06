@@ -1,8 +1,9 @@
 //! Native IKEv1 / IPSec data plane for Check Point (M3).
 //!
-//! Phase-1 proposal: AES-CBC/256, SHA2-256, DH group 2, auth 0xfadd (Hybrid),
-//! 28800s. The SecurID challenge runs *inside* IKE (hybrid auth via ISAKMP-CFG
-//! Transaction attributes).
+//! Phase-1 Main Mode with either hybrid auth (0xfadd: the gateway signs, the user
+//! answers a SecurID challenge) or RSA signatures with a user certificate. Any
+//! user challenge (SecurID, an e-mailed code) runs inside IKE as ISAKMP-CFG
+//! Transaction attributes.
 #![allow(dead_code)]
 
 pub mod crypto;

@@ -2,7 +2,7 @@
 //! extensions.
 //!
 //! The Phase-1 proposal Check Point uses: AES-CBC/256, SHA2-256, DH group 2,
-//! auth method 0xfadd (Hybrid), 28800s.
+//! auth method 0xfadd (Hybrid) or 3 (RSA signatures, certificate login), 28800s.
 
 /// Declare a wire enum: known values plus an `Other(repr)` fallback so unknown
 /// values survive a decode/encode cycle unchanged.
@@ -52,7 +52,9 @@ pub const IKE_HASH_SHA384: u16 = 5;
 pub const IKE_HASH_SHA512: u16 = 6;
 pub const IKE_GROUP_MODP1024: u16 = 2;
 pub const IKE_GROUP_MODP2048: u16 = 14;
+pub const IKE_AUTH_RSA_SIG: u16 = 3;
 pub const IKE_AUTH_HYBRID_INIT_RSA: u16 = 64221; // 0xfadd — Check Point hybrid
+pub const CERT_ENCODING_X509_SIG: u8 = 4;
 pub const IKE_LIFE_SECONDS: u16 = 1;
 
 reg! {

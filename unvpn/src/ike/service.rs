@@ -17,10 +17,11 @@ pub struct ChosenSuite {
 }
 
 /// Main Mode msg 1: the SA proposal plus the Check Point and NAT-T vendor IDs.
-pub fn build_sa_msg(session: &Ikev1Session, lifetime_secs: u32) -> IsakmpMessage {
-    // Offer a transform matrix (enc × hash × DH group, all Check Point hybrid
-    // auth) for the gateway to pick from. A single transform drew
-    // VPN_NO_COMMON_METHODS_MM.
+/// `auth_method` is hybrid (gateway signs, user answers a challenge) or RSA
+/// signatures (user certificate).
+pub fn build_sa_msg(session: &Ikev1Session, lifetime_secs: u32, auth_method: u16) -> IsakmpMessage {
+    // Offer a transform matrix (enc × hash × DH group) for the gateway to pick
+    // from. A single transform drew VPN_NO_COMMON_METHODS_MM.
     let mut transforms = Vec::new();
     for &(enc, keylens) in &[
         (IKE_ENC_AES_CBC, &[256u16, 128][..]),
@@ -33,10 +34,7 @@ pub fn build_sa_msg(session: &Ikev1Session, lifetime_secs: u32) -> IsakmpMessage
                         Attribute::short(IkeAttributeType::EncryptionAlgorithm.into(), enc),
                         Attribute::short(IkeAttributeType::HashAlgorithm.into(), hash),
                         Attribute::short(IkeAttributeType::GroupDescription.into(), group),
-                        Attribute::short(
-                            IkeAttributeType::AuthenticationMethod.into(),
-                            IKE_AUTH_HYBRID_INIT_RSA,
-                        ),
+                        Attribute::short(IkeAttributeType::AuthenticationMethod.into(), auth_method),
                         Attribute::short(IkeAttributeType::LifeType.into(), IKE_LIFE_SECONDS),
                         Attribute::short(IkeAttributeType::LifeDuration.into(), lifetime_secs as u16),
                     ];
@@ -143,8 +141,14 @@ pub fn parse_chosen_suite(msg: &IsakmpMessage) -> Result<ChosenSuite, String> {
 
 /// Build Main Mode msg 3: KE + Nonce + two NAT-D payloads. Check Point hashes
 /// the gateway address with port 4500 and the local address with port 0 — this
-/// is what steers the connection onto NAT-T (ESP-in-UDP 4500).
-pub fn build_ke(session: &Ikev1Session, local_ip: Ipv4Addr, gateway_ip: Ipv4Addr) -> IsakmpMessage {
+/// is what steers the connection onto NAT-T (ESP-in-UDP 4500). With certificate
+/// login, `cert_requests` (CA names, empty = any) ask for the gateway's chain.
+pub fn build_ke(
+    session: &Ikev1Session,
+    local_ip: Ipv4Addr,
+    gateway_ip: Ipv4Addr,
+    cert_requests: &[Vec<u8>],
+) -> IsakmpMessage {
     let gw: u32 = gateway_ip.into();
     let hash_r = session.hash(&[
         &session.initiator_spi.to_be_bytes(),
@@ -160,18 +164,24 @@ pub fn build_ke(session: &Ikev1Session, local_ip: Ipv4Addr, gateway_ip: Ipv4Addr
         &[0, 0],
     ]);
 
+    let mut payloads = vec![
+        Payload::KeyExchange(session.initiator_pubkey.clone()),
+        Payload::Nonce(session.initiator_nonce.clone()),
+        Payload::Natd(hash_r),
+        Payload::Natd(hash_i),
+    ];
+    for cr in cert_requests {
+        let mut d = vec![CERT_ENCODING_X509_SIG];
+        d.extend_from_slice(cr);
+        payloads.push(Payload::CertificateRequest(d));
+    }
     IsakmpMessage {
         initiator_spi: session.initiator_spi,
         responder_spi: session.responder_spi,
         exchange_type: ExchangeType::IdentityProtection.into(),
         flags: 0,
         message_id: 0,
-        payloads: vec![
-            Payload::KeyExchange(session.initiator_pubkey.clone()),
-            Payload::Nonce(session.initiator_nonce.clone()),
-            Payload::Natd(hash_r),
-            Payload::Natd(hash_i),
-        ],
+        payloads,
     }
 }
 
@@ -199,9 +209,10 @@ pub fn find_natds(msg: &IsakmpMessage) -> Vec<Vec<u8>> {
         .collect()
 }
 
-/// The Check Point hybrid-auth identity blob carried in the CccAuth notify of
-/// Main Mode msg 5. A nameless CP S-expression naming the client + realm.
-pub fn auth_blob(realm: &str) -> String {
+/// The Check Point identity blob carried in the CccAuth notify of Main Mode
+/// msg 5. A nameless CP S-expression naming the client + realm (login option);
+/// the realm's secondary hash is added when known.
+pub fn auth_blob(realm: &str, secondary_realm_hash: Option<&str>) -> String {
     use crate::ccc::Value;
     let logging = Value::map(vec![
         ("client_name", Value::str("Check Point Mobile")),
@@ -210,16 +221,19 @@ pub fn auth_blob(realm: &str) -> String {
         ("os_name", Value::sym("Linux")),
         ("device_id", Value::str("unvpn-linux")),
     ]);
-    Value::map(vec![
+    let mut fields = vec![
         ("clientType", Value::sym("TRAC")),
         ("clientOS", Value::sym("Linux")),
         ("oldSessionId", Value::Empty),
         ("protocolVersion", Value::Num(100)),
         ("client_mode", Value::sym("endpoint_security")),
         ("selected_realm_id", Value::sym(realm)),
-        ("client_logging_data", logging),
-    ])
-    .serialize_bare()
+    ];
+    if let Some(h) = secondary_realm_hash.filter(|h| !h.is_empty()) {
+        fields.push(("secondary_realm_hash", Value::sym(h)));
+    }
+    fields.push(("client_logging_data", logging));
+    Value::map(fields).serialize_bare()
 }
 
 /// The raw body of an Identification payload (fed to HASH_I / HASH_R).
@@ -248,7 +262,7 @@ pub fn build_auth_payloads(session: &Ikev1Session, realm: &str) -> Vec<Payload> 
         protocol_id: ProtocolId::Isakmp.into(),
         spi,
         message_type: NotifyMessageType::CccAuth.into(),
-        data: auth_blob(realm).into_bytes(),
+        data: auth_blob(realm, None).into_bytes(),
     };
 
     vec![
@@ -256,6 +270,50 @@ pub fn build_auth_payloads(session: &Ikev1Session, realm: &str) -> Vec<Payload> 
         Payload::Identification(id),
         Payload::Notification(notify),
     ]
+}
+
+/// Main Mode msg 5 payloads for certificate auth: ID (the certificate's DN),
+/// the user's certificate chain, SIG over HASH_I, Notify(CccAuth, blob).
+pub fn build_cert_auth_payloads(
+    session: &Ikev1Session,
+    blob: &str,
+    key: &openssl::pkey::PKeyRef<openssl::pkey::Private>,
+    chain: &[openssl::x509::X509],
+) -> Result<Vec<Payload>, String> {
+    let leaf = chain.first().ok_or("no certificate")?;
+    let id = IdPayload {
+        id_type: IdentityType::DerAsn1Dn.into(),
+        protocol_id: 0,
+        port: 0,
+        data: leaf.subject_name().to_der().map_err(|e| e.to_string())?,
+    };
+    let hash_i = session.hash_id_i(&ident_body(&id));
+    let rsa = key.rsa().map_err(|e| format!("the certificate key is not RSA: {e}"))?;
+    let mut sig = vec![0u8; rsa.size() as usize];
+    let n = rsa
+        .private_encrypt(&hash_i, &mut sig, openssl::rsa::Padding::PKCS1)
+        .map_err(|e| format!("signing HASH_I: {e}"))?;
+    sig.truncate(n);
+
+    let mut spi = session.initiator_spi.to_be_bytes().to_vec();
+    spi.extend_from_slice(&session.responder_spi.to_be_bytes());
+    let notify = NotifyPayload {
+        doi: 0,
+        protocol_id: ProtocolId::Isakmp.into(),
+        spi,
+        message_type: NotifyMessageType::CccAuth.into(),
+        data: blob.as_bytes().to_vec(),
+    };
+
+    let mut out = vec![Payload::Identification(id)];
+    for c in chain {
+        let mut d = vec![CERT_ENCODING_X509_SIG];
+        d.extend(c.to_der().map_err(|e| e.to_string())?);
+        out.push(Payload::Certificate(d));
+    }
+    out.push(Payload::Signature(sig));
+    out.push(Payload::Notification(notify));
+    Ok(out)
 }
 
 /// Encode + encrypt an ISAKMP message (ISAKMP padding: 1..pad_len then pad_len).
@@ -616,7 +674,7 @@ mod tests {
     #[test]
     fn sa_msg_roundtrips_and_parses() {
         let session = Ikev1Session::new();
-        let msg = build_sa_msg(&session, 28800);
+        let msg = build_sa_msg(&session, 28800, IKE_AUTH_HYBRID_INIT_RSA);
         let bytes = msg.encode();
         let back = IsakmpMessage::decode(&bytes).unwrap();
         assert_eq!(back.encode(), bytes);
@@ -632,5 +690,82 @@ mod tests {
         // SAi_b begins with DOI=1, situation=1.
         let body = sa_body(&msg).unwrap();
         assert_eq!(&body[0..8], &[0, 0, 0, 1, 0, 0, 0, 1]);
+    }
+
+    fn keyed_session() -> Ikev1Session {
+        let mut gw = Ikev1Session::new();
+        gw.set_suite(IKE_GROUP_MODP2048, IKE_HASH_SHA256, IKE_ENC_AES_CBC, 256).unwrap();
+        let mut s = Ikev1Session::new();
+        s.responder_spi = 0x1122334455667788;
+        let msg1 = build_sa_msg(&s, 28800, IKE_AUTH_RSA_SIG);
+        s.set_sa_bytes(&sa_body(&msg1).unwrap());
+        s.set_suite(IKE_GROUP_MODP2048, IKE_HASH_SHA256, IKE_ENC_AES_CBC, 256).unwrap();
+        s.compute_keys(&gw.initiator_pubkey, &gw.initiator_nonce).unwrap();
+        s
+    }
+
+    fn self_signed(cn: &str) -> (openssl::pkey::PKey<openssl::pkey::Private>, openssl::x509::X509) {
+        use openssl::x509::{X509NameBuilder, X509};
+        let key = openssl::pkey::PKey::from_rsa(openssl::rsa::Rsa::generate(2048).unwrap()).unwrap();
+        let mut n = X509NameBuilder::new().unwrap();
+        n.append_entry_by_text("O", "example").unwrap();
+        n.append_entry_by_text("CN", cn).unwrap();
+        let n = n.build();
+        let mut b = X509::builder().unwrap();
+        b.set_version(2).unwrap();
+        b.set_subject_name(&n).unwrap();
+        b.set_issuer_name(&n).unwrap();
+        b.set_pubkey(&key).unwrap();
+        b.set_not_before(&openssl::asn1::Asn1Time::days_from_now(0).unwrap()).unwrap();
+        b.set_not_after(&openssl::asn1::Asn1Time::days_from_now(1).unwrap()).unwrap();
+        b.sign(&key, openssl::hash::MessageDigest::sha256()).unwrap();
+        (key, b.build())
+    }
+
+    #[test]
+    fn rsa_sig_proposal_and_cert_requests() {
+        let s = keyed_session();
+        let msg1 = build_sa_msg(&s, 28800, IKE_AUTH_RSA_SIG);
+        let Payload::Sa(sa) = &msg1.payloads[0] else { panic!() };
+        for t in &sa.proposals[0].transforms {
+            let am = t.attributes.iter().find(|a| a.attr_type == u16::from(IkeAttributeType::AuthenticationMethod));
+            assert_eq!(am.and_then(|a| a.as_u16()), Some(IKE_AUTH_RSA_SIG));
+        }
+        let msg3 = build_ke(&s, Ipv4Addr::new(192, 0, 2, 1), Ipv4Addr::new(203, 0, 113, 1), &[vec![0x30, 0], vec![]]);
+        let crs: Vec<&Vec<u8>> = msg3
+            .payloads
+            .iter()
+            .filter_map(|p| match p {
+                Payload::CertificateRequest(d) => Some(d),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(crs, [&vec![4u8, 0x30, 0], &vec![4u8]]);
+        let back = IsakmpMessage::decode(&msg3.encode()).unwrap();
+        assert_eq!(back.encode(), msg3.encode());
+    }
+
+    #[test]
+    fn cert_auth_payloads_sign_hash_i_with_the_user_key() {
+        let s = keyed_session();
+        let (key, cert) = self_signed("alice");
+        let (_, ca) = self_signed("ca");
+        let pl = build_cert_auth_payloads(&s, &auth_blob("vpn_cert", Some("abc")), &key, &[cert.clone(), ca.clone()]).unwrap();
+        let kinds: Vec<u8> = pl.iter().map(|p| p.payload_type()).collect();
+        assert_eq!(kinds, [5, 6, 6, 9, 11]);
+        let Payload::Identification(id) = &pl[0] else { panic!() };
+        assert_eq!(id.id_type, 9);
+        assert_eq!(id.data, cert.subject_name().to_der().unwrap());
+        let Payload::Certificate(c0) = &pl[1] else { panic!() };
+        assert_eq!(c0[0], 4);
+        assert_eq!(&c0[1..], cert.to_der().unwrap().as_slice());
+        let Payload::Signature(sig) = &pl[3] else { panic!() };
+        let rsa = cert.public_key().unwrap().rsa().unwrap();
+        let mut out = vec![0u8; rsa.size() as usize];
+        let n = rsa.public_decrypt(sig, &mut out, openssl::rsa::Padding::PKCS1).unwrap();
+        assert_eq!(&out[..n], s.hash_id_i(&ident_body(id)).as_slice());
+        let Payload::Notification(nt) = &pl[4] else { panic!() };
+        let blob = String::from_utf8(nt.data.clone()).unwrap();
+        assert!(blob.contains(":selected_realm_id (vpn_cert)") && blob.contains(":secondary_realm_hash (abc)"), "{blob}");
     }
 }

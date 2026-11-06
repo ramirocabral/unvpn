@@ -139,6 +139,12 @@ struct App {
     key_pass_row: adw::PasswordEntryRow,
     remember_key_pass_row: adw::SwitchRow,
     token_row: adw::EntryRow,
+    /// Check Point: SecurID token or certificate login.
+    cp_auth_row: adw::ComboRow,
+    cert_row: adw::EntryRow,
+    cert_browse_btn: gtk::Button,
+    enroll_row: adw::ActionRow,
+    enroll_btn: gtk::Button,
     realm_row: adw::EntryRow,
     psk_row: adw::PasswordEntryRow,
     ua_row: adw::EntryRow,
@@ -260,6 +266,24 @@ impl App {
 
         let token_row = adw::EntryRow::builder().title("Token (email)").build();
 
+        let cp_auth_model = gtk::StringList::new(&["SecurID token", "Certificate"]);
+        let cp_auth_row = adw::ComboRow::builder().title("Authentication").model(&cp_auth_model).build();
+        let cert_row = adw::EntryRow::builder().title("Certificate file (.p12)").build();
+        let cert_browse_btn = gtk::Button::builder()
+            .icon_name("document-open-symbolic")
+            .tooltip_text("Choose the certificate file")
+            .valign(gtk::Align::Center)
+            .css_classes(["flat"])
+            .build();
+        cert_row.add_suffix(&cert_browse_btn);
+        let enroll_btn = gtk::Button::builder().label("Enroll…").valign(gtk::Align::Center).build();
+        let enroll_row = adw::ActionRow::builder()
+            .title("No certificate yet?")
+            .subtitle("Get one with the registration key from your administrator")
+            .subtitle_lines(0)
+            .build();
+        enroll_row.add_suffix(&enroll_btn);
+
         let auth_model = gtk::StringList::new(&["Password", "SSO / SAML"]);
         let sso_row = adw::ComboRow::builder().title("Authentication").model(&auth_model).build();
         let realm_row = adw::EntryRow::builder().title("Realm (optional)").build();
@@ -307,8 +331,11 @@ impl App {
         form_group.add(&backend_row);
         form_group.add(&forti_proto_row);
         form_group.add(&sso_row);
+        form_group.add(&cp_auth_row);
         form_group.add(&gateway_row);
         form_group.add(&realm_row);
+        form_group.add(&cert_row);
+        form_group.add(&enroll_row);
         form_group.add(&psk_row);
         form_group.add(&ua_row);
         form_group.add(&user_row);
@@ -437,6 +464,11 @@ impl App {
             key_pass_row,
             remember_key_pass_row,
             token_row,
+            cp_auth_row,
+            cert_row,
+            cert_browse_btn,
+            enroll_row,
+            enroll_btn,
             realm_row,
             psk_row,
             ua_row,
@@ -502,6 +534,13 @@ impl App {
             app.update_form_visibility();
             app.sync_ui();
         }));
+        app.cp_auth_row.connect_selected_notify(glib::clone!(#[strong] app, move |_| {
+            app.update_form_visibility();
+            app.sync_ui();
+        }));
+        app.cert_row.connect_changed(glib::clone!(#[strong] app, move |_| app.sync_ui()));
+        app.cert_browse_btn.connect_clicked(glib::clone!(#[strong] app, move |_| app.pick_cert_file()));
+        app.enroll_btn.connect_clicked(glib::clone!(#[strong] app, move |_| app.open_enroll_dialog()));
 
         app.gateway_row.connect_changed(glib::clone!(#[strong] app, move |_| {
             if app.backend() == Backend::OpenVpn {
@@ -554,11 +593,17 @@ impl App {
         self.backend().has_sso() && self.sso_row.selected() == 1
     }
 
+    /// Check Point with certificate login selected.
+    fn cp_cert(&self) -> bool {
+        self.backend() == Backend::CheckPoint && self.cp_auth_row.selected() == 1
+    }
+
     fn update_form_visibility(&self) {
         let b = self.backend();
         let forti = b == Backend::Forti;
         let fortiipsec = b == Backend::FortiIpsec;
         let cp = b == Backend::CheckPoint;
+        let cp_cert = self.cp_cert();
         let anyconnect = b == Backend::AnyConnect;
         let gp = b == Backend::GlobalProtect;
         let openvpn = b == Backend::OpenVpn;
@@ -586,8 +631,10 @@ impl App {
         self.sso_row.set_visible(b.has_sso());
         // The realm row doubles as AnyConnect's tunnel group / GlobalProtect's
         // gateway / FortiClient IPsec's dialup group (localid).
-        self.realm_row.set_visible(forti || fortiipsec || b.uses_group());
-        self.realm_row.set_title(if anyconnect {
+        self.realm_row.set_visible(forti || fortiipsec || b.uses_group() || cp_cert);
+        self.realm_row.set_title(if cp_cert {
+            "Login option (optional)"
+        } else if anyconnect {
             "Group (optional)"
         } else if gp {
             "Gateway (optional)"
@@ -604,7 +651,10 @@ impl App {
         // The SSO User-Agent override only matters for a SAML login in the embedded
         // window — show it when SSO is the chosen auth for an SSO-capable backend.
         self.ua_row.set_visible(b.has_sso() && saml);
-        self.user_row.set_visible(need_creds);
+        self.cp_auth_row.set_visible(cp);
+        self.cert_row.set_visible(cp_cert);
+        self.enroll_row.set_visible(cp_cert);
+        self.user_row.set_visible(need_creds && !cp_cert);
         self.password_row.set_visible(need_creds);
         self.remember_row.set_visible(need_creds);
         // WireGuard is dual-stack and kernel-routed; the kill switch doesn't apply.
@@ -615,8 +665,14 @@ impl App {
         let key_pass = openvpn && profiles::ovpn_key_may_need_pass(self.gateway_row.text().trim());
         self.key_pass_row.set_visible(key_pass);
         self.remember_key_pass_row.set_visible(key_pass);
-        self.token_row.set_visible(cp);
-        self.password_row.set_title(if cp { "PIN" } else { "Password" });
+        self.token_row.set_visible(cp && !cp_cert);
+        self.password_row.set_title(if cp_cert {
+            "Certificate password"
+        } else if cp {
+            "PIN"
+        } else {
+            "Password"
+        });
     }
 
     fn form_ready(&self) -> bool {
@@ -632,6 +688,9 @@ impl App {
             Backend::Forti | Backend::F5 | Backend::AnyConnect | Backend::GlobalProtect => {
                 gw && !self.user_row.text().trim().is_empty()
                     && !self.password_row.text().is_empty()
+            }
+            Backend::CheckPoint if self.cp_cert() => {
+                gw && !self.cert_row.text().trim().is_empty() && !self.password_row.text().is_empty()
             }
             Backend::CheckPoint => {
                 gw && !self.user_row.text().trim().is_empty()
@@ -650,6 +709,180 @@ impl App {
 
     fn ovpn_needs_userpass(&self) -> bool {
         profiles::ovpn_needs_userpass(self.gateway_row.text().trim())
+    }
+
+    fn pick_cert_file(&self) {
+        let filter = gtk::FileFilter::new();
+        filter.set_name(Some("Certificates (PKCS#12)"));
+        filter.add_pattern("*.p12");
+        filter.add_pattern("*.pfx");
+        let filters = gio::ListStore::new::<gtk::FileFilter>();
+        filters.append(&filter);
+        let dialog = gtk::FileDialog::builder()
+            .title("Choose the certificate file")
+            .modal(true)
+            .filters(&filters)
+            .build();
+        let app = self.rc();
+        dialog.open(Some(&self.window), gio::Cancellable::NONE, move |res| {
+            if let Some(path) = res.ok().and_then(|f| f.path()) {
+                app.cert_row.set_text(&path.to_string_lossy());
+            }
+        });
+    }
+
+    /// Ask for the one-time registration key and a password for the new
+    /// certificate, then enroll with the gateway's internal CA.
+    fn open_enroll_dialog(&self) {
+        let gw = self.gateway_row.text().trim().to_string();
+        if gw.is_empty() {
+            self.toast("Enter the gateway first");
+            self.gateway_row.grab_focus();
+            return;
+        }
+        let key_row = adw::EntryRow::builder().title("Registration key").build();
+        let pass_row = adw::PasswordEntryRow::builder().title("New certificate password").build();
+        let again_row = adw::PasswordEntryRow::builder().title("Repeat the password").build();
+        let list = gtk::ListBox::builder().css_classes(["boxed-list"]).selection_mode(gtk::SelectionMode::None).build();
+        list.append(&key_row);
+        list.append(&pass_row);
+        list.append(&again_row);
+        let dialog = adw::AlertDialog::builder()
+            .heading("Enroll a certificate")
+            .body(format!(
+                "Enter the registration key your administrator sent you (it looks like 12345-abcdef). \
+                 It works only once. The new certificate and its private key are stored for this \
+                 profile, protected by the password you choose (6 characters or more).\n\nGateway: {gw}"
+            ))
+            .extra_child(&list)
+            .build();
+        dialog.add_responses(&[("cancel", "Cancel"), ("enroll", "Enroll")]);
+        dialog.set_response_appearance("enroll", adw::ResponseAppearance::Suggested);
+        dialog.set_response_enabled("enroll", false);
+        dialog.set_close_response("cancel");
+        let validate = glib::clone!(#[weak] dialog, #[weak] key_row, #[weak] pass_row, #[weak] again_row, move || {
+            let k = key_row.text();
+            let k = k.trim();
+            let ok = k.find('-').is_some_and(|i| i > 0 && i + 1 < k.len())
+                && pass_row.text().chars().count() >= 6
+                && pass_row.text() == again_row.text();
+            dialog.set_response_enabled("enroll", ok);
+        });
+        for r in [key_row.upcast_ref::<gtk::Editable>(), pass_row.upcast_ref(), again_row.upcast_ref()] {
+            let v = validate.clone();
+            r.connect_changed(move |_| v());
+        }
+        let app = self.rc();
+        dialog.connect_response(Some("enroll"), move |_, _| {
+            app.run_enroll(gw.clone(), key_row.text().trim().to_string(), pass_row.text().to_string(), false);
+        });
+        dialog.present(Some(&self.window));
+    }
+
+    /// Where this profile's enrolled certificate goes: a stable path, so a failed
+    /// attempt can be continued (the engine keeps its state next to it).
+    fn enroll_target(&self, gw: &str) -> std::path::PathBuf {
+        let name = self.name_row.text().trim().to_string();
+        let base = bundle::slug(if name.is_empty() { gw } else { &name });
+        let root = profiles::files_dir();
+        let out = root.join(&base).join("certificate.p12");
+        let pending = out.with_extension("p12.enroll").exists();
+        if out.exists() && !pending {
+            bundle::fresh_dir(&root, &base).join("certificate.p12")
+        } else {
+            out
+        }
+    }
+
+    fn run_enroll(&self, gw: String, regkey: String, password: String, trust_ca: bool) {
+        let out = self.enroll_target(&gw);
+        let staging = out.with_extension("p12.enroll");
+        if let Some(dir) = out.parent() {
+            if let Err(e) = std::fs::create_dir_all(dir) {
+                self.toast(&format!("Couldn't create {}: {e}", dir.display()));
+                return;
+            }
+            let _ = std::fs::set_permissions(dir, std::os::unix::fs::PermissionsExt::from_mode(0o700));
+        }
+        let out_s = out.to_string_lossy().into_owned();
+        let bin = engine::unvpn_bin();
+        let mut argv: Vec<&std::ffi::OsStr> = [bin.as_str(), "cp-enroll", "-g", gw.as_str(), "-o", out_s.as_str()]
+            .into_iter()
+            .map(std::ffi::OsStr::new)
+            .collect();
+        // Continue an interrupted attempt: a stored answer is re-read on its own;
+        // a request that was sent but never answered is sent again (same bytes).
+        if staging.join("sent").exists() && !staging.join("response.http").exists() {
+            argv.push(std::ffi::OsStr::new("--resend"));
+        }
+        if trust_ca {
+            argv.push(std::ffi::OsStr::new("--trust-ca"));
+        }
+        let proc = match gio::Subprocess::newv(
+            &argv,
+            gio::SubprocessFlags::STDIN_PIPE | gio::SubprocessFlags::STDOUT_PIPE | gio::SubprocessFlags::STDERR_MERGE,
+        ) {
+            Ok(p) => p,
+            Err(e) => {
+                self.toast(&format!("Couldn't run the engine: {e}"));
+                return;
+            }
+        };
+        self.append_log(&format!("→ enrolling a certificate with {gw} (saving to {out_s})"));
+        self.toast("Enrolling the certificate…");
+        self.enroll_btn.set_sensitive(false);
+        let input = format!("{regkey}\n{password}\n");
+        let app = self.rc();
+        glib::spawn_future_local(async move {
+            let res = proc.communicate_utf8_future(Some(input)).await;
+            let text = match &res {
+                Ok((o, _)) => o.as_ref().map(|s| s.to_string()).unwrap_or_default(),
+                Err(e) => format!("enrollment failed: {e}"),
+            };
+            for l in text.lines() {
+                app.append_log(l);
+            }
+            app.enroll_btn.set_sensitive(true);
+            let ok = res.is_ok() && proc.is_successful() && out.is_file();
+            if ok {
+                app.cp_auth_row.set_selected(1);
+                app.cert_row.set_text(&out_s);
+                app.password_row.set_text(&password);
+                app.update_form_visibility();
+                app.sync_ui();
+                app.toast("Certificate enrolled. Save the profile to keep it.");
+                return;
+            }
+            if text.contains("--trust-ca") && !trust_ca {
+                let fp = text
+                    .lines()
+                    .find_map(|l| l.strip_prefix("# internal CA fingerprint: "))
+                    .unwrap_or("(unknown)")
+                    .to_string();
+                let d = adw::AlertDialog::builder()
+                    .heading("Trust this certificate authority?")
+                    .body(format!(
+                        "The CA could not prove it is the gateway's. Only continue if your administrator \
+                         confirms this fingerprint:\n\n{fp}"
+                    ))
+                    .build();
+                d.add_responses(&[("cancel", "Cancel"), ("trust", "Trust and continue")]);
+                d.set_response_appearance("trust", adw::ResponseAppearance::Destructive);
+                d.set_close_response("cancel");
+                let a = app.clone();
+                d.connect_response(Some("trust"), move |_, _| a.run_enroll(gw.clone(), regkey.clone(), password.clone(), true));
+                d.present(Some(&app.window));
+                return;
+            }
+            let reason = text
+                .lines()
+                .rev()
+                .find_map(|l| l.strip_prefix("enrollment failed: "))
+                .unwrap_or("see the connection log")
+                .to_string();
+            app.toast(&format!("Enrollment failed: {reason}"));
+            app.log_expander.set_expanded(true);
+        });
     }
 
     fn pick_profile_file(&self) {
@@ -822,6 +1055,8 @@ impl App {
         self.backend_row.set_selected(p.backend.index());
         self.forti_proto_row.set_selected(if p.backend == Backend::FortiIpsec { 1 } else { 0 });
         self.sso_row.set_selected(if p.sso { 1 } else { 0 });
+        self.cp_auth_row.set_selected(if p.cp_cert { 1 } else { 0 });
+        self.cert_row.set_text(&p.cert_path);
         self.name_row.set_text(&p.name);
         self.gateway_row.set_text(&p.gateway);
         self.user_row.set_text(&p.user);
@@ -889,6 +1124,8 @@ impl App {
             fctver: self.fctver_row.text().trim().to_string(),
             killswitch: backend != Backend::WireGuard && self.killswitch_row.is_active(),
             no_dtls: backend.uses_dtls() && self.no_dtls_row.is_active(),
+            cp_cert: self.cp_cert(),
+            cert_path: if self.cp_cert() { self.cert_row.text().trim().to_string() } else { String::new() },
         };
 
         let pw = self.password_row.text().to_string();
@@ -1166,6 +1403,8 @@ impl App {
         self.emssn_row.set_text("");
         self.fctver_row.set_text("");
         self.token_row.set_text("");
+        self.cert_row.set_text("");
+        self.cp_auth_row.set_selected(0);
         self.remember_row.set_active(false);
         self.killswitch_row.set_active(false);
         self.no_dtls_row.set_active(false);
@@ -1222,6 +1461,19 @@ impl App {
         };
 
         let (mut args, stdin_lines, saml): (Vec<String>, Vec<String>, Option<String>) = match self.backend() {
+            Backend::CheckPoint if self.cp_cert() => {
+                // The certificate password is piped first; the gateway's second factor
+                // (e-mailed code, …) is asked at runtime via `# AUTH-PROMPT: code:`.
+                let mut args: Vec<String> = vec!["ike".into(), "-g".into(), gw.clone()];
+                args.push("--cert".into());
+                args.push(self.cert_row.text().trim().to_string());
+                if !realm.is_empty() {
+                    args.push("--realm".into());
+                    args.push(realm.clone());
+                }
+                args.push("--connect".into());
+                (args, vec![self.password_row.text().to_string()], None)
+            }
             Backend::CheckPoint => {
                 let passcode = format!("{}{}", self.password_row.text(), self.token_row.text().trim());
                 self.token_row.set_text(""); // one-time code
@@ -1444,7 +1696,8 @@ impl App {
     }
 
     fn focus_missing_field(&self) {
-        let rows: [&gtk::Widget; 3] = [
+        let rows: [&gtk::Widget; 4] = [
+            self.cert_row.upcast_ref(),
             self.user_row.upcast_ref(),
             self.password_row.upcast_ref(),
             self.token_row.upcast_ref(),

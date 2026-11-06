@@ -52,6 +52,7 @@ The installer also registers unvpn to start in the system tray at login.
 
 ```sh
 sudo unvpn ike -g 203.0.113.10 -u alice --connect                    # Check Point
+sudo unvpn ike -g 203.0.113.10 --cert alice.p12 --connect            # Check Point, certificate login
 sudo unvpn forti -g vpn.example.com -u alice --connect               # Fortinet
 sudo unvpn forti -g vpn.example.com --saml --connect                 # Fortinet with SSO
 sudo unvpn forti-ipsec -g vpn.example.com -u alice --connect         # Fortinet IPsec (FortiClient)
@@ -63,6 +64,21 @@ sudo unvpn wireguard -c wg0.conf --connect                           # WireGuard
 ```
 
 `--killswitch` enables a fail-closed firewall; `--allow-ipv6` keeps IPv6 instead of blocking it.
+
+### Check Point certificates
+
+A Check Point user certificate is obtained once with the registration key the
+administrator sends (`<reference>-<code>`); it works only once. In the app, pick
+"Certificate" as the authentication of a Check Point profile and click **Enroll…**.
+From the command line (no root needed):
+
+```sh
+unvpn cp-enroll -g 203.0.113.10 -r 12345-abcdefgh -o alice.p12
+```
+
+The new key and the request are saved before anything is sent, and the CA's answer
+before it is processed, so an interrupted enrollment can be finished with `--resume`
+(or `--resend` when no answer arrived) instead of needing a new key.
 
 ## Legal
 
