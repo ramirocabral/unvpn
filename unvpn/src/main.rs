@@ -311,16 +311,12 @@ fn run_tunnel(
         libc::signal(libc::SIGHUP, h); // terminal closed (sudo relays it)
         libc::signal(libc::SIGQUIT, h);
     }
-    // Disconnect when stdin gets "disconnect" or EOF (the GUI owns this pipe).
+    // Disconnect when stdin gets "disconnect" or EOF (the GUI owns this pipe). Read
+    // through the shared reader: a code prompt during login may have started it.
     std::thread::spawn(|| {
-        let mut line = String::new();
-        loop {
-            line.clear();
-            match std::io::stdin().read_line(&mut line) {
-                Ok(0) => break,
-                Ok(_) if line.trim().eq_ignore_ascii_case("disconnect") => break,
-                Ok(_) => continue,
-                Err(_) => break,
+        while let sysnet::StdinEvent::Line(l) = sysnet::stdin_next(None) {
+            if sysnet::is_disconnect(&l) {
+                break;
             }
         }
         TUNNEL_STOP.store(true, Ordering::SeqCst);
