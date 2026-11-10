@@ -25,7 +25,8 @@ Supported VPNs:
 
 ## Features
 
-- GTK4 app with saved connection profiles; passwords in the system keyring.
+- GTK4 app with saved connection profiles; passwords in the system keyring. The
+  same profiles connect from the command line (`unvpn connect <profile>`).
 - Tray icon showing the connection state.
 - Encrypted export / import of all profiles, to move them between machines.
 - Auto-reconnect after sleep or a network change, without re-auth.
@@ -49,6 +50,18 @@ PREFIX=~/.local ./install.sh    # or just for your user
 The installer also registers unvpn to start in the system tray at login.
 
 ## Command line
+
+Profiles saved in the app connect by name. Run it as your user: it reads the
+profile and the keyring, then asks for sudo itself. Codes, SSO tokens and any
+password the keyring doesn't have are asked on the terminal; Ctrl-C disconnects.
+
+```sh
+unvpn connect --list               # the saved profiles
+unvpn connect office               # by name (or a unique start of it)
+unvpn connect office --dry-run     # print the engine command instead of running it
+```
+
+Or give the details directly:
 
 ```sh
 sudo unvpn ike -g 203.0.113.10 -u alice --connect                    # Check Point

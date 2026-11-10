@@ -11,6 +11,7 @@ macro_rules! out {
 
 mod anyconnect;
 mod ccc;
+mod connect;
 mod cpcert;
 mod forti;
 mod forti_ipsec;
@@ -1387,6 +1388,7 @@ fn main() {
     leakguard::configure(killswitch, block_ipv6);
 
     match args.first().map(String::as_str) {
+        Some("connect") => connect::cmd_connect(&args[1..], killswitch, !block_ipv6),
         Some("hello") => cmd_hello(&args[1..]),
         Some("login") => cmd_login(&args[1..]),
         Some("deob") => cmd_deob(&args[1..]),
@@ -1405,6 +1407,8 @@ fn main() {
         _ => {
             eprintln!("unvpn — native multi-vendor VPN client\n");
             eprintln!("usage:");
+            eprintln!("  unvpn connect <profile>          # connect a profile saved in the app (run as your user)");
+            eprintln!("  unvpn connect --list             # the saved profiles");
             eprintln!("  unvpn hello [--gateway <host>] [--send]");
             eprintln!("  unvpn login --gateway <host> [--user <u>] [--realm <r>] [--passcode <p>] [--probe]");
             eprintln!("  unvpn tunnel --gateway <host> --active-key <obfuscated-hex> [--om-ip <ip>]");
