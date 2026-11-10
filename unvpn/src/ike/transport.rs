@@ -73,6 +73,19 @@ impl IkeUdp {
         }
     }
 
+    /// Takes the datagrams already queued without waiting.
+    pub fn drain(&self) -> Vec<Vec<u8>> {
+        let mut out = Vec::new();
+        if self.sock.set_nonblocking(true).is_err() {
+            return out;
+        }
+        while let Ok(d) = self.recv() {
+            out.push(d);
+        }
+        let _ = self.sock.set_nonblocking(false);
+        out
+    }
+
     pub fn send_recv(&self, msg: &[u8]) -> Result<Vec<u8>, String> {
         self.send(msg)?;
         self.recv()

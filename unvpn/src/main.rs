@@ -1113,11 +1113,15 @@ fn cmd_ike(args: &[String]) {
             }
         }
         println!("# Phase 1 done; waiting for the gateway's authentication requests...");
+        // Raw datagrams already handled: the gateway retransmits them while it waits
+        // (e.g. for a code being typed), and decrypting one twice breaks the IV chain.
+        let mut seen: Vec<Vec<u8>> = vec![raw6.clone()];
         let mut first = None;
         loop {
             match udp.recv() {
                 Ok(r) if r == raw6 => continue, // msg6 retransmit while the gateway waits for us
                 Ok(r) => {
+                    seen.push(r.clone());
                     first = Some(service::decrypt_message(&mut session, &r)?);
                     break;
                 }
@@ -1173,7 +1177,9 @@ fn cmd_ike(args: &[String]) {
                     }
                     _ if cert_login.is_some() => {
                         println!("# gateway challenge [{:?}]: {}", ctype, prompt);
-                        let label = if prompt.trim().is_empty() { "Verification code".to_string() } else { prompt.clone() };
+                        // The text may be followed by its structured form after a NUL.
+                        let text = prompt.split(" | ").next().unwrap_or("").trim();
+                        let label = if text.is_empty() { "Verification code".to_string() } else { text.to_string() };
                         match passcode.take() {
                             Some(p) => p,
                             None => {
@@ -1229,7 +1235,27 @@ fn cmd_ike(args: &[String]) {
                     message_id,
                     &reply,
                 )?;
-                req = service::decrypt_message(&mut session, &udp.send_recv(&reply_msg)?)?;
+                let stale = udp.drain().into_iter().filter(|d| !seen.contains(d)).count();
+                if stale > 0 {
+                    println!("# discarded {stale} unexpected message(s) received while waiting for input");
+                }
+                udp.send(&reply_msg)?;
+                let sent_at = std::time::Instant::now();
+                let mut resent = 0;
+                let raw = loop {
+                    let r = udp.recv()?;
+                    if seen.contains(&r) {
+                        // The request again after our reply had time to arrive: it was lost.
+                        if sent_at.elapsed() > std::time::Duration::from_secs(3) && resent < 3 {
+                            udp.send(&reply_msg)?;
+                            resent += 1;
+                        }
+                        continue;
+                    }
+                    break r;
+                };
+                seen.push(raw.clone());
+                req = service::decrypt_message(&mut session, &raw)?;
             }
         }
 
