@@ -23,8 +23,8 @@ use std::time::Duration;
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 
-use engine::{anyconnect_saml_entry, saml_entry, AuthPrompt, EngineEvent, SsoWatch, State, TrayCmd, Tx, UiMsg, Vpn};
-use profiles::{Backend, Profile};
+use engine::{AuthPrompt, EngineEvent, SsoWatch, State, TrayCmd, Tx, UiMsg, Vpn};
+use profiles::{anyconnect_saml_entry, saml_entry, Backend, BackendSlot, Profile};
 
 const APP_ID: &str = "io.github.unvpn.Client";
 
@@ -1084,6 +1084,31 @@ impl App {
         self.sync_ui();
     }
 
+    /// The connection the form describes: what Save stores, minus the keyring flags.
+    fn form_profile(&self) -> Profile {
+        let backend = self.backend();
+        let realm_field = self.realm_row.text().trim().to_string();
+        Profile {
+            name: self.name_row.text().trim().to_string(),
+            backend,
+            gateway: self.gateway_row.text().trim().to_string(),
+            user: self.user_row.text().trim().to_string(),
+            // realm_row doubles as AnyConnect's group / GlobalProtect's gateway field.
+            realm: if backend.uses_group() { String::new() } else { realm_field.clone() },
+            group: if backend.uses_group() { realm_field } else { String::new() },
+            sso: self.sso(),
+            remember_password: false,
+            remember_key_pass: false,
+            sso_user_agent: self.ua_row.text().trim().to_string(),
+            emssn: self.emssn_row.text().trim().to_string(),
+            fctver: self.fctver_row.text().trim().to_string(),
+            killswitch: backend != Backend::WireGuard && self.killswitch_row.is_active(),
+            no_dtls: backend.uses_dtls() && self.no_dtls_row.is_active(),
+            cp_cert: self.cp_cert(),
+            cert_path: if self.cp_cert() { self.cert_row.text().trim().to_string() } else { String::new() },
+        }
+    }
+
     fn save_profile(&self) {
         let name = self.name_row.text().trim().to_string();
         if name.is_empty() {
@@ -1094,7 +1119,6 @@ impl App {
         let creds_in_play = !self.sso();
         let remember = self.remember_row.is_active() && creds_in_play;
         let backend = self.backend();
-        let realm_field = self.realm_row.text().trim().to_string();
         let key_pass = if self.key_pass_row.is_visible() && self.remember_key_pass_row.is_active() {
             self.key_pass_row.text().to_string()
         } else {
@@ -1108,25 +1132,7 @@ impl App {
             }
             profiles::secret_delete(&key_account);
         }
-        let p = Profile {
-            name: name.clone(),
-            backend,
-            gateway: self.gateway_row.text().trim().to_string(),
-            user: self.user_row.text().trim().to_string(),
-            // realm_row doubles as AnyConnect's group / GlobalProtect's gateway field.
-            realm: if backend.uses_group() { String::new() } else { realm_field.clone() },
-            group: if backend.uses_group() { realm_field } else { String::new() },
-            sso: self.sso(),
-            remember_password: remember,
-            remember_key_pass,
-            sso_user_agent: self.ua_row.text().trim().to_string(),
-            emssn: self.emssn_row.text().trim().to_string(),
-            fctver: self.fctver_row.text().trim().to_string(),
-            killswitch: backend != Backend::WireGuard && self.killswitch_row.is_active(),
-            no_dtls: backend.uses_dtls() && self.no_dtls_row.is_active(),
-            cp_cert: self.cp_cert(),
-            cert_path: if self.cp_cert() { self.cert_row.text().trim().to_string() } else { String::new() },
-        };
+        let p = Profile { remember_password: remember, remember_key_pass, ..self.form_profile() };
 
         let pw = self.password_row.text().to_string();
         if remember && !pw.is_empty() {
@@ -1446,8 +1452,6 @@ impl App {
         );
 
         let gw = self.gateway_row.text().trim().to_string();
-        let user = self.user_row.text().trim().to_string();
-        let realm = self.realm_row.text().trim().to_string();
         // SSO User-Agent override for the embedded sign-in window (empty ⇒ none).
         let sso_ua = {
             let u = self.ua_row.text().trim().to_string();
@@ -1460,153 +1464,27 @@ impl App {
             if n.is_empty() { gw.clone() } else { n }
         };
 
-        let (mut args, stdin_lines, saml): (Vec<String>, Vec<String>, Option<String>) = match self.backend() {
-            Backend::CheckPoint if self.cp_cert() => {
-                // The certificate password is piped first; the gateway's second factor
-                // (e-mailed code, …) is asked at runtime via `# AUTH-PROMPT: code:`.
-                let mut args: Vec<String> = vec!["ike".into(), "-g".into(), gw.clone()];
-                args.push("--cert".into());
-                args.push(self.cert_row.text().trim().to_string());
-                if !realm.is_empty() {
-                    args.push("--realm".into());
-                    args.push(realm.clone());
-                }
-                args.push("--connect".into());
-                (args, vec![self.password_row.text().to_string()], None)
-            }
-            Backend::CheckPoint => {
-                let passcode = format!("{}{}", self.password_row.text(), self.token_row.text().trim());
-                self.token_row.set_text(""); // one-time code
-                (
-                    vec!["ike".into(), "-g".into(), gw.clone(), "-u".into(), user, "--connect".into()],
-                    vec![passcode],
-                    None,
-                )
-            }
-            Backend::Forti => {
-                let mut args: Vec<String> = vec!["forti".into(), "-g".into(), gw.clone()];
-                if !realm.is_empty() {
-                    args.push("--realm".into());
-                    args.push(realm);
-                }
-                if self.sso() {
-                    args.push("--saml".into());
-                    args.push("--no-browser".into()); // we open it ourselves, as the user
-                    args.push("--connect".into());
-                    (args, vec![], Some(saml_entry(&gw)))
-                } else {
-                    args.push("-u".into());
-                    args.push(user);
-                    args.push("--connect".into());
-                    (args, vec![self.password_row.text().to_string()], None)
-                }
-            }
-            Backend::F5 => (
-                vec!["f5".into(), "-g".into(), gw.clone(), "-u".into(), user, "--connect".into()],
-                vec![self.password_row.text().to_string()],
-                None,
-            ),
-            // IKEv2 + EAP: password piped on stdin; the OTP/token is collected at
-            // runtime via `# AUTH-PROMPT: code:` (it doesn't exist until the password
-            // is accepted), exactly like Forti/F5.
-            Backend::FortiIpsec => {
-                let mut args: Vec<String> = vec!["forti-ipsec".into(), "-g".into(), gw.clone()];
-                // The dialup group (localid) selects the gateway's phase1; without a
-                // matching one the FortiGate silently drops the IKE_AUTH.
-                if !realm.is_empty() {
-                    args.push("--localid".into());
-                    args.push(realm.clone());
-                }
-                // Group PSK (optional): lets the client verify the gateway's AUTH.
-                let psk = self.psk_row.text().to_string();
-                if !psk.is_empty() {
-                    args.push("--psk".into());
-                    args.push(psk);
-                }
-                // EMS serial (EMS-managed gateways) and FortiClient version: advanced,
-                // usually blank. Sent in the FORTICLIENT_CONNECT payload.
-                let emssn = self.emssn_row.text().trim().to_string();
-                if !emssn.is_empty() {
-                    args.push("--emssn".into());
-                    args.push(emssn);
-                }
-                let fctver = self.fctver_row.text().trim().to_string();
-                if !fctver.is_empty() {
-                    args.push("--fctver".into());
-                    args.push(fctver);
-                }
-                args.push("-u".into());
-                args.push(user);
-                args.push("--connect".into());
-                (args, vec![self.password_row.text().to_string()], None)
-            }
-            Backend::OpenVpn => {
-                let mut args: Vec<String> = vec!["openvpn".into(), "-c".into(), gw.clone()];
-                // Pipe the password only when the engine will read one: an unexpected
-                // line would otherwise answer its next question (e.g. a key passphrase).
-                let mut lines = Vec::new();
-                if self.ovpn_needs_userpass() {
-                    args.push("-u".into());
-                    args.push(user);
-                    lines.push(self.password_row.text().to_string());
-                }
-                args.push("--connect".into());
-                (args, lines, None)
-            }
-            // Nothing to ask: the keys are in the profile.
-            Backend::WireGuard => (vec!["wireguard".into(), "-c".into(), gw.clone(), "--connect".into()], vec![], None),
-            Backend::AnyConnect => {
-                let mut args: Vec<String> = vec!["anyconnect".into(), "-g".into(), gw.clone()];
-                if !realm.is_empty() {
-                    args.push("--group".into());
-                    args.push(realm);
-                }
-                if self.sso() {
-                    // The token cookie is answered via the `# AUTH-PROMPT: sso:` card.
-                    args.push("--sso".into());
-                    args.push("--connect".into());
-                    (args, vec![], Some(anyconnect_saml_entry(&gw)))
-                } else {
-                    args.push("-u".into());
-                    args.push(user);
-                    args.push("--connect".into());
-                    // A 2FA code, if any, is collected via `# AUTH-PROMPT: code:`.
-                    (args, vec![self.password_row.text().to_string()], None)
-                }
-            }
-            Backend::GlobalProtect => {
-                let mut args: Vec<String> = vec!["gp".into(), "-g".into(), gw.clone()];
-                if !realm.is_empty() {
-                    args.push("--gw".into());
-                    args.push(realm);
-                }
-                if self.sso() {
-                    // The engine announces the IdP URL; the result is captured by the
-                    // embedded window (or pasted) and answers `# AUTH-PROMPT: sso:`.
-                    args.push("--saml".into());
-                    args.push("--connect".into());
-                    (args, vec![], Some(gw.clone()))
-                } else {
-                    args.push("-u".into());
-                    args.push(user);
-                    args.push("--connect".into());
-                    // A 2FA code, if any, is collected via `# AUTH-PROMPT: code:`.
-                    (args, vec![self.password_row.text().to_string()], None)
-                }
-            }
+        let p = self.form_profile();
+        let psk = self.psk_row.text().to_string();
+        let args = profiles::engine_args(&p, Some(&psk));
+        // Secrets go on stdin. The Check Point token code follows the PIN; a
+        // second factor asked later comes as `# AUTH-PROMPT: code:`.
+        let stdin_lines = if p.backend == Backend::CheckPoint && !p.cp_cert {
+            let passcode = format!("{}{}", self.password_row.text(), self.token_row.text().trim());
+            self.token_row.set_text(""); // one-time code
+            vec![passcode]
+        } else if profiles::takes_password(&p) {
+            vec![self.password_row.text().to_string()]
+        } else {
+            Vec::new()
         };
-
-        // Fail-closed firewall, as a session-wide flag the engine strips before
-        // dispatch. Not for WireGuard (dual-stack, kernel-routed).
-        if self.backend() != Backend::WireGuard && self.killswitch_row.is_active() {
-            args.push("--killswitch".into());
-        }
-
-        // Force the data channel onto TLS. A per-back-end flag (not a top-level one):
-        // only the DTLS-capable back-ends parse it, so gate it on uses_dtls().
-        if self.backend().uses_dtls() && self.no_dtls_row.is_active() {
-            args.push("--no-dtls".into());
-        }
+        // GlobalProtect's IdP can be any host: the gateway announces it.
+        let saml = match p.backend {
+            _ if !p.uses_sso() => None,
+            Backend::Forti => Some(saml_entry(&gw)),
+            Backend::AnyConnect => Some(anyconnect_saml_entry(&gw)),
+            _ => Some(gw.clone()),
+        };
 
         self.vpn.borrow_mut().connect(args, stdin_lines, label, saml, sso_ua);
         self.sync_ui();

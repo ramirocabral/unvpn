@@ -1722,13 +1722,22 @@ dependencies = [
  "dbus",
  "getrandom 0.2.17",
  "gtk4",
- "keyring",
  "ksni",
  "libadwaita",
  "serde",
  "tempfile",
  "toml",
+ "unvpn-profiles",
  "webkit6",
+]
+
+[[package]]
+name = "unvpn-profiles"
+version = "0.1.0"
+dependencies = [
+ "keyring",
+ "serde",
+ "toml",
 ]
 
 [[package]]

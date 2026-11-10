@@ -1,0 +1,14 @@
+[package]
+name = "unvpn-profiles"
+version = "0.1.0"
+edition = "2021"
+description = "unvpn connection profiles: the profiles.toml model, their keyring secrets and the engine command line each one maps to."
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
+
+[features]
+# Build libdbus from source (for the statically linked engine).
+vendored = ["keyring/vendored"]

@@ -113,28 +113,6 @@ fn is_reconnect_done(line: &str) -> bool {
     ["tunnel recovered", "reconnected", "tunnel back up", "CHILD SA rekeyed"].iter().any(|m| line.contains(m))
 }
 
-/// The SSO entry point the engine prints for `gateway` (`host[:port]`, default 443):
-/// the only URL the GUI will hand to the browser.
-pub fn saml_entry(gateway: &str) -> String {
-    let g = gateway.trim();
-    let hostport = match g.rsplit_once(':') {
-        Some((h, p)) if p.parse::<u16>().is_ok() => format!("{h}:{p}"),
-        _ => format!("{g}:443"),
-    };
-    format!("https://{hostport}/remote/saml/start?")
-}
-
-/// AnyConnect's SSO entry point for `gateway` (a URL, maybe with a group path):
-/// the ASA/FTD `sso-v2-login` on the same host — `https://host[:port]/+CSCOE+/saml/`.
-/// The gateway omits the default port, so `:443` is dropped here too.
-pub fn anyconnect_saml_entry(gateway: &str) -> String {
-    let g = gateway.trim();
-    let g = g.strip_prefix("https://").or_else(|| g.strip_prefix("http://")).unwrap_or(g);
-    let hostport = g.split(['/', '?', '#']).next().unwrap_or_default();
-    let hostport = hostport.strip_suffix(":443").unwrap_or(hostport);
-    format!("https://{hostport}/+CSCOE+/saml/")
-}
-
 /// `https://host[:port]` of a URL (`None` if it isn't https).
 fn sso_origin(url: &str) -> Option<&str> {
     let rest = url.strip_prefix("https://")?;
