@@ -1527,12 +1527,38 @@ fn main() {
         Some("ivanti") | Some("pulse") => ivanti::cmd_ivanti(&args[1..]),
         Some("openvpn") => openvpn::cmd_openvpn(&args[1..]),
         Some("wireguard") | Some("wg") => wireguard::cmd_wireguard(&args[1..]),
+        Some("pins") => cmd_pins(&args[1..]),
         Some("--version" | "-V" | "version") => println!("unvpn {}", env!("CARGO_PKG_VERSION")),
         Some("--help" | "-h" | "help") => usage(&mut std::io::stdout()),
         _ => {
             usage(&mut std::io::stderr());
             std::process::exit(2);
         }
+    }
+}
+
+/// Print, one per line, the `--pin=` flags the saved profiles keep for a gateway
+/// (`host[:port]`, or the gateway of an `f5-vpn://` link) — for a launcher that
+/// starts the engine without a front-end to ask. Run as the user.
+fn cmd_pins(args: &[String]) {
+    let [target] = args else {
+        eprintln!("usage: unvpn pins <host[:port] | f5-vpn://…>");
+        std::process::exit(2);
+    };
+    let endpoint = match unvpn_profiles::f5_launch_endpoint(target) {
+        Some(e) => e,
+        None if target.starts_with("f5-vpn:") => {
+            eprintln!("no server= in the f5-vpn:// link");
+            std::process::exit(2);
+        }
+        None => unvpn_profiles::gateway_endpoint(target),
+    };
+    let profiles = unvpn_profiles::load().unwrap_or_else(|e| {
+        eprintln!("can't read the saved profiles: {e}");
+        std::process::exit(1);
+    });
+    for pin in unvpn_profiles::pins_for(&profiles, &endpoint) {
+        println!("--pin={pin}");
     }
 }
 
@@ -1558,6 +1584,7 @@ fn usage(out: &mut dyn Write) {
     let _ = writeln!(out, "  unvpn ivanti -g <host> -u <user> [--connect]          # Ivanti Connect Secure (Pulse) back-end");
     let _ = writeln!(out, "  unvpn openvpn -c <profile.ovpn> [-u <user>] [--connect] # OpenVPN back-end");
     let _ = writeln!(out, "  unvpn wireguard -c <profile.conf> --connect            # WireGuard (kernel) back-end");
+    let _ = writeln!(out, "  unvpn pins <host:port | f5-vpn://…>                    # the --pin flags your profiles keep for it");
     let _ = writeln!(out, "  unvpn --version");
     let _ = writeln!(out, "\nglobal flags (any back-end):");
     let _ = writeln!(out, "  --killswitch   fail-closed firewall: block all egress but the tunnel, gateway, LAN and DHCP");

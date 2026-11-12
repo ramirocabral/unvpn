@@ -197,6 +197,9 @@ struct App {
     pending_switch: RefCell<Option<String>>,
     tx: Tx,
     last_state: RefCell<Option<State>>,
+    /// Gateway certificates trusted in this run for connections without a saved
+    /// profile (an unsaved form, an F5 link from the browser): endpoint → fingerprint.
+    session_pins: RefCell<std::collections::BTreeMap<String, String>>,
     /// OpenVPN: passphrase to answer the engine's `keypass` prompt with, unasked
     /// (taken once per connection, so a wrong one falls back to the prompt card).
     pending_key_pass: RefCell<Option<String>>,
@@ -529,6 +532,7 @@ impl App {
             pending_switch: RefCell::new(None),
             tx,
             last_state: RefCell::new(None),
+            session_pins: RefCell::new(Default::default()),
             pending_key_pass: RefCell::new(None),
             key_pass_to_store: RefCell::new(None),
             active_profile: Arc::new(Mutex::new(String::new())),
@@ -1241,7 +1245,8 @@ impl App {
             let mut profs = self.profiles.borrow_mut();
             let Some(p) = profs.iter_mut().find(|p| p.name == name) else {
                 drop(profs);
-                self.append_log("→ certificate trusted for this connection (save the profile to keep it)");
+                self.session_pins.borrow_mut().insert(q.endpoint.clone(), q.fingerprint.clone());
+                self.append_log("→ certificate trusted until unvpn quits (a saved profile for this gateway keeps it)");
                 return;
             };
             p.pins.insert(q.endpoint.clone(), q.fingerprint.clone());
@@ -1525,6 +1530,52 @@ impl App {
         self.name_row.grab_focus();
     }
 
+    /// The webtop's "Start" (an `f5-vpn://` link the browser handed over): run the
+    /// handoff like any connection, so its questions and status show here. The
+    /// saved F5 profile for that gateway, if any, lends its certificates and options.
+    fn launch_f5(&self, url: &str) {
+        let Some(endpoint) = profiles::f5_launch_endpoint(url) else {
+            self.show_window();
+            self.toast("That F5 link names no gateway");
+            return;
+        };
+        if self.vpn.borrow().is_busy() {
+            self.show_window();
+            self.toast("Disconnect first to start the F5 connection from the browser");
+            return;
+        }
+        self.log_buffer.set_text("");
+        self.ip_row.set_subtitle("");
+        self.dns_row.set_subtitle("");
+        self.status_group.set_visible(false);
+        self.clear_prompt();
+        self.pending_key_pass.replace(None);
+        self.key_pass_to_store.replace(None);
+
+        let profs = self.profiles.borrow();
+        let saved = profs.iter().find(|p| p.backend == Backend::F5 && profiles::gateway_endpoint(&p.gateway) == endpoint);
+        *self.active_profile.lock().unwrap() = saved.map(|p| p.name.clone()).unwrap_or_else(|| endpoint.clone());
+        let mut args: Vec<String> = ["f5", "--launch", url, "--watch-stdin"].map(String::from).to_vec();
+        if saved.is_some_and(|p| p.killswitch) {
+            args.push("--killswitch".into());
+        }
+        if saved.is_some_and(|p| p.no_dtls) {
+            args.push("--no-dtls".into());
+        }
+        let mut pins = profiles::pins_for(&profs, &endpoint);
+        drop(profs);
+        if let Some(fp) = self.session_pins.borrow().get(&endpoint) {
+            pins.push(format!("{endpoint}={fp}"));
+        }
+        for pin in pins {
+            args.extend(["--pin".to_string(), pin]);
+        }
+        // Like a tray connect: the window opens for a question or a failure.
+        self.from_tray.set(true);
+        self.vpn.borrow_mut().connect(args, Vec::new(), format!("F5 from the browser: {endpoint}"), None, None);
+        self.sync_ui();
+    }
+
     fn on_connect_clicked(&self) {
         let st = self.vpn.borrow().state();
         match st {
@@ -1570,7 +1621,10 @@ impl App {
             if n.is_empty() { gw.clone() } else { n }
         };
 
-        let p = self.form_profile();
+        let mut p = self.form_profile();
+        for (endpoint, fp) in self.session_pins.borrow().iter() {
+            p.pins.entry(endpoint.clone()).or_insert_with(|| fp.clone());
+        }
         let psk = (p.backend == Backend::FortiIpsec).then(|| self.psk_row.text().to_string()).filter(|k| !k.is_empty());
         let args = profiles::engine_args(&p, psk.is_some());
         // Secrets go on stdin. The Check Point token code follows the PIN; a
@@ -2176,16 +2230,23 @@ fn free_name(profs: &[Profile], base: &str) -> String {
     (2..).map(|i| format!("{base} ({i})")).find(|n| !profs.iter().any(|p| &p.name == n)).unwrap()
 }
 
-fn build_ui(app: &adw::Application, start_hidden: bool) {
-    // Single instance: launching again (e.g. from the app launcher while it sits in
-    // the tray) just brings the existing window back.
-    if let Some(w) = app.windows().first() {
-        w.set_visible(true);
-        w.present();
-        return;
+thread_local! {
+    static UI: RefCell<Option<Rc<App>>> = const { RefCell::new(None) };
+}
+
+/// The app's single window and state, built on first use. Launching again (e.g.
+/// from the app launcher while it sits in the tray) brings the window back unless
+/// `start_hidden`.
+fn build_ui(app: &adw::Application, start_hidden: bool) -> Rc<App> {
+    if let Some(existing) = UI.with(|u| u.borrow().clone()) {
+        if !start_hidden {
+            existing.show_window();
+        }
+        return existing;
     }
     let (tx, rx) = async_channel::unbounded::<UiMsg>();
     let state_app = App::new(app, tx);
+    UI.with(|u| *u.borrow_mut() = Some(state_app.clone()));
 
     let about = gio::SimpleAction::new("about", None);
     about.connect_activate(glib::clone!(#[strong] state_app, move |_, _| {
@@ -2222,7 +2283,7 @@ fn build_ui(app: &adw::Application, start_hidden: bool) {
     if !start_hidden {
         state_app.init_tray();
         state_app.window.present();
-        return;
+        return state_app;
     }
     // `--tray` (autostart): stay in the tray until picked. At login the bar hosting
     // the tray may come up after us, so wait for it before falling back to a window.
@@ -2242,6 +2303,7 @@ fn build_ui(app: &adw::Application, start_hidden: bool) {
     } else {
         glib::timeout_add_local(Duration::from_millis(500), wait_tray);
     }
+    state_app
 }
 
 fn install_css() {
@@ -2266,11 +2328,13 @@ fn main() -> glib::ExitCode {
         return glib::ExitCode::SUCCESS;
     }
 
-    // Our own flag; GApplication would reject it as an unknown option.
-    let start_hidden = args.iter().any(|a| a == "--tray");
-    let gtk_args: Vec<String> = args.into_iter().filter(|a| a != "--tray").collect();
-
-    let app = adw::Application::builder().application_id(APP_ID).build();
+    // Handled by the running instance (a second launch forwards its arguments):
+    //   --tray               start in the tray
+    //   --f5-launch <url>    connect an F5 webtop handoff link (the f5-vpn:// handler)
+    let app = adw::Application::builder()
+        .application_id(APP_ID)
+        .flags(gio::ApplicationFlags::HANDLES_COMMAND_LINE)
+        .build();
     app.connect_startup(|_| {
         install_css();
         gtk::Window::set_default_icon_name("unvpn");
@@ -2279,8 +2343,20 @@ fn main() -> glib::ExitCode {
         // on a light desktop can still override via the usual GTK settings.
         adw::StyleManager::default().set_color_scheme(adw::ColorScheme::PreferDark);
     });
-    app.connect_activate(move |app| build_ui(app, start_hidden));
-    app.run_with_args(&gtk_args)
+    app.connect_activate(|app| {
+        build_ui(app, false);
+    });
+    app.connect_command_line(|app, cmd| {
+        let args: Vec<String> = cmd.arguments().iter().map(|a| a.to_string_lossy().into_owned()).collect();
+        let launch = args.iter().position(|a| a == "--f5-launch").and_then(|i| args.get(i + 1)).cloned();
+        let hidden = launch.is_some() || args.iter().any(|a| a == "--tray");
+        let ui = build_ui(app, hidden);
+        if let Some(url) = launch {
+            ui.launch_f5(&url);
+        }
+        glib::ExitCode::SUCCESS
+    });
+    app.run_with_args(&args)
 }
 
 #[cfg(test)]

@@ -25,6 +25,9 @@ struct Args {
     /// Status file the GUI reads to see/stop a browser-launched tunnel. Set by the
     /// scheme-handler wrapper on the `--launch` path.
     status_file: Option<String>,
+    /// `--launch` run by a front-end that owns stdin (the app): `disconnect` or EOF
+    /// there stops the tunnel, as on the other paths.
+    watch_stdin: bool,
 }
 
 #[derive(PartialEq)]
@@ -69,6 +72,7 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
     let mut no_routes = false;
     let mut launch_url: Option<String> = None;
     let mut status_file: Option<String> = None;
+    let mut watch_stdin = false;
 
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -96,6 +100,7 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
             "--no-dtls" => no_dtls = true,
             "--no-routes" => no_routes = true,
             "--status-file" => status_file = it.next().cloned(),
+            "--watch-stdin" => watch_stdin = true,
             "--launch" => {
                 action = Action::Launch;
                 launch_url = Some(it.next().cloned().ok_or("--launch needs an f5-vpn:// URL")?);
@@ -111,13 +116,13 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
     if action == Action::Launch {
         // host/user come from the URL.
         let host = host.unwrap_or_default();
-        return Ok(Args { host, port, user, password, code, action, no_dtls, no_routes, launch_url, status_file });
+        return Ok(Args { host, port, user, password, code, action, no_dtls, no_routes, launch_url, status_file, watch_stdin });
     }
     let host = host.ok_or("f5 requires --gateway <host[:port]>")?;
     if action != Action::Probe && user.is_empty() {
         return Err("f5 requires --user <user>".into());
     }
-    Ok(Args { host, port, user, password, code, action, no_dtls, no_routes, launch_url, status_file })
+    Ok(Args { host, port, user, password, code, action, no_dtls, no_routes, launch_url, status_file, watch_stdin })
 }
 
 fn usage() {
@@ -129,6 +134,7 @@ fn usage() {
     eprintln!("                     verify with: ping -I f5vpn0 <internal-host>)");
     eprintln!("  unvpn f5 --launch \"f5-vpn://…\" [--status-file PATH]   # webtop 'Start' handoff (SSO token → tunnel, sudo)");
     eprintln!("      --status-file  publish pid/IP/DNS here so the GUI can show + stop this tunnel");
+    eprintln!("      --watch-stdin  stop on a `disconnect` line or EOF on stdin (when a front-end runs it)");
     eprintln!("  password/OTP are read from stdin (no echo) when not given with --password/--code");
 }
 
@@ -253,8 +259,8 @@ fn connect(a: &Args) -> Result<(), String> {
 }
 
 /// Webtop "Start" handoff: the browser already authenticated and minted a one-time
-/// token, so no password is needed. Stdin is not watched (the OS launches this
-/// detached); stop with SIGTERM.
+/// token, so no password is needed. Stdin is watched only with `--watch-stdin`
+/// (the scheme handler launches this detached); otherwise stop with SIGTERM.
 fn launch(a: &Args) -> Result<(), String> {
     let url = a.launch_url.as_deref().ok_or("launch requires an f5-vpn:// URL")?;
     let p = parse_launch_url(url)?;
@@ -267,7 +273,7 @@ fn launch(a: &Args) -> Result<(), String> {
         tunnel::RunOpts {
             no_dtls: a.no_dtls,
             no_routes: a.no_routes,
-            watch_stdin: false,
+            watch_stdin: a.watch_stdin,
             status_file: a.status_file.clone(),
         },
     )

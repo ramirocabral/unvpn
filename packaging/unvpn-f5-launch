@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
 # Scheme handler for f5-vpn:// — the Linux equivalent of the webtop "Start"
-# button. The browser hands us the one-time-token URL; we exchange it for a
-# session and bring the tunnel up (as root), publishing a status file the GUI
-# reads to show and stop the tunnel.
+# button. The browser hands us the one-time-token URL.
+#
+# In a desktop session with the app installed, the app takes the link and runs
+# the connection like any other (its questions, such as whether to trust the
+# gateway's certificate, show in its window). Otherwise we exchange the token
+# for a session and bring the tunnel up (as root) ourselves, with the gateway
+# certificates the saved profiles trust, publishing a status file the app reads
+# to show and stop the tunnel.
 #
 # Registered by unvpn-f5-handler.desktop (MimeType x-scheme-handler/f5-vpn).
 #
+# App binary:        $UNVPN_GUI, else `unvpn-gui` on PATH, else /usr/local/bin/unvpn-gui
 # Engine binary:     $UNVPN_BIN, else `unvpn` on PATH, else /usr/local/bin/unvpn
 # Privilege escalation: $UNVPN_PRIV = pkexec|sudo, else auto (passwordless sudo
 #                    when available — minimal WMs usually lack a polkit agent —
@@ -22,6 +28,15 @@ cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/unvpn-f5"
 mkdir -p "$cache_dir"
 status_file="$cache_dir/tunnel.status"
 log="$cache_dir/launch.log"
+
+gui="${UNVPN_GUI:-}"
+[ -z "$gui" ] && gui="$(command -v unvpn-gui || true)"
+[ -z "$gui" ] && gui="/usr/local/bin/unvpn-gui"
+if [ -x "$gui" ] && [ -n "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ]; then
+    echo "=== $(date -Is) launch via $gui ===" >>"$log"
+    # A running app takes the link and this returns; otherwise this becomes the app.
+    exec setsid "$gui" --f5-launch "$url" >>"$log" 2>&1
+fi
 
 engine="${UNVPN_BIN:-}"
 if [ -z "$engine" ]; then
@@ -47,5 +62,10 @@ esac
     echo "=== $(date -Is) launch $url (engine=$engine priv=$priv) ==="
 } >>"$log"
 
+# Nobody can answer a question about the gateway's certificate here, so pass the
+# ones the saved profiles trust for it.
+pins=()
+while IFS= read -r p; do pins+=("$p"); done < <("$engine" pins "$url" 2>>"$log" || true)
+
 # New session so closing the browser/launcher doesn't SIGHUP the tunnel.
-exec setsid "$@" f5 --launch "$url" --status-file "$status_file" >>"$log" 2>&1
+exec setsid "$@" f5 --launch "$url" ${pins[@]+"${pins[@]}"} --status-file "$status_file" </dev/null >>"$log" 2>&1

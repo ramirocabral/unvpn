@@ -447,6 +447,67 @@ pub fn engine_args(p: &Profile, psk: bool) -> Vec<String> {
     out
 }
 
+/// `host:port` (lowercase, port 443 unless given) of a gateway as typed in a
+/// profile: `host`, `host:port` or an `https://` URL.
+pub fn gateway_endpoint(gateway: &str) -> String {
+    let g = gateway.trim();
+    let g = g.strip_prefix("https://").unwrap_or(g);
+    let hostport = g.split(['/', '?', '#']).next().unwrap_or_default().to_ascii_lowercase();
+    match hostport.rsplit_once(':') {
+        Some((_, p)) if p.parse::<u16>().is_ok() => hostport,
+        _ => format!("{hostport}:443"),
+    }
+}
+
+/// The gateway (`host:port`) of an F5 webtop handoff link,
+/// `f5-vpn://…?server=<host>&port=<port>&…`.
+pub fn f5_launch_endpoint(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("f5-vpn://").or_else(|| url.strip_prefix("f5-vpn:"))?;
+    let query = rest.split_once('?')?.1;
+    let mut host = None;
+    let mut port = 443u16;
+    for (k, v) in query.split('&').filter_map(|kv| kv.split_once('=')) {
+        match k {
+            "server" => host = Some(percent_decode(v)),
+            "port" => port = percent_decode(v).parse().unwrap_or(443),
+            _ => {}
+        }
+    }
+    let host = host.filter(|h| !h.is_empty() && !h.contains(|c: char| c.is_whitespace() || c == '/'))?;
+    Some(format!("{}:{port}", host.to_ascii_lowercase()))
+}
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let hex = (b[i] == b'%').then(|| s.get(i + 1..i + 3)).flatten().and_then(|h| u8::from_str_radix(h, 16).ok());
+        match hex {
+            Some(v) => {
+                out.push(v);
+                i += 3;
+            }
+            None => {
+                out.push(if b[i] == b'+' { b' ' } else { b[i] });
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The certificates any saved profile trusts for `endpoint`, as `--pin` values.
+pub fn pins_for(profiles: &[Profile], endpoint: &str) -> Vec<String> {
+    let mut pins: Vec<String> = profiles
+        .iter()
+        .filter_map(|p| p.pins.get(endpoint).map(|fp| format!("{endpoint}={fp}")))
+        .collect();
+    pins.sort();
+    pins.dedup();
+    pins
+}
+
 /// The engine asking whether to trust a gateway certificate no system CA vouches
 /// for: `# AUTH-PROMPT: trust: <endpoint> <fingerprint> <details>`.
 #[derive(Clone, Debug, PartialEq)]
@@ -593,6 +654,31 @@ mod tests {
         assert_eq!(back.profiles[0].pins, p.pins);
         let plain = toml::to_string_pretty(&ProfileFile { profiles: vec![profile("backend = \"f5\"")] }).unwrap();
         assert!(!plain.contains("pins"), "{plain}");
+    }
+
+    #[test]
+    fn endpoints_of_gateways_and_f5_launch_links() {
+        assert_eq!(gateway_endpoint("VPN.example.com"), "vpn.example.com:443");
+        assert_eq!(gateway_endpoint(" vpn.example.com:8443 "), "vpn.example.com:8443");
+        assert_eq!(gateway_endpoint("https://vpn.example.com/staff"), "vpn.example.com:443");
+        let link = "f5-vpn://./?server=VPN-F5.example.com&resourcename=%2FCommon%2FNA&port=443&otc=CCCC";
+        assert_eq!(f5_launch_endpoint(link).as_deref(), Some("vpn-f5.example.com:443"));
+        assert_eq!(f5_launch_endpoint("f5-vpn://x/?server=gw.example&port=8443&token=T").as_deref(), Some("gw.example:8443"));
+        assert_eq!(f5_launch_endpoint("f5-vpn://x/?server=gw%2Eexample&token=T").as_deref(), Some("gw.example:443"));
+        assert_eq!(f5_launch_endpoint("f5-vpn://x/?otc=C"), None);
+        assert_eq!(f5_launch_endpoint("https://x/?server=gw"), None);
+    }
+
+    #[test]
+    fn pins_for_an_endpoint_come_from_every_profile() {
+        let fp = |c: &str| format!("sha256:{}", c.repeat(64));
+        let mut a = profile("backend = \"f5\"");
+        a.pins.insert("vpn.example.com:443".into(), fp("a"));
+        let mut b = profile("backend = \"forti\"");
+        b.pins.insert("vpn.example.com:443".into(), fp("a"));
+        b.pins.insert("other.example.com:443".into(), fp("b"));
+        assert_eq!(pins_for(&[a.clone(), b.clone()], "vpn.example.com:443"), [format!("vpn.example.com:443={}", fp("a"))]);
+        assert!(pins_for(&[a, b], "vpn.example.com:8443").is_empty());
     }
 
     #[test]

@@ -87,7 +87,10 @@ The app and `unvpn connect` keep the answer with the profile; from then on, a
 different certificate on that gateway is refused rather than asked about (if the
 gateway really got a new one, **Forget** the trusted certificates in the profile).
 On the command line, `--pin <host>:<port>=sha256:<hex>` trusts a certificate
-without asking, and `--insecure` turns the check off.
+without asking, and `--insecure` turns the check off. An F5 connection started
+from the webtop's **Start** button in the browser runs in the app, so the same
+question shows there; the certificates of a saved F5 profile for that gateway
+apply to it.
 
 ### Check Point certificates
 
