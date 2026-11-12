@@ -128,11 +128,9 @@ impl TunnelConfig {
 }
 
 fn strip_ci<'a>(k: &'a str, prefix: &str) -> Option<&'a str> {
-    if k.len() >= prefix.len() && k[..prefix.len()].eq_ignore_ascii_case(prefix) {
-        Some(&k[prefix.len()..])
-    } else {
-        None
-    }
+    let head = k.get(..prefix.len())?;
+    head.eq_ignore_ascii_case(prefix)
+        .then(|| &k[prefix.len()..])
 }
 
 fn push_ip(v: &mut Vec<Ipv4Addr>, s: &str) {
@@ -224,6 +222,15 @@ fn decode_banner(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn non_ascii_header_names_are_ignored() {
+        let h = vec![(
+            "X-CST\u{fffd}Address".to_string(),
+            "198.51.100.7".to_string(),
+        )];
+        assert_eq!(TunnelConfig::from_headers(&h).address, None);
+    }
 
     fn h(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
         pairs

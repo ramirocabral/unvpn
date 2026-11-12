@@ -155,18 +155,18 @@ fn parse_attrs(s: &str) -> BTreeMap<String, String> {
     let bytes = s.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        while i < bytes.len() && (bytes[i] as char).is_whitespace() {
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
             i += 1;
         }
         let key_start = i;
-        while i < bytes.len() && bytes[i] != b'=' && !(bytes[i] as char).is_whitespace() {
+        while i < bytes.len() && bytes[i] != b'=' && !bytes[i].is_ascii_whitespace() {
             i += 1;
         }
         if key_start == i {
             break;
         }
         let key = s[key_start..i].to_string();
-        while i < bytes.len() && (bytes[i] as char).is_whitespace() {
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
             i += 1;
         }
         if i >= bytes.len() || bytes[i] != b'=' {
@@ -174,7 +174,7 @@ fn parse_attrs(s: &str) -> BTreeMap<String, String> {
             continue;
         }
         i += 1;
-        while i < bytes.len() && (bytes[i] as char).is_whitespace() {
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
             i += 1;
         }
         if i >= bytes.len() {
@@ -192,7 +192,7 @@ fn parse_attrs(s: &str) -> BTreeMap<String, String> {
             v
         } else {
             let vstart = i;
-            while i < bytes.len() && !(bytes[i] as char).is_whitespace() {
+            while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
                 i += 1;
             }
             s[vstart..i].to_string()
@@ -205,6 +205,14 @@ fn parse_attrs(s: &str) -> BTreeMap<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn non_ascii_attribute_values() {
+        // 0x85 inside a UTF-8 character is not whitespace.
+        let a = parse_attrs("k=Ӆx v='é'");
+        assert_eq!(a.get("k").map(String::as_str), Some("Ӆx"));
+        assert_eq!(a.get("v").map(String::as_str), Some("é"));
+    }
 
     const SAMPLE: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 <sslvpn-tunnel ver="2" dtls="1" patch="1">

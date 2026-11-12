@@ -262,15 +262,15 @@ fn parse_tag(inner: &str) -> (String, Vec<(String, String)>) {
     let b = inner.as_bytes();
     let mut i = name_end;
     while i < b.len() {
-        while i < b.len() && (b[i] as char).is_whitespace() {
+        while i < b.len() && b[i].is_ascii_whitespace() {
             i += 1;
         }
         let k_start = i;
-        while i < b.len() && b[i] != b'=' && !(b[i] as char).is_whitespace() {
+        while i < b.len() && b[i] != b'=' && !b[i].is_ascii_whitespace() {
             i += 1;
         }
         let key = inner[k_start..i].to_string();
-        while i < b.len() && (b[i] as char).is_whitespace() {
+        while i < b.len() && b[i].is_ascii_whitespace() {
             i += 1;
         }
         if i >= b.len() || b[i] != b'=' {
@@ -280,7 +280,7 @@ fn parse_tag(inner: &str) -> (String, Vec<(String, String)>) {
             continue;
         }
         i += 1;
-        while i < b.len() && (b[i] as char).is_whitespace() {
+        while i < b.len() && b[i].is_ascii_whitespace() {
             i += 1;
         }
         let value = if i < b.len() && (b[i] == b'"' || b[i] == b'\'') {
@@ -295,7 +295,7 @@ fn parse_tag(inner: &str) -> (String, Vec<(String, String)>) {
             &inner[v_start..v_end]
         } else {
             let v_start = i;
-            while i < b.len() && !(b[i] as char).is_whitespace() {
+            while i < b.len() && !b[i].is_ascii_whitespace() {
                 i += 1;
             }
             &inner[v_start..i]
@@ -383,6 +383,14 @@ mod tests {
         let root = parse(r#"<m note="a>b">x</m>"#).unwrap();
         assert_eq!(root.attr("note"), Some("a>b"));
         assert_eq!(root.text, "x");
+    }
+
+    #[test]
+    fn non_ascii_attribute_values() {
+        // 0x85 inside a UTF-8 character is not whitespace.
+        let e = parse("<a k=Ӆx v=\"é\"/>").unwrap();
+        assert_eq!(e.attr("k"), Some("Ӆx"));
+        assert_eq!(e.attr("v"), Some("é"));
     }
 
     #[test]

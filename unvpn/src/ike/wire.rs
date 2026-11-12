@@ -10,6 +10,12 @@ struct Reader<'a> {
     i: usize,
 }
 
+/// The body length of a (sub)payload whose header gives `len`.
+fn body_len(len: usize) -> Result<usize, String> {
+    len.checked_sub(PAYLOAD_HEADER_LEN)
+        .ok_or_else(|| format!("bad payload length {len}"))
+}
+
 impl<'a> Reader<'a> {
     fn new(b: &'a [u8]) -> Self {
         Reader { b, i: 0 }
@@ -224,7 +230,7 @@ impl Proposal {
             let _next = r.u8()?;
             let _res = r.u8()?;
             let len = r.u16()? as usize;
-            let tbody = r.take(len - PAYLOAD_HEADER_LEN)?;
+            let tbody = r.take(body_len(len)?)?;
             transforms.push(Transform::parse(tbody)?);
         }
         Ok(Proposal {
@@ -266,7 +272,7 @@ impl SaPayload {
             let _next = r.u8()?;
             let _res = r.u8()?;
             let len = r.u16()? as usize;
-            let pbody = r.take(len - PAYLOAD_HEADER_LEN)?;
+            let pbody = r.take(body_len(len)?)?;
             proposals.push(Proposal::parse(pbody)?);
         }
         Ok(SaPayload {
@@ -476,7 +482,7 @@ impl IsakmpMessage {
             if len < PAYLOAD_HEADER_LEN {
                 return Err(format!("payload length {len} below header"));
             }
-            let pbody = r.take(len - PAYLOAD_HEADER_LEN)?;
+            let pbody = r.take(body_len(len)?)?;
             payloads.push(Payload::parse(cur, pbody)?);
             cur = next;
         }
@@ -531,6 +537,15 @@ mod tests {
     use super::*;
 
     const MM: &[u8] = include_bytes!("../../testdata/mm.bin");
+
+    #[test]
+    fn short_payload_length_is_an_error() {
+        // An SA payload whose proposal claims a length below its own header.
+        let mut m = vec![0u8; 16];
+        m.extend_from_slice(&[1, 0x10, 2, 0, 0, 0, 0, 0, 0, 0, 0, 40]);
+        m.extend_from_slice(&[0, 0, 0, 12, 0, 0, 0xff, 0xff, 0xff, 0, 0, 0]);
+        assert!(IsakmpMessage::decode(&m).is_err());
+    }
 
     #[test]
     fn roundtrip_main_mode() {
