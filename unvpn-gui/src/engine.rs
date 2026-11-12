@@ -566,7 +566,8 @@ impl Vpn {
         if !s.ip.is_empty() && s.ip != prev.ip {
             self.send(EngineEvent::Ip(s.ip.clone()));
         }
-        if s.dns != prev.dns {
+        let first = prev.pid == 0;
+        if s.dns != prev.dns || (first && s.state == marker::State::Up) {
             self.send(EngineEvent::Dns(s.dns.join(", ")));
         }
     }

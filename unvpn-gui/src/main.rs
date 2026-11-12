@@ -1594,8 +1594,8 @@ impl App {
                     self.close_sso_window();
                 }
                 EngineEvent::Dns(dns) => {
-                    self.dns_row.set_subtitle(&dns);
-                    self.dns_row.set_visible(!dns.is_empty());
+                    let text = if dns.is_empty() { "System resolver (unchanged)" } else { dns.as_str() };
+                    self.dns_row.set_subtitle(text);
                 }
                 EngineEvent::Prompt(p) => self.show_prompt(p),
                 EngineEvent::SsoBrowser { login, watch, user_agent } => {

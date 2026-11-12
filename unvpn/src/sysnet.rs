@@ -36,7 +36,8 @@ pub struct DnsBackup {
 /// Point `/etc/resolv.conf` at `dns` (IPv4 or IPv6 resolvers) + `domains` while connected. Works across
 /// distros: if resolv.conf is a symlink (systemd-resolved/resolvconf), replace it
 /// with a static file and restore the symlink on disconnect; glibc reads this file
-/// regardless of the resolver in use. Returns `None` (no-op) when `dns` is empty.
+/// regardless of the resolver in use. Returns `None` (no-op, the system resolver
+/// stays) when `dns` is empty.
 ///
 /// Crash-safe: the true original is also written to a persistent sidecar. If the
 /// current resolv.conf is already *ours* (a prior session crashed/overlapped and
@@ -45,6 +46,7 @@ pub struct DnsBackup {
 /// from the sidecar and leave the sidecar untouched.
 pub fn set_dns<A: std::fmt::Display + std::fmt::Debug>(dns: &[A], domains: &str) -> Option<DnsBackup> {
     if dns.is_empty() {
+        crate::report::dns(dns);
         return None;
     }
     let is_symlink = std::fs::symlink_metadata(RESOLV_CONF)
