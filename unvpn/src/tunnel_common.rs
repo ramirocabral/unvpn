@@ -189,6 +189,9 @@ pub fn configure(
     match plan {
         None => out!("# --no-routes: installing no routes/DNS (reach hosts with `ping -I {dev}`)"),
         Some(plan) => {
+            if let Some(gw) = plan.gateway {
+                crate::netmon::watch_gateway(gw);
+            }
             restore.routes = plan.install(dev);
             let dns = crate::dns::tunnelled_dns(dns, dev);
             restore.dns = crate::dns::set_dns(dev, &dns, domains, plan.is_full());

@@ -11,10 +11,10 @@
 //!   leaving loopback and link-local/multicast (ND) alone.
 //!
 //! Per-tun table names keep teardown self-contained — each session removes only
-//! its own table on drop, with no cross-process bookkeeping — and let several
-//! IPv6-blocking sessions coexist. A kill switch is fail-closed by nature, so a
-//! second simultaneous tunnel's traffic is blocked while one is active; that is
-//! the point of the switch, not a regression.
+//! its own table on drop, with no cross-process bookkeeping. Every table lets
+//! traffic into any unvpn tunnel through, so sessions coexist; but a kill switch
+//! still blocks another session's gateway outside the tunnels, so a second VPN
+//! comes up next to a kill-switched one only when its gateway is reached through it.
 
 use std::net::Ipv4Addr;
 use std::process::{Command, Stdio};
@@ -180,6 +180,9 @@ fn ruleset(p: &Params) -> String {
     ));
     r.push_str("    oifname \"lo\" accept\n");
     r.push_str(&format!("    oifname \"{tun}\" accept\n", tun = p.tun));
+    for base in crate::tun::DEVICE_BASES {
+        r.push_str(&format!("    oifname \"{base}*\" accept\n"));
+    }
     if p.block_ipv6 {
         // Keep loopback and the link-local/multicast ranges ND needs; drop the rest.
         r.push_str("    ip6 daddr ::1 accept\n");
@@ -250,7 +253,7 @@ fn parse_link_subnets(route_output: &str, tun: &str) -> Vec<String> {
             continue;
         }
         let dev = toks.windows(2).find(|w| w[0] == "dev").map(|w| w[1]);
-        if dev == Some(tun) || dev == Some("lo") {
+        if dev == Some(tun) || dev == Some("lo") || dev.is_some_and(crate::tun::is_unvpn_device) {
             continue;
         }
         let net = cidr.to_string();
@@ -284,6 +287,7 @@ mod tests {
         assert!(r.contains("policy drop;"));
         assert!(r.contains("oifname \"lo\" accept"));
         assert!(r.contains("oifname \"cpfg0\" accept"));
+        assert!(r.contains("oifname \"cpwg*\" accept"));
         assert!(r.contains("ip daddr 203.0.113.10 accept"));
         assert!(r.contains("ip daddr 192.168.1.0/24 accept"));
         assert!(r.contains("udp dport 67 accept"));
@@ -336,6 +340,7 @@ mod tests {
         let out = "\
 192.168.1.0/24 dev wlan0 proto kernel scope link src 192.168.1.23 metric 600
 10.5.0.0/16 dev cpfg0 proto kernel scope link src 10.5.0.9
+10.6.0.0/24 dev cpac1 proto kernel scope link src 10.6.0.2
 169.254.0.0/16 dev wlan0 scope link";
         assert_eq!(
             parse_link_subnets(out, "cpfg0"),

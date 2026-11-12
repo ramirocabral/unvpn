@@ -253,6 +253,18 @@ fn run(p: &Profile, o: &Opts) -> Result<i32, String> {
     args.extend(["--label".to_string(), p.name.clone()]);
     args.extend(o.tls_flags.iter().cloned());
 
+    if !o.dry_run
+        && unvpn_profiles::control::running()
+            .iter()
+            .any(|(_, s)| s.label == p.name && s.state != unvpn_profiles::marker::State::Down)
+    {
+        return Err(format!(
+            "“{}” is already connected (`unvpn disconnect {}` stops it)",
+            p.name,
+            shell_line(std::slice::from_ref(&p.name))
+        ));
+    }
+
     let bin = engine_bin()?;
     let mut argv: Vec<String> = escalation();
     argv.push(bin.to_string_lossy().into_owned());

@@ -9,6 +9,19 @@ use std::net::Ipv4Addr;
 use std::os::unix::io::AsRawFd;
 use std::process::Command;
 
+/// The name bases of the devices unvpn's tunnels use (`<base><n>`).
+pub const DEVICE_BASES: &[&str] = &[
+    "unvpn", "cpfg", "cpfi", "f5vpn", "cpac", "cpovpn", "gpvpn", "cpwg",
+];
+
+/// `name` is one of unvpn's tunnel devices (this session's or another one's).
+pub fn is_unvpn_device(name: &str) -> bool {
+    DEVICE_BASES.iter().any(|b| {
+        name.strip_prefix(b)
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit()))
+    })
+}
+
 const TUNSETIFF: libc::c_ulong = 0x4004_54ca;
 const IFF_TUN: u16 = 0x0001;
 const IFF_NO_PI: u16 = 0x1000;

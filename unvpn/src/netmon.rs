@@ -30,8 +30,11 @@ const RTM_NEWADDR: u16 = 20;
 const RTM_DELADDR: u16 = 21;
 const RTM_NEWROUTE: u16 = 24;
 const RTM_DELROUTE: u16 = 25;
-/// Route attribute carrying the output interface index.
+/// Route attributes: destination address and output interface index.
+const RTA_DST: u16 = 1;
 const RTA_OIF: u16 = 4;
+/// Link (`IFLA_IFNAME`) and address (`IFA_LABEL`) attribute carrying the device name.
+const ATTR_NAME: u16 = 3;
 
 /// Interface index whose own netlink churn must not trigger a reconnect: the tunnel
 /// device. Our own connect/reconnect adds and removes the session's routes, address
@@ -40,6 +43,15 @@ const RTA_OIF: u16 = 4;
 /// 0 ⇒ not set (filter nothing), so back-ends that don't call [`ignore_iface`] keep
 /// the old behaviour.
 static IGNORED_IFINDEX: AtomicU32 = AtomicU32::new(0);
+
+/// The gateway (IPv4, as u32; 0 = unknown): a route change that can't move the path
+/// to it — another session's gateway pin or excludes, a container bridge — is no
+/// reason to reconnect.
+static GATEWAY: AtomicU32 = AtomicU32::new(0);
+
+pub fn watch_gateway(gw: std::net::Ipv4Addr) {
+    GATEWAY.store(u32::from(gw), Ordering::SeqCst);
+}
 
 /// Stop treating `name`'s own netlink events (its routes/address/link) as a network
 /// change. Call once the tunnel device is up; safe to call again (last wins).
@@ -189,10 +201,9 @@ fn spawn_netlink_watcher() {
                 }
                 break; // socket error/closed — stop watching
             }
-            // Only kick for a change on some *other* interface. Events that belong to
-            // our own tunnel device (the churn of installing/removing its routes,
-            // address and link on every reconnect) must not re-trigger us — that is
-            // the reconnect loop this filter exists to break.
+            // Only kick for a change outside unvpn's tunnels. Our own device's churn
+            // (its routes, address and link on every reconnect) would loop us, and
+            // another session's tunnel coming or going is no change of our path.
             if batch_has_foreign_event(&buf[..n as usize]) {
                 kick(REASON_NETCHANGE);
             }
@@ -202,17 +213,45 @@ fn spawn_netlink_watcher() {
 }
 
 /// True if the netlink batch contains at least one link/address/route event that is
-/// *not* for the ignored tunnel interface (or one whose interface we can't determine
-/// — treated as foreign so a real change is never missed). With no ignored interface
-/// set, any event counts, preserving the pre-filter behaviour.
+/// not on an unvpn tunnel device (or whose interface we can't determine — treated
+/// as foreign so a real change is never missed). Before [`ignore_iface`], any event
+/// counts.
 fn batch_has_foreign_event(data: &[u8]) -> bool {
-    batch_has_foreign(data, IGNORED_IFINDEX.load(Ordering::SeqCst))
-}
-
-fn batch_has_foreign(mut data: &[u8], ignored: u32) -> bool {
-    if ignored == 0 {
+    let own = IGNORED_IFINDEX.load(Ordering::SeqCst);
+    if own == 0 {
         return !data.is_empty();
     }
+    let gw = match GATEWAY.load(Ordering::SeqCst) {
+        0 => None,
+        g => Some(std::net::Ipv4Addr::from(g)),
+    };
+    batch_has_foreign(data, gw, &|idx, name| {
+        idx == own
+            || match name {
+                Some(n) => crate::tun::is_unvpn_device(n),
+                None => index_name(idx).is_some_and(|n| crate::tun::is_unvpn_device(&n)),
+            }
+    })
+}
+
+fn index_name(idx: u32) -> Option<String> {
+    let mut buf = [0 as libc::c_char; libc::IF_NAMESIZE];
+    let p = unsafe { libc::if_indextoname(idx, buf.as_mut_ptr()) };
+    if p.is_null() {
+        return None;
+    }
+    let s = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) };
+    s.to_str().ok().map(String::from)
+}
+
+/// `tunnel(index, name)` says whether an event on that interface is a tunnel's
+/// own (the name when the message carries it). With `gw` known, a route whose
+/// destination doesn't cover it doesn't count.
+fn batch_has_foreign(
+    mut data: &[u8],
+    gw: Option<std::net::Ipv4Addr>,
+    tunnel: &dyn Fn(u32, Option<&str>) -> bool,
+) -> bool {
     // Walk the concatenated netlink messages: each is a 16-byte nlmsghdr
     // (len u32, type u16, flags u16, seq u32, pid u32) then a type-aligned payload.
     while data.len() >= 16 {
@@ -222,9 +261,14 @@ fn batch_has_foreign(mut data: &[u8], ignored: u32) -> bool {
             break; // truncated / malformed — stop
         }
         let payload = &data[16..len];
-        match msg_ifindex(ty, payload) {
-            Some(idx) if idx == ignored => {} // our own tunnel — ignore
-            Some(_) | None => return true,    // another interface, or unknown → foreign
+        match event(ty, payload) {
+            Some(Event {
+                index: Some(i),
+                name,
+                ..
+            }) if tunnel(i, name) => {}
+            Some(Event { dst: Some(d), .. }) if gw.is_some_and(|g| !covers(d, g)) => {}
+            _ => return true,
         }
         let aligned = (len + 3) & !3; // NLMSG_ALIGN
         if aligned == 0 || aligned > data.len() {
@@ -235,43 +279,83 @@ fn batch_has_foreign(mut data: &[u8], ignored: u32) -> bool {
     false
 }
 
-/// The interface index a link/address/route netlink message concerns, if we can read
-/// it. `None` for message types we don't parse or payloads too short to trust.
-fn msg_ifindex(ty: u16, payload: &[u8]) -> Option<u32> {
+/// What a link/address/route netlink message concerns.
+#[derive(Debug, PartialEq)]
+struct Event<'a> {
+    /// The interface; a route with no `RTA_OIF` (blackhole, multipath) has none.
+    index: Option<u32>,
+    /// The device name, when the message carries it.
+    name: Option<&'a str>,
+    /// A route's destination prefix.
+    dst: Option<(std::net::Ipv4Addr, u8)>,
+}
+
+/// `None` for message types we don't parse or payloads too short to trust.
+fn event(ty: u16, payload: &[u8]) -> Option<Event<'_>> {
+    let index_at_4 = || {
+        let b = payload.get(4..8)?;
+        Some(u32::from_ne_bytes([b[0], b[1], b[2], b[3]]))
+    };
+    let named = |hdr: usize| {
+        Some(Event {
+            index: Some(index_at_4()?),
+            name: attr(payload.get(hdr..)?, ATTR_NAME).and_then(c_str),
+            dst: None,
+        })
+    };
     match ty {
-        // ifinfomsg: family u8, pad u8, type u16, index i32 @ offset 4.
-        RTM_NEWLINK | RTM_DELLINK => {
-            let b = payload.get(4..8)?;
-            Some(u32::from_ne_bytes([b[0], b[1], b[2], b[3]]))
-        }
-        // ifaddrmsg: family u8, prefixlen u8, flags u8, scope u8, index u32 @ offset 4.
-        RTM_NEWADDR | RTM_DELADDR => {
-            let b = payload.get(4..8)?;
-            Some(u32::from_ne_bytes([b[0], b[1], b[2], b[3]]))
-        }
-        // rtmsg (12 bytes) then RTAs; the output interface is the RTA_OIF attribute.
+        // ifinfomsg (16 bytes) / ifaddrmsg (8 bytes): index @ 4, then attributes.
+        RTM_NEWLINK | RTM_DELLINK => named(16),
+        RTM_NEWADDR | RTM_DELADDR => named(8),
+        // rtmsg (12 bytes): dst_len @ 1, then attributes.
         RTM_NEWROUTE | RTM_DELROUTE => {
-            let mut rta = payload.get(12..)?;
-            while rta.len() >= 4 {
-                let rlen = u16::from_ne_bytes([rta[0], rta[1]]) as usize;
-                let rtype = u16::from_ne_bytes([rta[2], rta[3]]);
-                if rlen < 4 || rlen > rta.len() {
-                    break;
-                }
-                if rtype == RTA_OIF && rlen >= 8 {
-                    let b = &rta[4..8];
-                    return Some(u32::from_ne_bytes([b[0], b[1], b[2], b[3]]));
-                }
-                let aligned = (rlen + 3) & !3; // RTA_ALIGN
-                if aligned == 0 || aligned > rta.len() {
-                    break;
-                }
-                rta = &rta[aligned..];
-            }
-            None // a route with no RTA_OIF (e.g. blackhole) → unknown
+            let rtas = payload.get(12..)?;
+            let len = *payload.get(1)?;
+            let addr = match attr(rtas, RTA_DST).and_then(|b| b.get(..4)) {
+                Some(b) => std::net::Ipv4Addr::new(b[0], b[1], b[2], b[3]),
+                None => std::net::Ipv4Addr::UNSPECIFIED,
+            };
+            let index = attr(rtas, RTA_OIF)
+                .and_then(|b| b.get(..4))
+                .map(|b| u32::from_ne_bytes([b[0], b[1], b[2], b[3]]));
+            Some(Event {
+                index,
+                name: None,
+                dst: (len <= 32).then_some((addr, len)),
+            })
         }
         _ => None,
     }
+}
+
+fn covers((net, len): (std::net::Ipv4Addr, u8), ip: std::net::Ipv4Addr) -> bool {
+    let mask = if len == 0 { 0 } else { u32::MAX << (32 - len) };
+    u32::from(net) & mask == u32::from(ip) & mask
+}
+
+/// The payload of the first `want` attribute in a run of netlink attributes.
+fn attr(mut rta: &[u8], want: u16) -> Option<&[u8]> {
+    while rta.len() >= 4 {
+        let rlen = u16::from_ne_bytes([rta[0], rta[1]]) as usize;
+        let rtype = u16::from_ne_bytes([rta[2], rta[3]]);
+        if rlen < 4 || rlen > rta.len() {
+            break;
+        }
+        if rtype == want {
+            return Some(&rta[4..rlen]);
+        }
+        let aligned = (rlen + 3) & !3; // RTA_ALIGN
+        if aligned == 0 || aligned > rta.len() {
+            break;
+        }
+        rta = &rta[aligned..];
+    }
+    None
+}
+
+fn c_str(b: &[u8]) -> Option<&str> {
+    let end = b.iter().position(|&c| c == 0).unwrap_or(b.len());
+    std::str::from_utf8(&b[..end]).ok()
 }
 
 #[cfg(test)]
@@ -311,52 +395,132 @@ mod tests {
     }
 
     fn route_msg_oif(ifindex: u32) -> Vec<u8> {
+        route_msg(ifindex, None)
+    }
+
+    /// A route via `ifindex` to `dst` (`None`: the default route).
+    fn route_msg(ifindex: u32, dst: Option<([u8; 4], u8)>) -> Vec<u8> {
         let mut p = vec![0u8; 12]; // rtmsg
-                                   // one RTA: len u16, type u16, u32 payload
+        if let Some((a, len)) = dst {
+            p[1] = len;
+            p.extend_from_slice(&8u16.to_ne_bytes());
+            p.extend_from_slice(&RTA_DST.to_ne_bytes());
+            p.extend_from_slice(&a);
+        }
         p.extend_from_slice(&8u16.to_ne_bytes());
         p.extend_from_slice(&RTA_OIF.to_ne_bytes());
         p.extend_from_slice(&ifindex.to_ne_bytes());
         nlmsg(RTM_NEWROUTE, &p)
     }
 
-    fn link_msg(ifindex: u32) -> Vec<u8> {
+    fn link_msg(ifindex: u32, name: Option<&str>) -> Vec<u8> {
         let mut p = vec![0u8; 4]; // family, pad, type
         p.extend_from_slice(&ifindex.to_ne_bytes());
         p.extend_from_slice(&[0u8; 8]); // flags, change
+        if let Some(n) = name {
+            let mut v = n.as_bytes().to_vec();
+            v.push(0);
+            p.extend_from_slice(&((4 + v.len()) as u16).to_ne_bytes());
+            p.extend_from_slice(&ATTR_NAME.to_ne_bytes());
+            p.extend_from_slice(&v);
+            while !p.len().is_multiple_of(4) {
+                p.push(0);
+            }
+        }
         nlmsg(RTM_NEWLINK, &p)
+    }
+
+    /// Index 8 is this session's tunnel; names decide the rest.
+    fn tunnel(idx: u32, name: Option<&str>) -> bool {
+        idx == 8 || name.is_some_and(crate::tun::is_unvpn_device)
     }
 
     #[test]
     fn ignores_our_own_tunnel_churn() {
-        let tun = 8u32;
-        // A route and a link event, both on the tunnel: no kick.
-        let mut batch = route_msg_oif(tun);
-        batch.extend(link_msg(tun));
-        assert!(!batch_has_foreign(&batch, tun));
-        // The same batch with a route on another interface mixed in: kick.
-        let mut mixed = route_msg_oif(tun);
+        let mut batch = route_msg_oif(8);
+        batch.extend(link_msg(8, None));
+        assert!(!batch_has_foreign(&batch, None, &tunnel));
+        let mut mixed = route_msg_oif(8);
         mixed.extend(route_msg_oif(3));
-        assert!(batch_has_foreign(&mixed, tun));
+        assert!(batch_has_foreign(&mixed, None, &tunnel));
+    }
+
+    #[test]
+    fn another_sessions_tunnel_is_no_network_change() {
+        assert!(!batch_has_foreign(
+            &link_msg(12, Some("cpfg1")),
+            None,
+            &tunnel
+        ));
+        assert!(batch_has_foreign(
+            &link_msg(2, Some("wlan0")),
+            None,
+            &tunnel
+        ));
+        assert_eq!(
+            event(RTM_NEWLINK, &link_msg(12, Some("cpfg1"))[16..]),
+            Some(Event {
+                index: Some(12),
+                name: Some("cpfg1"),
+                dst: None
+            })
+        );
+    }
+
+    #[test]
+    fn only_routes_that_can_move_the_gateway_path_count() {
+        let gw = Some(std::net::Ipv4Addr::new(198, 51, 100, 7));
+        // Another session pins its own gateway on the LAN interface: no kick.
+        let pin = route_msg(2, Some(([203, 0, 113, 9], 32)));
+        assert!(!batch_has_foreign(&pin, gw, &tunnel));
+        assert!(!batch_has_foreign(
+            &route_msg(2, Some(([172, 17, 0, 0], 16))),
+            gw,
+            &tunnel
+        ));
+        // A new default route, or one covering our gateway: kick.
+        assert!(batch_has_foreign(&route_msg(2, None), gw, &tunnel));
+        assert!(batch_has_foreign(
+            &route_msg(2, Some(([198, 51, 100, 0], 24))),
+            gw,
+            &tunnel
+        ));
+        // Gateway unknown: every route outside the tunnels counts.
+        assert!(batch_has_foreign(&pin, None, &tunnel));
+        assert!(covers(
+            (std::net::Ipv4Addr::UNSPECIFIED, 0),
+            std::net::Ipv4Addr::new(1, 2, 3, 4)
+        ));
+        assert!(!covers(
+            (std::net::Ipv4Addr::new(10, 0, 0, 0), 8),
+            std::net::Ipv4Addr::new(11, 0, 0, 1)
+        ));
     }
 
     #[test]
     fn route_without_oif_is_treated_as_foreign() {
-        // A route message carrying no RTA_OIF → interface unknown → don't miss it.
         let batch = nlmsg(RTM_NEWROUTE, &[0u8; 12]);
-        assert!(batch_has_foreign(&batch, 8));
-    }
-
-    #[test]
-    fn no_ignored_iface_keeps_old_behaviour() {
-        // ignored == 0 ⇒ any non-empty batch kicks (pre-filter behaviour).
-        assert!(batch_has_foreign(&link_msg(8), 0));
-        assert!(!batch_has_foreign(&[], 0));
+        assert!(batch_has_foreign(&batch, None, &tunnel));
     }
 
     #[test]
     fn truncated_batch_does_not_panic() {
         let mut b = route_msg_oif(8);
-        b.truncate(10); // chop mid-message
-        let _ = batch_has_foreign(&b, 8); // must not panic
+        b.truncate(10);
+        let _ = batch_has_foreign(&b, None, &tunnel);
+        let mut b = link_msg(8, Some("cpfg0"));
+        let n = b.len();
+        b.truncate(n - 3);
+        let _ = batch_has_foreign(&b, None, &tunnel);
+    }
+
+    #[test]
+    fn unvpn_devices_are_known_by_name() {
+        for n in ["unvpn0", "cpfg12", "cpwg0", "gpvpn3", "cpovpn0"] {
+            assert!(crate::tun::is_unvpn_device(n), "{n}");
+        }
+        for n in ["cpfg", "eth0", "tun0", "cpfgx", "wlan0", "unvpn0a"] {
+            assert!(!crate::tun::is_unvpn_device(n), "{n}");
+        }
     }
 }
