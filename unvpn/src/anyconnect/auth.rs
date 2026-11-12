@@ -411,7 +411,7 @@ impl Session {
                 let Some(token) = token else {
                     // `complete` + `<error>` = rejected (e.g. a bad/expired SSO token).
                     if let Some(e) = reply.error.as_deref().or(reply.form.as_ref().and_then(|f| f.error.as_deref())) {
-                        return Err(format!("login failed: {}", one_line(e)));
+                        return Err(format!("login failed: {}", crate::sysnet::one_line(e)));
                     }
                     let jar: Vec<&str> = self.cookies.0.keys().map(String::as_str).collect();
                     return Err(format!(
@@ -421,7 +421,7 @@ impl Session {
                     ));
                 };
                 if let Some(b) = reply.form.as_ref().and_then(|f| f.banner.clone()) {
-                    p.info(&format!("banner: {}", one_line(&b)));
+                    p.info(&format!("banner: {}", crate::sysnet::one_line(&b)));
                 }
                 self.cookies.set("webvpn", &token);
                 self.token = Some(token);
@@ -447,10 +447,10 @@ impl Session {
             };
 
             if let Some(m) = &form.banner {
-                p.info(&format!("banner: {}", one_line(m)));
+                p.info(&format!("banner: {}", crate::sysnet::one_line(m)));
             }
             if let Some(m) = &form.message {
-                p.info(&format!("gateway: {}", one_line(m)));
+                p.info(&format!("gateway: {}", crate::sysnet::one_line(m)));
             }
             // The gateway re-showing the first form with an error after we sent the
             // password means the credentials were rejected. Don't loop on them.
@@ -458,14 +458,14 @@ impl Session {
                 // A rejected SSO token comes back as a fresh SSO form + error: stop
                 // (a new browser login is a new connection attempt, not a loop).
                 if sso_sent && form.sso.is_some() {
-                    return Err(format!("SSO login rejected: {}", one_line(e)));
+                    return Err(format!("SSO login rejected: {}", crate::sysnet::one_line(e)));
                 }
                 if password_sent && form.has("password") && !matches!(form.auth_id.as_str(), "challenge") {
-                    return Err(format!("login rejected: {}", one_line(e)));
+                    return Err(format!("login rejected: {}", crate::sysnet::one_line(e)));
                 }
-                p.info(&format!("gateway error: {}", one_line(e)));
+                p.info(&format!("gateway error: {}", crate::sysnet::one_line(e)));
                 if form.fields.is_empty() && form.sso.is_none() {
-                    return Err(format!("login failed: {}", one_line(e)));
+                    return Err(format!("login failed: {}", crate::sysnet::one_line(e)));
                 }
             }
 
@@ -504,7 +504,7 @@ impl Session {
             sso_sent |= form.fields.iter().any(|f| f.kind == Kind::Sso);
             if form.fields.is_empty() && !form.complete_marker {
                 let e = form.error.or(form.message).unwrap_or_else(|| "gateway sent an empty form".into());
-                return Err(format!("login failed: {}", one_line(&e)));
+                return Err(format!("login failed: {}", crate::sysnet::one_line(&e)));
             }
             body = build_reply(&self.version, opaque.as_deref(), &answers, group_value.as_deref());
         }
@@ -524,7 +524,7 @@ fn fill_form(
     let prompt_msg = |f: &Field| -> String {
         let label = f.label.trim().trim_end_matches(':').to_string();
         match form.message.as_deref() {
-            Some(m) if !m.is_empty() => format!("{} ({label})", one_line(m)),
+            Some(m) if !m.is_empty() => format!("{} ({label})", crate::sysnet::one_line(m)),
             _ => label,
         }
     };
@@ -577,10 +577,6 @@ fn fill_form(
 }
 
 /// Collapse gateway text to one line (it goes into single-line markers/logs).
-pub fn one_line(s: &str) -> String {
-    s.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

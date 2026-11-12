@@ -223,7 +223,7 @@ fn establish(p: &Prepared, remote: &Remote, creds: Option<Creds>, prompter: &mut
                     } else if m.starts_with("RESTART") || m.starts_with("HALT") {
                         return Err(EstablishError::Other(format!("server: {m}")));
                     } else {
-                        out!("# server says: {m}");
+                        out!("# server says: {}", sysnet::one_line(&m));
                     }
                 }
                 _ => {}
@@ -244,7 +244,7 @@ fn establish(p: &Prepared, remote: &Remote, creds: Option<Creds>, prompter: &mut
 /// `INFO[_PRE],WEB_AUTH::<url>` / `OPEN_URL:<url>` / `CR_TEXT:<flags>:<text>`.
 fn handle_info(eng: &mut Engine, info: &str, prompter: &mut dyn Prompter) -> Result<(), String> {
     if let Some(url) = info.strip_prefix("WEB_AUTH:").map(|r| r.splitn(2, ':').nth(1).unwrap_or(r)).or_else(|| info.strip_prefix("OPEN_URL:")) {
-        out!("# server requests a web login: {url}");
+        out!("# server requests a web login: {}", sysnet::one_word(url));
         prompter.open_url(url);
     } else if let Some(r) = info.strip_prefix("CR_TEXT:") {
         // CR_TEXT:<flags>:<challenge> → answer with CR_RESPONSE,<base64>.
@@ -252,7 +252,7 @@ fn handle_info(eng: &mut Engine, info: &str, prompter: &mut dyn Prompter) -> Res
         let resp = prompter.ask("code", text, flags.contains('E'))?;
         eng.send_text(&format!("CR_RESPONSE,{}", openssl::base64::encode_block(resp.as_bytes())))?;
     } else {
-        out!("# server info: {info}");
+        out!("# server info: {}", sysnet::one_line(info));
     }
     Ok(())
 }
@@ -666,7 +666,7 @@ fn data_loop(
                     } else if m.starts_with("PUSH_REPLY") {
                     // Re-push after renegotiation: nothing to change for us.
                     } else {
-                        out!("# server says: {m}");
+                        out!("# server says: {}", sysnet::one_line(&m));
                     }
                 }
                 Event::NewKeyActive { key_id } => {

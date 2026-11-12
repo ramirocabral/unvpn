@@ -136,7 +136,7 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
     // This exact "— IP <ip> DNS [..]" shape is what the GUI's log parser reads.
     println!("# CSTP up — IP {assigned}  DNS {:?}  (mtu {mtu})", dns);
     if let Some(b) = &cfg.banner {
-        println!("# banner: {}", super::auth::one_line(b));
+        println!("# banner: {}", sysnet::one_line(b));
     }
 
     let (mut tun_file, tun_name) = tun::open_tun(TUN_NAME)?;

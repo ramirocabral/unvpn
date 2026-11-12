@@ -260,7 +260,7 @@ fn do_login(a: &Args) -> Result<Session, String> {
                         // The AUTH-PROMPT marker drives the GUI's prompt card. The code is
                         // often emailed/SMS and doesn't exist until the password is in.
                         let msg = if form.banner.is_empty() { "One-time passcode" } else { form.banner.as_str() };
-                        println!("# AUTH-PROMPT: code: {}", msg.replace(['\n', '\r'], " "));
+                        println!("# AUTH-PROMPT: code: {}", crate::sysnet::one_line(msg));
                         read_stdin_line("Token code (OTP): ").ok_or("OTP required but none provided")?
                     }
                 }

@@ -210,7 +210,7 @@ fn read_password() -> Option<String> {
 /// `# AUTH-PROMPT: <kind>: <message>` (kinds: code, code2, answer, newpass, renew,
 /// push). One stdin line answers it.
 fn announce(kind: &str, msg: &str) {
-    println!("# AUTH-PROMPT: {kind}: {}", auth::one_line(msg));
+    println!("# AUTH-PROMPT: {kind}: {}", sysnet::one_line(msg));
     let _ = std::io::stdout().flush();
 }
 

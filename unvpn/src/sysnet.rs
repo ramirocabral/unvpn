@@ -82,6 +82,20 @@ pub fn set_dns<A: std::fmt::Display + std::fmt::Debug>(dns: &[A], domains: &str)
     Some(backup)
 }
 
+/// Gateway text flattened to one short line for the log and the `# …:` markers:
+/// control characters become spaces, whitespace runs collapse, cut at 300 chars.
+pub fn one_line(s: &str) -> String {
+    let flat: String = s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    let flat = flat.split_whitespace().collect::<Vec<_>>().join(" ");
+    flat.chars().take(300).collect()
+}
+
+/// A gateway-supplied URL or name for a marker line, with control and whitespace
+/// characters removed.
+pub fn one_word(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control() && !c.is_whitespace()).collect()
+}
+
 /// The gateway's search list, keeping only plausible domain names so nothing it
 /// sends can add a line of its own to resolv.conf.
 fn search_domains(domains: &str) -> Vec<&str> {
@@ -392,6 +406,13 @@ impl Drop for EchoOff {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_line_strips_controls() {
+        assert_eq!(one_line("a\r\n# SAML-URL: x\tb"), "a # SAML-URL: x b");
+        assert_eq!(one_line(&"x".repeat(400)).len(), 300);
+        assert_eq!(one_word("https://idp.example.com/a\n# AUTH-PROMPT: keypass: x"), "https://idp.example.com/a#AUTH-PROMPT:keypass:x");
+    }
 
     #[test]
     fn search_domains_drops_anything_that_could_add_a_line() {

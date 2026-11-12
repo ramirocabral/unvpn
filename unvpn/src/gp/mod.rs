@@ -148,7 +148,7 @@ fn probe(a: &Args) -> Result<(), String> {
             Ok(pre) => {
                 println!("# {} is a GlobalProtect {role}", s.portal_ep.host_header());
                 if !pre.message.is_empty() {
-                    println!("#   message: {}", one_line(&pre.message));
+                    println!("#   message: {}", crate::sysnet::one_line(&pre.message));
                 }
                 if let Some(r) = &pre.region {
                     println!("#   region: {r}");
@@ -215,7 +215,7 @@ struct CliPrompter {
 
 impl Prompter for CliPrompter {
     fn username(&mut self, label: &str) -> Result<String, String> {
-        println!("# AUTH-PROMPT: username: {}", one_line(label));
+        println!("# AUTH-PROMPT: username: {}", crate::sysnet::one_line(label));
         let _ = std::io::stdout().flush();
         crate::anyconnect::read_secret(&format!("{label}: ")).ok_or_else(|| "username required".into())
     }
@@ -225,7 +225,7 @@ impl Prompter for CliPrompter {
             return Err("the server asked for a password, not SAML — use password auth (-u <user>)".into());
         }
         if std::mem::replace(&mut self.password_asked, true) {
-            println!("# AUTH-PROMPT: answer: {} (the previous one was rejected)", one_line(label));
+            println!("# AUTH-PROMPT: answer: {} (the previous one was rejected)", crate::sysnet::one_line(label));
             let _ = std::io::stdout().flush();
         }
         crate::anyconnect::read_secret(&format!("{label}: ")).ok_or_else(|| "no password provided".into())
@@ -236,7 +236,7 @@ impl Prompter for CliPrompter {
             return Ok(c);
         }
         let msg = if message.trim().is_empty() { "Enter the verification code" } else { message };
-        println!("# AUTH-PROMPT: code: {}", one_line(msg));
+        println!("# AUTH-PROMPT: code: {}", crate::sysnet::one_line(msg));
         let _ = std::io::stdout().flush();
         crate::anyconnect::read_secret("Code: ").ok_or_else(|| "verification code required but none provided".into())
     }
@@ -248,7 +248,7 @@ impl Prompter for CliPrompter {
         // For a front-end with an embedded browser: the login result arrives as
         // response headers of the final page, not as a cookie.
         println!("# SAML-HEADERS: saml-username prelogin-cookie portal-userauthcookie");
-        println!("# SAML-URL: {}", saml.url);
+        println!("# SAML-URL: {}", crate::sysnet::one_word(&saml.url));
         println!(
             "# AUTH-PROMPT: sso: Sign in in the browser, then paste the globalprotectcallback: link it tries to open (or the prelogin-cookie)"
         );
@@ -263,10 +263,6 @@ impl Prompter for CliPrompter {
 }
 
 /// Gateway text flattened to one line (markers and logs are line-based).
-pub fn one_line(s: &str) -> String {
-    s.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
 pub fn local_hostname() -> String {
     std::fs::read_to_string("/proc/sys/kernel/hostname")
         .ok()

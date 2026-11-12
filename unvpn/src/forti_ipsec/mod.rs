@@ -522,7 +522,7 @@ fn otp_value(o: &Opts, prompt: &str) -> Result<String, String> {
         return Ok(c.clone());
     }
     let p = sysnet::StdinWatchPause::new();
-    out!("# AUTH-PROMPT: code: {}", prompt.trim());
+    out!("# AUTH-PROMPT: code: {}", sysnet::one_line(prompt));
     let v = match sysnet::stdin_next(Some(Duration::from_secs(180))) {
         sysnet::StdinEvent::Line(l) => l,
         sysnet::StdinEvent::Eof => return Err("stdin closed while waiting for the token".into()),

@@ -143,17 +143,17 @@ fn probe(a: &Args) -> Result<(), String> {
     match reply.form {
         Some(f) => {
             if let Some(t) = &f.title {
-                println!("#   title: {}", auth::one_line(t));
+                println!("#   title: {}", crate::sysnet::one_line(t));
             }
             if let Some(m) = &f.message {
-                println!("#   message: {}", auth::one_line(m));
+                println!("#   message: {}", crate::sysnet::one_line(m));
             }
             if let Some(sso) = &f.sso {
                 println!("#   SSO (sso-v2) login: {}", sso.login);
                 println!("#   → SSO login: unvpn anyconnect -g {} --sso --connect", a.url);
             }
             for fld in &f.fields {
-                println!("#   input: {} ({:?}) — {}", fld.name, fld.kind, auth::one_line(&fld.label));
+                println!("#   input: {} ({:?}) — {}", fld.name, fld.kind, crate::sysnet::one_line(&fld.label));
             }
             for sel in &f.selects {
                 let opts: Vec<_> = sel.choices.iter().map(|c| c.label.as_str()).collect();
@@ -212,7 +212,7 @@ impl Prompter for CliPrompter {
         }
         // The marker drives the GUI's prompt card; harmless on a TTY (read_secret
         // prints its own label). Gateway text is flattened to one line.
-        println!("# AUTH-PROMPT: {kind}: {}", auth::one_line(message));
+        println!("# AUTH-PROMPT: {kind}: {}", crate::sysnet::one_line(message));
         let _ = std::io::stdout().flush();
         read_secret(&format!("{message}: ")).ok_or_else(|| format!("{kind} required but none provided"))
     }
@@ -228,15 +228,15 @@ impl Prompter for CliPrompter {
         // For a front-end with an embedded browser (the GUI): the page whose load
         // means "done", and the cookie that then holds the token. Before SAML-URL.
         if !sso.login_final.is_empty() {
-            println!("# SAML-FINAL: {}", sso.login_final);
-            println!("# SAML-COOKIE: {cookie}");
+            println!("# SAML-FINAL: {}", crate::sysnet::one_word(&sso.login_final));
+            println!("# SAML-COOKIE: {}", crate::sysnet::one_word(cookie));
         }
-        println!("# SAML-URL: {}", sso.login);
+        println!("# SAML-URL: {}", crate::sysnet::one_word(&sso.login));
         let msg = format!(
             "Sign in in the browser tab, then paste the {cookie} cookie of {} (DevTools → Application/Storage → Cookies)",
             http::split_url(&sso.login).map(|(h, _, _)| h).unwrap_or_default()
         );
-        println!("# AUTH-PROMPT: sso: {}", auth::one_line(&msg));
+        println!("# AUTH-PROMPT: sso: {}", crate::sysnet::one_line(&msg));
         let _ = std::io::stdout().flush();
         let raw = read_secret("SSO token: ").ok_or("SSO token required but none provided")?;
         clean_sso_token(&raw, cookie).ok_or("SSO token required but none provided".into())

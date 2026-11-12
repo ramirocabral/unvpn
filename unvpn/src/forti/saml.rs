@@ -158,7 +158,7 @@ pub fn login(host: &str, port: u16, realm: &str, opts: &SamlOpts) -> Result<Sess
     let resp = http::request(host, port, "GET", &path, &mut s.cookies, &[], b"", Duration::from_secs(20))?;
     if s.svpncookie().is_none() {
         // One sanitized line: this is gateway text and ends up in the GUI's parser.
-        let snippet: String = super::auth::one_line(&resp.body_str()).chars().take(200).collect();
+        let snippet: String = sysnet::one_line(&resp.body_str()).chars().take(200).collect();
         return Err(format!("SAML auth_id did not yield SVPNCOOKIE (HTTP {}): {snippet}", resp.status));
     }
     Ok(s)

@@ -428,7 +428,7 @@ impl SslLink {
             if status == "502" {
                 return Err("gateway rejected the session cookie (HTTP 502)".into());
             }
-            return Err(format!("unexpected tunnel response: {}", super::one_line(&text).chars().take(120).collect::<String>()));
+            return Err(format!("unexpected tunnel response: {}", sysnet::one_line(&text).chars().take(120).collect::<String>()));
         }
         tls.get_ref().set_nonblocking(true).ok();
         Ok(SslLink { tls, fd, rx: head[12..].to_vec() })

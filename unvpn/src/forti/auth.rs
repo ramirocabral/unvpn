@@ -584,7 +584,7 @@ fn clean_failure(fields: &BTreeMap<String, String>, body: &str, status: u16, sec
         return format!("login rejected: {}", describe_err(err));
     }
     if let Some(m) = fields.get("chal_msg").filter(|m| !m.is_empty()) {
-        return format!("login rejected: {}", one_line(m));
+        return format!("login rejected: {}", sysnet::one_line(m));
     }
     // HTML error pages: the engine matches these strings (FUN_00472c40).
     for known in ["Two-factor Authentication failed", "Too many bad login attempts"] {
@@ -595,7 +595,7 @@ fn clean_failure(fields: &BTreeMap<String, String>, body: &str, status: u16, sec
     if let Some(i) = body.find("<!--sslvpnerrmsg=") {
         let rest = &body[i + 17..];
         if let Some(e) = rest.find("-->") {
-            return format!("login rejected: {}", one_line(rest[..e].trim()));
+            return format!("login rejected: {}", sysnet::one_line(rest[..e].trim()));
         }
     }
     if let Some(err) = ["sslvpn_login_permission_denied", "sslvpn_login_password_expired", "sslvpn_logindisable_errmsg"]
@@ -623,7 +623,7 @@ fn clean_failure(fields: &BTreeMap<String, String>, body: &str, status: u16, sec
     if body.trim().is_empty() {
         format!("login rejected (HTTP {status})")
     } else {
-        format!("login rejected: {}", one_line(body.trim()))
+        format!("login rejected: {}", sysnet::one_line(body.trim()))
     }
 }
 
@@ -635,18 +635,12 @@ fn describe_err(err: &str) -> String {
         "sslvpn_login_insufficient_credential" => "insufficient credentials".into(),
         "sslvpn_login_change_password_failed" => "failed to change password".into(),
         "sslvpn_logindisable_errmsg" => "too many bad login attempts — login temporarily disabled".into(),
-        other => one_line(other),
+        other => sysnet::one_line(other),
     }
 }
 
 /// One printable line, at most 300 chars: gateway text ends up in our stdout,
 /// which the GUI parses line by line.
-pub fn one_line(s: &str) -> String {
-    let flat: String = s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
-    let flat = flat.split_whitespace().collect::<Vec<_>>().join(" ");
-    flat.chars().take(300).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -876,10 +870,5 @@ mod tests {
         assert_eq!(auth_budget(Some(5)), 30);
         assert_eq!(auth_budget(Some(240)), 240);
         assert_eq!(auth_budget(Some(900)), 300);
-    }
-
-    #[test]
-    fn one_line_strips_controls() {
-        assert_eq!(one_line("a\r\nSAML-URL: x\tb"), "a SAML-URL: x b");
     }
 }

@@ -1176,14 +1176,14 @@ fn cmd_ike(args: &[String]) {
                         user.clone()
                     }
                     _ if cert_login.is_some() => {
-                        println!("# gateway challenge [{:?}]: {}", ctype, prompt);
+                        println!("# gateway challenge [{:?}]: {}", ctype, sysnet::one_line(&prompt));
                         // The text may be followed by its structured form after a NUL.
                         let text = prompt.split(" | ").next().unwrap_or("").trim();
                         let label = if text.is_empty() { "Verification code".to_string() } else { text.to_string() };
                         match passcode.take() {
                             Some(p) => p,
                             None => {
-                                println!("# AUTH-PROMPT: code: {}", label.replace(['\n', '\r'], " ").trim());
+                                println!("# AUTH-PROMPT: code: {}", sysnet::one_line(&label));
                                 match anyconnect::read_secret("Code: ") {
                                     Some(c) => c.trim().to_string(),
                                     None => {
@@ -1195,7 +1195,7 @@ fn cmd_ike(args: &[String]) {
                         }
                     }
                     _ => {
-                        println!("# gateway challenge [{:?}]: {}", ctype, prompt);
+                        println!("# gateway challenge [{:?}]: {}", ctype, sysnet::one_line(&prompt));
                         match passcode.take() {
                             Some(p) => p,
                             None => {

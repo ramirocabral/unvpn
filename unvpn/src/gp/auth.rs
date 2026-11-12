@@ -137,7 +137,7 @@ fn parse_javascript(js: &str) -> Result<Reply, GpError> {
 }
 
 fn preview(s: &str) -> String {
-    let one = super::one_line(s);
+    let one = crate::sysnet::one_line(s);
     one.chars().take(160).collect()
 }
 
@@ -501,7 +501,7 @@ impl Session {
                 200 => {}
                 512 => {
                     // The server's own words, when it says something short and plain.
-                    let text = crate::gp::one_line(&resp.body_str());
+                    let text = crate::sysnet::one_line(&resp.body_str());
                     let detail = if !text.is_empty() && !text.starts_with('<') && text.len() <= 200 {
                         format!(" (server: {text})")
                     } else {

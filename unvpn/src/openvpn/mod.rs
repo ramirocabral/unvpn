@@ -150,14 +150,14 @@ impl tunnel::Prompter for CliPrompter {
                 return Ok(c);
             }
         }
-        let msg: String = message.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+        let msg = crate::sysnet::one_line(message);
         println!("# AUTH-PROMPT: {kind}: {msg}");
         let _ = std::io::stdout().flush();
         read_secret(&format!("{msg}: ")).ok_or_else(|| format!("{kind} required but none provided"))
     }
 
     fn open_url(&mut self, url: &str) {
-        println!("# SAML-URL: {url}");
+        println!("# SAML-URL: {}", crate::sysnet::one_word(url));
         let _ = std::io::stdout().flush();
     }
 }
