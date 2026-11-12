@@ -302,6 +302,7 @@ fn run_tunnel(
             _restore.leak = leakguard::enable(&tun_name, &gw_v4.into_iter().collect::<Vec<_>>())?;
         }
     }
+    _restore.commit(&tun_name);
     // Through the shared reader: a code prompt during login may have started it.
     sysnet::spawn_stdin_disconnect(&TUNNEL_STOP);
 
@@ -1539,6 +1540,7 @@ fn main() {
         Some("connect") => connect::cmd_connect(&args[1..], killswitch, !block_ipv6, &tls_flags),
         Some("status") => control::cmd_status(&args[1..]),
         Some("disconnect") => control::cmd_disconnect(&args[1..]),
+        Some("recover") => control::cmd_recover(&args[1..]),
         Some("hello") => cmd_hello(&args[1..]),
         Some("login") => cmd_login(&args[1..]),
         Some("deob") => cmd_deob(&args[1..]),
@@ -1599,6 +1601,7 @@ fn usage(out: &mut dyn Write) {
     let _ = writeln!(out, "  unvpn connect --list             # the saved profiles");
     let _ = writeln!(out, "  unvpn status [--json]            # the running tunnels");
     let _ = writeln!(out, "  unvpn disconnect [<name> | --all]  # stop a running tunnel (the app's too)");
+    let _ = writeln!(out, "  sudo unvpn recover               # undo what a killed engine left behind (routes, kill switch, DNS)");
     let _ = writeln!(out, "  unvpn hello [--gateway <host>] [--send]");
     let _ = writeln!(out, "  unvpn login --gateway <host> [--user <u>] [--realm <r>] [--passcode <p>] [--probe]");
     let _ = writeln!(out, "  unvpn tunnel --gateway <host> --active-key <obfuscated-hex> [--om-ip <ip>]");

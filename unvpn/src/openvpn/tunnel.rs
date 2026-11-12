@@ -386,6 +386,7 @@ pub fn run(mut p: Prepared, prompter: &mut dyn Prompter, opts: RunOpts) -> Resul
         restore.dns = sysnet::set_dns(&sysnet::tunnelled_dns(&dns, &tun_name), &domains.join(" "));
         restore.leak = crate::leakguard::enable(&tun_name, &[server])?;
     }
+    restore.commit(&tun_name);
     if opts.watch_stdin {
         sysnet::spawn_stdin_disconnect(&OV_STOP);
     }

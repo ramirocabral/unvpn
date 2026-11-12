@@ -741,6 +741,7 @@ fn data_plane(
         restore.dns = sysnet::set_dns(&sysnet::tunnelled_dns(&cfg.dns, &tun_name), &cfg.domains);
         restore.leak = crate::leakguard::enable(&tun_name, &[gw])?;
     }
+    restore.commit(&tun_name);
     sysnet::spawn_stdin_disconnect(&STOP);
     tun::set_nonblocking(&tun_file);
 

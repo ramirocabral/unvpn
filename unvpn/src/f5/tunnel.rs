@@ -163,6 +163,7 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
         restore.dns = sysnet::set_dns(&sysnet::tunnelled_dns(&dns, &tun_name), &cfg.domains);
         restore.leak = crate::leakguard::enable(&tun_name, &gw.into_iter().collect::<Vec<_>>())?;
     }
+    restore.commit(&tun_name);
 
     // The F5 protocol expects the tunnel to drop and the client to transparently
     // reconnect (`autoreconnectifdropped` // reusing the same session (sess/Z + cookies) with no re-auth.

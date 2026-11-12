@@ -1,5 +1,6 @@
-//! The engine's control socket (protocol in `unvpn_profiles::control`) and the
-//! `status` / `disconnect` commands.
+//! The engine's control socket (protocol in `unvpn_profiles::control`), the record
+//! of what a session changed outside its tunnel so `unvpn recover` can undo it
+//! after a hard kill, and the `status` / `disconnect` / `recover` commands.
 //!
 //! While a session runs, its stdout and stderr pass through a relay thread: what
 //! the engine prints still reaches whoever reads it, a reader that went away can't
@@ -9,7 +10,7 @@ use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock, TryLockError};
 use std::time::{Duration, Instant};
 
@@ -315,6 +316,53 @@ fn flush_relay() {
     }
 }
 
+fn undo_path() -> PathBuf {
+    Path::new(RUN_DIR).join(format!("{}.undo", std::process::id()))
+}
+
+/// Record what this session changed outside its tun device (routes through other
+/// interfaces, the leak-protection table, DNS, a WireGuard link), for `recover`.
+pub fn save_undo(iface: &str, routes: &[String], nft_table: Option<&str>, dns: bool) {
+    if unsafe { libc::geteuid() } != 0 {
+        return;
+    }
+    let mut body = format!("iface={iface}\n");
+    if let Some(t) = nft_table {
+        body.push_str(&format!("nft={t}\n"));
+    }
+    if dns {
+        body.push_str("dns=1\n");
+    }
+    for r in routes {
+        body.push_str(&format!("route={r}\n"));
+    }
+    let _ = std::fs::create_dir_all(RUN_DIR);
+    let _ = std::fs::write(undo_path(), body);
+}
+
+pub fn clear_undo() {
+    let _ = std::fs::remove_file(undo_path());
+}
+
+struct Undo {
+    iface: String,
+    nft: Option<String>,
+    routes: Vec<String>,
+}
+
+fn parse_undo(text: &str) -> Undo {
+    let mut u = Undo { iface: String::new(), nft: None, routes: Vec::new() };
+    for line in text.lines() {
+        match line.split_once('=') {
+            Some(("iface", v)) => u.iface = v.to_string(),
+            Some(("nft", v)) => u.nft = Some(v.to_string()),
+            Some(("route", v)) if v.starts_with("route del ") => u.routes.push(v.to_string()),
+            _ => {}
+        }
+    }
+    u
+}
+
 fn usage_status() {
     eprintln!("usage: unvpn status [--json]");
 }
@@ -339,7 +387,7 @@ pub fn cmd_status(args: &[String]) {
         match ctl::status(&path) {
             Ok(s) => live.push(s),
             Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {}
-            Err(_) => notes.push(format!("# pid {pid}: not running (its socket was left behind)")),
+            Err(_) => notes.push(format!("# pid {pid}: not running, left state behind (`sudo unvpn recover` cleans it up)")),
         }
     }
     let mut out = std::io::stdout().lock();
@@ -477,6 +525,88 @@ fn pick<'a>(running: &'a [(PathBuf, Status)], q: &str) -> Result<&'a (PathBuf, S
     Err(format!("no running tunnel “{q}” — `unvpn status` lists them"))
 }
 
+/// `unvpn recover`: undo what engines that were killed (or crashed) left behind —
+/// routes, the kill switch / IPv6 block, resolv.conf, a WireGuard interface, and
+/// their sockets. Running tunnels are left alone.
+pub fn cmd_recover(args: &[String]) {
+    if let Some(a) = args.first() {
+        if a != "--help" && a != "-h" {
+            eprintln!("unknown argument: {a}");
+        }
+        eprintln!("usage: sudo unvpn recover");
+        std::process::exit(if a == "--help" || a == "-h" { 0 } else { 2 });
+    }
+    if unsafe { libc::geteuid() } != 0 {
+        eprintln!("unvpn recover changes routes, the firewall and DNS — run it with sudo");
+        std::process::exit(1);
+    }
+    let live = ctl::running();
+    let live_pids: Vec<u32> = live.iter().map(|(_, s)| s.pid).collect();
+    let live_ifaces: Vec<&str> = live.iter().map(|(_, s)| s.iface.as_str()).filter(|i| !i.is_empty()).collect();
+    for (_, s) in &live {
+        println!("# “{}” (pid {}) is running — left alone (`unvpn disconnect` stops it)", s.name(), s.pid);
+    }
+    let mut did = 0;
+
+    let mut undos: Vec<(u32, PathBuf)> = std::fs::read_dir(RUN_DIR)
+        .map(|d| {
+            d.filter_map(|e| {
+                let e = e.ok()?;
+                let pid = e.file_name().to_str()?.strip_suffix(".undo")?.parse().ok()?;
+                Some((pid, e.path()))
+            })
+            .collect()
+        })
+        .unwrap_or_default();
+    undos.sort();
+    for (pid, path) in undos {
+        if live_pids.contains(&pid) {
+            continue;
+        }
+        let u = parse_undo(&std::fs::read_to_string(&path).unwrap_or_default());
+        if !u.routes.is_empty() {
+            let _ = crate::tun::ip_batch(&u.routes);
+            println!("# pid {pid}: removed its {} route(s)", u.routes.len());
+        }
+        if let Some(t) = &u.nft {
+            if crate::leakguard::delete_table(t) {
+                println!("# pid {pid}: lifted its kill switch / IPv6 block (nft table {t})");
+            }
+        }
+        if unvpn_profiles::marker::is_iface_name(&u.iface)
+            && !live_ifaces.contains(&u.iface.as_str())
+            && Path::new("/sys/class/net").join(&u.iface).exists()
+            && crate::tun::ip(&["link", "del", "dev", &u.iface]).is_ok()
+        {
+            println!("# pid {pid}: removed interface {}", u.iface);
+        }
+        let _ = std::fs::remove_file(&path);
+        did += 1;
+    }
+
+    let live_tables: Vec<String> = live_ifaces.iter().map(|i| crate::leakguard::table_name(i)).collect();
+    for t in crate::leakguard::tables() {
+        if !live_tables.contains(&t) && crate::leakguard::delete_table(&t) {
+            println!("# lifted a leftover kill switch / IPv6 block (nft table {t})");
+            did += 1;
+        }
+    }
+
+    if live.is_empty() && crate::sysnet::restore_orphaned_dns() {
+        println!("# restored /etc/resolv.conf");
+        did += 1;
+    }
+
+    for (pid, path) in ctl::sockets() {
+        if !live_pids.contains(&pid) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+    if did == 0 {
+        println!("# nothing to recover");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -493,6 +623,14 @@ mod tests {
         assert_eq!(rest, ["# one", "err", "# two"]);
         assert_eq!(answer(&format!("log {next}")), format!("next={next}\n"));
         assert_eq!(answer("bogus"), "error: unknown request\n");
+    }
+
+    #[test]
+    fn undo_records_read_back_only_route_deletions() {
+        let u = parse_undo("iface=unvpn0\nnft=unvpn_unvpn0\ndns=1\nroute=route del 10.0.0.0/8 dev unvpn0\nroute=link del eth0\n");
+        assert_eq!(u.iface, "unvpn0");
+        assert_eq!(u.nft.as_deref(), Some("unvpn_unvpn0"));
+        assert_eq!(u.routes, ["route del 10.0.0.0/8 dev unvpn0"]);
     }
 
     #[test]

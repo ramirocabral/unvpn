@@ -118,6 +118,7 @@ pub fn run(
         restore.dns = sysnet::set_dns(&sysnet::tunnelled_dns(&dns, &tun_name), &cfg.domains);
         restore.leak = crate::leakguard::enable(&tun_name, &gw.into_iter().collect::<Vec<_>>())?;
     }
+    restore.commit(&tun_name);
 
     sysnet::spawn_stdin_disconnect(&FORTI_STOP);
     tun::set_nonblocking(&tun_file);

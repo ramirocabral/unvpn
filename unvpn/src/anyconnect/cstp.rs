@@ -166,6 +166,7 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
         restore.dns = sysnet::set_dns(&sysnet::tunnelled_dns(&dns, &tun_name), &cfg.domains.join(" "));
         restore.leak = crate::leakguard::enable(&tun_name, &gw.into_iter().collect::<Vec<_>>())?;
     }
+    restore.commit(&tun_name);
 
     if opts.watch_stdin {
         sysnet::spawn_stdin_disconnect(&AC_STOP);

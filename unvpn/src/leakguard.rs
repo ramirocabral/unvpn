@@ -35,20 +35,49 @@ pub fn killswitch_requested() -> bool {
 }
 
 /// Removes the table it installed on drop — on teardown, an early error return, or
-/// a panic unwinding through a back-end's `run`. A SIGKILL (or power loss) can't run
-/// this; the printed `nft delete table …` line is the manual recovery.
+/// a panic unwinding through a back-end's `run`. After a SIGKILL, `unvpn recover`
+/// removes it.
 pub struct LeakGuard {
     table: String,
 }
 
+impl LeakGuard {
+    pub fn table(&self) -> &str {
+        &self.table
+    }
+}
+
 impl Drop for LeakGuard {
     fn drop(&mut self) {
-        let _ = Command::new("nft")
-            .args(["delete", "table", "inet", &self.table])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+        delete_table(&self.table);
     }
+}
+
+pub fn delete_table(table: &str) -> bool {
+    Command::new("nft")
+        .args(["delete", "table", "inet", table])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+/// The leak-protection tables in place now, of every session.
+pub fn tables() -> Vec<String> {
+    let Ok(out) = Command::new("nft").args(["list", "tables", "inet"]).stderr(Stdio::null()).output() else {
+        return Vec::new();
+    };
+    parse_tables(&String::from_utf8_lossy(&out.stdout))
+}
+
+fn parse_tables(listing: &str) -> Vec<String> {
+    listing
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("table inet "))
+        .map(str::trim)
+        .filter(|t| t.starts_with("unvpn_"))
+        .map(String::from)
+        .collect()
 }
 
 struct Params<'a> {
@@ -87,7 +116,7 @@ pub fn enable(tun: &str, gateways: &[Ipv4Addr]) -> Result<Option<LeakGuard>, Str
     if killswitch {
         let gws = gateways.iter().map(|g| g.to_string()).collect::<Vec<_>>().join(", ");
         out!("# kill switch ON — only {tun}, gateway {gws}, LAN and DHCP allowed (fail-closed)");
-        out!("#   (if unvpn is killed hard, clear it with: nft delete table inet {table})");
+        out!("#   (if unvpn is killed hard, `sudo unvpn recover` lifts it)");
     }
     if block_ipv6 {
         out!("# IPv6 egress blocked for the session (--allow-ipv6 to keep it)");
@@ -97,7 +126,7 @@ pub fn enable(tun: &str, gateways: &[Ipv4Addr]) -> Result<Option<LeakGuard>, Str
 
 /// nftables identifiers allow alphanumerics and `_`; tun names are already in that
 /// set, but sanitise defensively so the table name can never be malformed.
-fn table_name(tun: &str) -> String {
+pub fn table_name(tun: &str) -> String {
     let safe: String = tun.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
     format!("unvpn_{safe}")
 }
@@ -261,6 +290,12 @@ mod tests {
         });
         assert!(r.contains("policy drop;"));
         assert!(!r.contains("meta nfproto ipv6 drop"));
+    }
+
+    #[test]
+    fn our_tables_from_an_nft_listing() {
+        assert_eq!(parse_tables("table inet filter\ntable inet unvpn_unvpn0\ntable inet unvpn_unvpn1\n"), ["unvpn_unvpn0", "unvpn_unvpn1"]);
+        assert!(parse_tables("").is_empty());
     }
 
     #[test]

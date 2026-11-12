@@ -103,6 +103,7 @@ pub fn run(s: &mut Session, opts: RunOpts) -> Result<(), String> {
         restore.dns = sysnet::set_dns(&sysnet::tunnelled_dns(&cfg.dns, &tun_name), &cfg.domains.join(" "));
         restore.leak = crate::leakguard::enable(&tun_name, &[gw_ip])?;
     }
+    restore.commit(&tun_name);
     if opts.watch_stdin {
         sysnet::spawn_stdin_disconnect(&GP_STOP);
     }

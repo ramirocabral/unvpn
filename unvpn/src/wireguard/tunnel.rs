@@ -48,6 +48,7 @@ struct LinkGuard(String);
 impl Drop for LinkGuard {
     fn drop(&mut self) {
         let _ = tun::ip(&["link", "del", "dev", &self.0]);
+        crate::control::clear_undo();
     }
 }
 
@@ -83,6 +84,8 @@ pub fn run(cfg: Config, opts: RunOpts) -> Result<(), String> {
 
     let ifname = create_link(IF_NAME)?;
     let link = LinkGuard(ifname.clone());
+    // Unlike a tun device, the link outlives a killed engine.
+    crate::control::save_undo(&ifname, &[], None, false);
     let mut nl = WgNetlink::open()?;
     let dev = DeviceSet {
         private_key: iface.private_key,
@@ -150,6 +153,7 @@ pub fn run(cfg: Config, opts: RunOpts) -> Result<(), String> {
             out!("# note: --killswitch does not apply to WireGuard — use AllowedIPs/Table/fwmark for a kill switch");
         }
     }
+    restore.commit(&ifname);
     if stopped() {
         drop(restore);
         return Err("disconnect requested before the tunnel came up".into());

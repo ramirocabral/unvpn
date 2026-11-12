@@ -175,6 +175,22 @@ fn read_dns_sidecar() -> Option<DnsBackup> {
     decode_sidecar(&std::fs::read_to_string(DNS_SIDECAR).ok()?)
 }
 
+/// Put back the pre-VPN resolv.conf when the current one is still ours although no
+/// session is running. True when something was restored.
+pub fn restore_orphaned_dns() -> bool {
+    let ours = std::fs::read_to_string(RESOLV_CONF).is_ok_and(|c| c.starts_with(DNS_MARKER));
+    if !ours {
+        return false;
+    }
+    match read_dns_sidecar() {
+        Some(b) => {
+            restore_dns(Some(b));
+            true
+        }
+        None => false,
+    }
+}
+
 /// Serialise a backup: `SYMLINK <target>` or `FILE\n<original bytes>`. `None` when
 /// there's no original to keep (resolv.conf didn't exist).
 fn encode_sidecar(b: &DnsBackup) -> Option<String> {
@@ -210,11 +226,19 @@ pub struct NetRestore {
     pub leak: Option<crate::leakguard::LeakGuard>,
 }
 
+impl NetRestore {
+    /// Record what this holds for `unvpn recover`, in case we are killed before it drops.
+    pub fn commit(&self, iface: &str) {
+        crate::control::save_undo(iface, &self.routes, self.leak.as_ref().map(|l| l.table()), self.dns.is_some());
+    }
+}
+
 impl Drop for NetRestore {
     fn drop(&mut self) {
         restore_dns(self.dns.take());
         let _ = crate::tun::ip_batch(&self.routes);
         drop(self.leak.take());
+        crate::control::clear_undo();
     }
 }
 

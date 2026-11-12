@@ -70,6 +70,7 @@ Any running tunnel, wherever it was started (the app, `unvpn connect`, the F5
 ```sh
 unvpn status                       # the running tunnels (--json for scripts)
 unvpn disconnect office            # by name, gateway or interface; --all stops them all
+sudo unvpn recover                 # after a crash or kill -9: undo leftover routes, kill switch and DNS
 ```
 
 Or give the details directly:
