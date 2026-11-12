@@ -322,6 +322,43 @@ pub fn multi_challenge(request_id: i64, session_id: &str, user_input: &str) -> P
     }
 }
 
+/// Build a CCC `ClientSettings` request for the session Office Mode handed out;
+/// the answer carries the site's policies, among them its encryption domain.
+pub fn client_settings(request_id: i64, session_id: &str) -> Packet {
+    let header = Value::map(vec![
+        ("id", Value::Num(request_id)),
+        ("type", Value::sym("ClientSettings")),
+        ("session_id", Value::sym(session_id)),
+    ]);
+    let data = Value::map(vec![(
+        "requested_policies_and_current_versions",
+        Value::map(vec![("range", Value::Empty), ("nemo_client_1", Value::Empty)]),
+    )]);
+    Packet {
+        name: "CCCclientRequest".to_string(),
+        body: Value::map(vec![("RequestHeader", header), ("RequestData", data)]),
+    }
+}
+
+/// The encryption domain of a `ClientSettings` answer, as `(from, to)` ranges.
+pub fn encryption_domain(pkt: &Packet) -> Result<Vec<(std::net::Ipv4Addr, std::net::Ipv4Addr)>, String> {
+    match pkt.path(&["ResponseHeader", "return_code"]) {
+        Some(Value::Num(600)) => {}
+        rc => return Err(format!("return_code {}", rc.and_then(Value::text).unwrap_or_else(|| "missing".into()))),
+    }
+    let Some(Value::Map(entries)) = pkt.path(&["ResponseData", "updated_policies", "range", "settings"]) else {
+        return Err("no range in the answer".into());
+    };
+    let addr = |r: &Value, k: &str| r.get(k).and_then(Value::text).and_then(|t| t.parse().ok());
+    entries
+        .iter()
+        .map(|(_, r)| match (addr(r, "from"), addr(r, "to")) {
+            (Some(f), Some(t)) => Ok((f, t)),
+            _ => Err(format!("bad range entry {}", r.pretty(0).split_whitespace().collect::<Vec<_>>().join(" "))),
+        })
+        .collect()
+}
+
 struct Parser<'a> {
     s: &'a [u8],
     i: usize,
@@ -473,6 +510,19 @@ impl<'a> Parser<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn client_settings_answer_yields_the_encryption_domain() {
+        let req = client_settings(3, "abc123").serialize();
+        assert!(req.contains("\t\t:type (ClientSettings)\n\t\t:session_id (abc123)\n"));
+        assert!(req.contains(":requested_policies_and_current_versions (\n\t\t\t:range ()\n"));
+        let answer = "(CCCserverResponse\n\t:ResponseHeader (\n\t\t:id (3)\n\t\t:type (ClientSettings)\n\t\t:return_code (600)\n\t)\n\t:ResponseData (\n\t\t:updated_policies (\n\t\t\t:range (\n\t\t\t\t:settings (\n\t\t\t\t\t: (\n\t\t\t\t\t\t:from (10.0.0.0)\n\t\t\t\t\t\t:to (10.255.255.255)\n\t\t\t\t\t)\n\t\t\t\t\t: (\n\t\t\t\t\t\t:from (198.51.100.0)\n\t\t\t\t\t\t:to (198.51.100.127)\n\t\t\t\t\t)\n\t\t\t\t)\n\t\t\t)\n\t\t)\n\t)\n)";
+        let ranges = encryption_domain(&parse(answer).unwrap()).unwrap();
+        assert_eq!(ranges.len(), 2);
+        assert_eq!(ranges[1], ("198.51.100.0".parse().unwrap(), "198.51.100.127".parse().unwrap()));
+        let denied = "(CCCserverResponse\n\t:ResponseHeader (\n\t\t:return_code (601)\n\t)\n)";
+        assert_eq!(encryption_domain(&parse(denied).unwrap()).unwrap_err(), "return_code 601");
+    }
 
     #[test]
     fn serialize_client_hello() {

@@ -162,9 +162,38 @@ pub fn mask_to_prefix(mask: Ipv4Addr) -> u8 {
     u32::from(mask).count_ones() as u8
 }
 
+/// The fewest prefixes that exactly cover `from..=to` (empty when `from > to`).
+pub fn range_to_prefixes(from: Ipv4Addr, to: Ipv4Addr) -> Vec<(Ipv4Addr, u8)> {
+    let (mut lo, hi) = (u64::from(u32::from(from)), u64::from(u32::from(to)));
+    let mut out = Vec::new();
+    while lo <= hi {
+        let mut bits = if lo == 0 { 32 } else { lo.trailing_zeros().min(32) };
+        while bits > 0 && lo + (1u64 << bits) - 1 > hi {
+            bits -= 1;
+        }
+        out.push((Ipv4Addr::from(lo as u32), 32 - bits as u8));
+        lo += 1u64 << bits;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ranges_become_minimal_prefixes() {
+        let ip = |s: &str| s.parse::<Ipv4Addr>().unwrap();
+        let p = |v: Vec<(Ipv4Addr, u8)>| v.iter().map(|(n, l)| format!("{n}/{l}")).collect::<Vec<_>>().join(" ");
+        assert_eq!(p(range_to_prefixes(ip("10.0.0.0"), ip("10.255.255.255"))), "10.0.0.0/8");
+        assert_eq!(p(range_to_prefixes(ip("198.51.100.5"), ip("198.51.100.5"))), "198.51.100.5/32");
+        assert_eq!(
+            p(range_to_prefixes(ip("198.51.100.5"), ip("198.51.100.20"))),
+            "198.51.100.5/32 198.51.100.6/31 198.51.100.8/29 198.51.100.16/30 198.51.100.20/32"
+        );
+        assert_eq!(p(range_to_prefixes(ip("0.0.0.0"), ip("255.255.255.255"))), "0.0.0.0/0");
+        assert!(range_to_prefixes(ip("10.0.0.2"), ip("10.0.0.1")).is_empty());
+    }
 
     #[test]
     fn only_ipv4_passes() {

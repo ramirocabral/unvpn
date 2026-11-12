@@ -276,6 +276,7 @@ fn run_tunnel(
     lease_secs: u32,
     mac: Vec<u8>,
     session: Option<ike::session::Ikev1Session>,
+    routes: Option<Vec<(std::net::Ipv4Addr, u8)>>,
 ) -> Result<(), String> {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{mpsc, Arc, RwLock};
@@ -286,8 +287,7 @@ fn run_tunnel(
     tun::ip(&["addr", "add", &format!("{om_ip}/{prefix}"), "dev", &tun_name])?;
     tun::ip(&["link", "set", "dev", &tun_name, "up", "mtu", "1400"])?;
     crate::netmon::ignore_iface(&tun_name);
-    let _ = tun::ip(&["route", "add", "10.0.0.0/8", "dev", &tun_name]);
-    println!("# tun {tun_name} up — {om_ip}/{prefix}, route 10.0.0.0/8 via {tun_name}");
+    println!("# tun {tun_name} up — {om_ip}/{prefix}");
 
     let _ = sock.send(&[0xff]); // NAT-T keepalive
     println!("# ESP on socket {:?} (same NAT-T port as IKE)", sock.local_addr().ok());
@@ -298,12 +298,15 @@ fn run_tunnel(
         std::net::IpAddr::V4(v) => Some(v),
         std::net::IpAddr::V6(_) => None,
     });
-    let mut _restore = sysnet::NetRestore {
-        dns: sysnet::set_dns(&dns, &domains),
-        routes: Vec::new(),
-        leak: None,
-    };
-    _restore.leak = leakguard::enable(&tun_name, &gw_v4.into_iter().collect::<Vec<_>>())?;
+    let mut _restore = sysnet::NetRestore::default();
+    match routes {
+        None => out!("# --no-routes: installing no routes/DNS (reach hosts with `ping -I {tun_name}`)"),
+        Some(nets) => {
+            _restore.routes = cp_setup_routes(gw_v4, &tun_name, &nets);
+            _restore.dns = sysnet::set_dns(&sysnet::tunnelled_dns(&dns, &tun_name), &domains);
+            _restore.leak = leakguard::enable(&tun_name, &gw_v4.into_iter().collect::<Vec<_>>())?;
+        }
+    }
     TUNNEL_STOP.store(false, Ordering::SeqCst);
     TUNNEL_LOST.store(false, Ordering::SeqCst);
     unsafe {
@@ -458,6 +461,89 @@ fn run_tunnel(
         return Err("tunnel lost and the IKE session could not be recovered — reconnect".into());
     }
     Ok(())
+}
+
+/// Used when the gateway's encryption domain can't be fetched.
+const CP_FALLBACK_ROUTE: (std::net::Ipv4Addr, u8) = (std::net::Ipv4Addr::new(10, 0, 0, 0), 8);
+
+/// The site's encryption domain as prefixes, from a CCC `ClientSettings` request
+/// on the session Office Mode handed out.
+fn fetch_encryption_domain(host: &str, session_id: &str) -> Result<Vec<(std::net::Ipv4Addr, u8)>, String> {
+    let body = ccc::client_settings(new_request_id(), session_id).serialize();
+    let raw = post(host, &http_request(host, CCC_PATH, &body))?;
+    let pkt = ccc::parse(split_http_body(&raw)).map_err(|e| format!("bad ClientSettings answer: {e}"))?;
+    let mut nets: Vec<(std::net::Ipv4Addr, u8)> =
+        ccc::encryption_domain(&pkt)?.into_iter().flat_map(|(f, t)| tun::range_to_prefixes(f, t)).collect();
+    nets.sort();
+    nets.dedup();
+    Ok(nets)
+}
+
+/// The routes to send into the tunnel: the encryption domain, or the fallback.
+fn cp_routes(host: &str, session_id: Option<&str>) -> Vec<(std::net::Ipv4Addr, u8)> {
+    let got = match session_id {
+        Some(sid) => fetch_encryption_domain(host, sid),
+        None => Err("Office Mode gave no CCC session".into()),
+    };
+    match got {
+        Ok(nets) if !nets.is_empty() => {
+            let shown: Vec<String> = nets.iter().take(8).map(|(n, l)| format!("{n}/{l}")).collect();
+            let more = if nets.len() > 8 { format!(" (+{} more)", nets.len() - 8) } else { String::new() };
+            out!("# encryption domain: {}{more}", shown.join(" "));
+            nets
+        }
+        Ok(_) => cp_fallback("the gateway listed no ranges"),
+        Err(e) => cp_fallback(&e),
+    }
+}
+
+fn cp_fallback(why: &str) -> Vec<(std::net::Ipv4Addr, u8)> {
+    let (n, l) = CP_FALLBACK_ROUTE;
+    out!("# encryption domain unavailable ({}) — routing {n}/{l} into the tunnel", sysnet::one_line(why));
+    vec![CP_FALLBACK_ROUTE]
+}
+
+/// Pin the gateway to its pre-VPN path, then route `nets` into `tun` — one
+/// `ip -batch`. Returns the `route del` lines for teardown, minus routes that
+/// already existed. A `/0` goes in as 0/1 + 128/1 so the real default stays.
+fn cp_setup_routes(gw: Option<std::net::Ipv4Addr>, tun: &str, nets: &[(std::net::Ipv4Addr, u8)]) -> Vec<String> {
+    let mut add: Vec<String> = Vec::new();
+    let mut del: Vec<String> = Vec::new();
+    let mut pair = |net: String, suffix: &str| {
+        add.push(format!("route add {net} {suffix}"));
+        del.push(format!("route del {net} {suffix}"));
+    };
+    let mut pinned = None;
+    if let Some((gw, (via, dev))) = gw.and_then(|g| sysnet::original_path(g).map(|p| (g, p))) {
+        let suffix = match via {
+            Some(v) => format!("via {v} dev {dev}"),
+            None => format!("dev {dev}"),
+        };
+        pinned = Some(format!("{gw}/32 ({suffix})"));
+        pair(format!("{gw}/32"), &suffix);
+    }
+    let dev = format!("dev {tun}");
+    for &(net, len) in nets {
+        if len == 0 {
+            pair("0.0.0.0/1".into(), &dev);
+            pair("128.0.0.0/1".into(), &dev);
+        } else {
+            pair(format!("{net}/{len}"), &dev);
+        }
+    }
+    let failed = tun::ip_batch_failed(&add).unwrap_or_default();
+    if let Some(what) = pinned {
+        if failed.contains(&0) {
+            out!("# gateway route {what} already present — left as is");
+        } else {
+            out!("# pinned gateway route {what}");
+        }
+    }
+    out!("# {} route(s) via {tun}", nets.len());
+    if !failed.is_empty() {
+        out!("# {} route(s) already existed — not ours, kept on disconnect", failed.len());
+    }
+    del.into_iter().enumerate().filter(|(i, _)| !failed.contains(i)).map(|(_, d)| d).collect()
 }
 
 fn rekey_interval(lifetime_secs: u32) -> std::time::Duration {
@@ -849,7 +935,7 @@ fn cmd_tunnel_up(args: &[String]) {
         );
         let sock = std::sync::Arc::new(std::net::UdpSocket::bind("0.0.0.0:0").map_err(|e| e.to_string())?);
         sock.connect((host.as_str(), 4500)).map_err(|e| e.to_string())?;
-        run_tunnel(om_ip, om_mask, esp_sa, sock, dns, domains, 0, 0, Vec::new(), None)
+        run_tunnel(om_ip, om_mask, esp_sa, sock, dns, domains, 0, 0, Vec::new(), None, Some(vec![CP_FALLBACK_ROUTE]))
     };
     if let Err(e) = run() {
         eprintln!("tunnel-up failed: {e}");
@@ -922,6 +1008,7 @@ fn cmd_ike(args: &[String]) {
     let mut connect = false;
     let mut natt = false;
     let mut save_session: Option<String> = None;
+    let mut no_routes = false;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -934,6 +1021,7 @@ fn cmd_ike(args: &[String]) {
             "--connect" => connect = true,
             "--natt" => natt = true,
             "--save-session" => save_session = it.next().cloned(),
+            "--no-routes" => no_routes = true,
             other => {
                 eprintln!("unknown argument: {other}");
                 std::process::exit(2);
@@ -1301,6 +1389,9 @@ fn cmd_ike(args: &[String]) {
             .or_else(|| service::get_long_attr(&oma, ConfigAttributeType::AddressExpiry).and_then(to_secs))
             .unwrap_or(0);
         println!("# Office Mode: IP {om_ip} / {om_mask}  DNS {dns:?}  domains \"{domains}\"  lease={lease_secs}s");
+        let ccc_session = service::get_long_attr(&oma, ConfigAttributeType::CccSessionId)
+            .map(|v| String::from_utf8_lossy(&v).trim_matches('\0').trim().to_string())
+            .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_graphic()));
 
         let our_spi = ike::crypto::random_u32();
         let qm_nonce = ike::crypto::random(32);
@@ -1372,10 +1463,11 @@ fn cmd_ike(args: &[String]) {
             println!("# session saved to {path} (reuse: sudo unvpn tunnel-up --session {path})");
         }
         if connect {
+            let routes = (!no_routes).then(|| cp_routes(&host, ccc_session.as_deref()));
             let sock = std::sync::Arc::new(udp.try_clone_socket().map_err(|e| e.to_string())?);
             return run_tunnel(
                 om_ip, om_mask, esp_sa, sock, dns, domains,
-                esp.lifetime_secs, lease_secs, mac, Some(session),
+                esp.lifetime_secs, lease_secs, mac, Some(session), routes,
             );
         }
         println!("# Office Mode IP {om_ip} ready. (--connect brings up the tunnel; needs sudo)");
@@ -1445,7 +1537,7 @@ fn usage(out: &mut dyn Write) {
     let _ = writeln!(out, "  unvpn hello [--gateway <host>] [--send]");
     let _ = writeln!(out, "  unvpn login --gateway <host> [--user <u>] [--realm <r>] [--passcode <p>] [--probe]");
     let _ = writeln!(out, "  unvpn tunnel --gateway <host> --active-key <obfuscated-hex> [--om-ip <ip>]");
-    let _ = writeln!(out, "  unvpn ike --gateway <host> [--passcode <PIN+tokencode>] [--connect]");
+    let _ = writeln!(out, "  unvpn ike --gateway <host> [--passcode <PIN+tokencode>] [--connect [--no-routes]]");
     let _ = writeln!(out, "       # M3/M4: IKEv1 handshake; with --connect (sudo) brings up the tun tunnel");
     let _ = writeln!(out, "  unvpn ike --gateway <host> --cert <file.p12> [--realm <login-option>] [--connect]");
     let _ = writeln!(out, "       # certificate login; the file password is read from stdin");
