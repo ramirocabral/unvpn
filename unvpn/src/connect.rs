@@ -50,7 +50,9 @@ fn usage() {
         "  unvpn connect <profile> --dry-run      # show the engine command, connect nothing"
     );
     eprintln!("  unvpn connect --list                   # the saved profiles");
-    eprintln!("Run it as your user: it reads your profiles and keyring, and asks for sudo itself.");
+    eprintln!(
+        "Run it as your user: it reads your profiles and keyring, then starts the engine as root."
+    );
 }
 
 /// `tls_flags`: the global `--pin`/`--insecure` flags given, passed on to the engine.
@@ -442,16 +444,30 @@ fn engine_bin() -> Result<PathBuf, String> {
     std::env::current_exe().map_err(|e| format!("can't locate the unvpn binary: {e}"))
 }
 
-/// How to run the engine as root: nothing when already root, else `sudo` (asks on
-/// the terminal if it needs a password), or `pkexec` with `UNVPN_PRIV=pkexec`.
+/// How to run the engine as root: nothing when already root, `sudo` when it needs
+/// no password, else `pkexec` (no password either with the installed polkit rule).
+/// Override with `UNVPN_PRIV=pkexec|sudo`.
 fn escalation() -> Vec<String> {
     if unsafe { libc::geteuid() } == 0 {
         return Vec::new();
     }
-    match std::env::var("UNVPN_PRIV").as_deref() {
-        Ok("pkexec") => vec!["pkexec".into()],
-        _ => vec!["sudo".into()],
-    }
+    let prog = match std::env::var("UNVPN_PRIV").as_deref() {
+        Ok("pkexec") => "pkexec",
+        Ok("sudo") => "sudo",
+        _ if passwordless_sudo() => "sudo",
+        _ => "pkexec",
+    };
+    vec![prog.into()]
+}
+
+fn passwordless_sudo() -> bool {
+    std::process::Command::new("sudo")
+        .args(["-n", "true"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
 }
 
 /// `argv` as a shell line.

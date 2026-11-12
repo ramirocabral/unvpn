@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # unvpn installer — builds the engine (static OpenSSL) and the GUI, then installs
-# both, the icons, the .desktop and login autostart entries, and (optionally) a polkit rule.
+# both, the icons, the .desktop and login autostart entries, and a polkit rule so
+# connecting doesn't ask for a password.
 #
 #   ./install.sh              build + install under /usr/local
 #   PREFIX=~/.local ./install.sh   user-local install (no root)
@@ -59,13 +60,13 @@ $S install -Dm755 "$wtmp" "$PREFIX/bin/unvpn-f5-launch"
 rm -f "$wtmp"
 $S install -Dm644 "$REPO/packaging/unvpn-f5-handler.desktop" "$PREFIX/share/applications/unvpn-f5-handler.desktop"
 
-printf "Install polkit rule (connect prompts for admin once, then caches)? [y/N] "
-read -r ans || ans=
-if [ "$ans" = y ] || [ "$ans" = Y ]; then
+# Connect without a password prompt. Only for an engine that just root can replace.
+if [ -n "$S" ] || [ "$(id -u)" -eq 0 ]; then
     tmp="$(mktemp)"
     sed "s#/usr/local/bin/unvpn#$PREFIX/bin/unvpn#" "$REPO/packaging/49-unvpn.rules" > "$tmp"
-    sudo install -Dm644 "$tmp" /etc/polkit-1/rules.d/49-unvpn.rules
+    $S install -Dm644 "$tmp" /etc/polkit-1/rules.d/49-unvpn.rules
     rm -f "$tmp"
+    NOPASS=1
 fi
 
 # Start in the tray at login.
@@ -92,3 +93,4 @@ echo "Installed. Launch 'unvpn-gui', or find 'unvpn' in your application menu."
 echo "  It starts in the system tray at every login."
 echo "  CLI engine: 'unvpn' (see 'unvpn --help')."
 echo "  F5 webtop 'Start' → 'unvpn' is now the handler for f5-vpn:// links."
+[ -n "${NOPASS:-}" ] || echo "  $PREFIX/bin is writable by you, so connecting asks for the admin password."

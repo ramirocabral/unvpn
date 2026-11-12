@@ -56,14 +56,13 @@ curl https://sh.rustup.rs -sSf | sh
 sudo dnf install epel-release && sudo dnf config-manager --set-enabled crb
 ```
 
-The app asks for admin rights through polkit, which needs an authentication
-agent running in your session.
-
 Build and install:
 
 ```sh
 ./install.sh
 ```
+
+It also adds a polkit rule, so connecting doesn't ask for a password.
 
 Uninstall:
 
@@ -74,7 +73,7 @@ Uninstall:
 ## Command line
 
 Profiles saved in the app connect by name. Run it as your user: it reads the
-profile and the keyring, then asks for sudo itself. Codes, SSO tokens and any
+profile and the keyring, then starts the engine as root. Codes, SSO tokens and any
 password the keyring doesn't have are asked on the terminal; Ctrl-C disconnects.
 
 ```sh
