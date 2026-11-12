@@ -978,7 +978,7 @@ impl App {
             });
             let app3 = app_rc.clone();
             let name = p.name.clone();
-            del.connect_clicked(move |_| app3.delete_profile(&name));
+            del.connect_clicked(move |_| app3.confirm_delete_profile(&name));
 
             self.profiles_group.add(&row);
             self.profile_rows.borrow_mut().push(row);
@@ -1182,6 +1182,30 @@ impl App {
         }
         self.refresh_profiles_list();
         self.toast(&format!("Saved profile “{name}”"));
+    }
+
+    fn confirm_delete_profile(&self, name: &str) {
+        let Some(p) = self.profiles.borrow().iter().find(|p| p.name == name).cloned() else { return };
+        let mut body = "Its saved passwords and keys are removed too.".to_string();
+        if profiles::owned_files(&p).is_some() {
+            if p.uses_cp_cert() {
+                body.push_str(
+                    "\n\nIts enrolled certificate is deleted as well. A registration key works only once, \
+                     so enrolling again needs a new key from your administrator.",
+                );
+            } else {
+                body.push_str(" So is its imported VPN file.");
+            }
+        }
+        let dialog = adw::AlertDialog::builder().heading(format!("Delete “{name}”?")).body(body).build();
+        dialog.add_responses(&[("cancel", "Cancel"), ("delete", "Delete")]);
+        dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+        let app = self.rc();
+        let name = name.to_string();
+        dialog.connect_response(Some("delete"), move |_, _| app.delete_profile(&name));
+        dialog.present(Some(&self.window));
     }
 
     fn delete_profile(&self, name: &str) {

@@ -238,20 +238,24 @@ pub fn files_dir() -> std::path::PathBuf {
     config_dir().join("files")
 }
 
-/// Removes a profile's file directory if it is one of ours (under [`files_dir`]).
-pub fn remove_owned_files(p: &Profile) {
+/// The directory holding a profile's VPN file or certificate, if it is one of
+/// ours (under [`files_dir`]) and so goes away with the profile.
+pub fn owned_files(p: &Profile) -> Option<PathBuf> {
     let file = if p.backend.uses_profile_file() {
         &p.gateway
     } else if p.uses_cp_cert() {
         &p.cert_path
     } else {
-        return;
+        return None;
     };
-    let root = files_dir();
-    if let Some(dir) = std::path::Path::new(file).parent() {
-        if dir.parent() == Some(root.as_path()) {
-            let _ = std::fs::remove_dir_all(dir);
-        }
+    let dir = Path::new(file).parent()?;
+    (dir.parent() == Some(files_dir().as_path())).then(|| dir.to_path_buf())
+}
+
+/// Removes a profile's file directory if it is one of ours (see [`owned_files`]).
+pub fn remove_owned_files(p: &Profile) {
+    if let Some(dir) = owned_files(p) {
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
 
