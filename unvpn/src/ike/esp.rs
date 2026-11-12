@@ -6,6 +6,7 @@
 //! IPv4 packet (next_header = 4).
 
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Mutex;
 
 use openssl::{
     hash::MessageDigest,
@@ -16,6 +17,7 @@ use openssl::{
 };
 
 use super::model::*;
+use crate::replay::Replay;
 
 fn e<E: std::fmt::Display>(err: E) -> String {
     err.to_string()
@@ -33,6 +35,7 @@ pub struct EspSa {
     iv_len: usize,
     icv_len: usize,
     seq: AtomicU32,
+    replay: Mutex<Replay>,
 }
 
 impl EspSa {
@@ -101,6 +104,7 @@ impl EspSa {
             iv_len: cipher.iv_len().unwrap_or(cipher.block_size()),
             icv_len,
             seq: AtomicU32::new(1),
+            replay: Mutex::new(Replay::default()),
         }
     }
 
@@ -162,6 +166,10 @@ impl EspSa {
         let (signed, icv) = esp.split_at(esp.len() - self.icv_len);
         if !super::crypto::ct_eq(&self.hmac(&self.auth_in, signed), icv) {
             return Err("ESP ICV mismatch".into());
+        }
+        let seq = u32::from_be_bytes(esp[4..8].try_into().unwrap());
+        if !self.replay.lock().unwrap_or_else(|p| p.into_inner()).check(seq) {
+            return Err(format!("ESP replayed or stale sequence {seq}"));
         }
         let iv = &signed[8..8 + self.iv_len];
         let ct = &signed[8 + self.iv_len..];
@@ -229,6 +237,19 @@ mod tests {
         let n = esp.len();
         esp[n - 1] ^= 0xff;
         assert!(sa.decode(&esp).is_err());
+    }
+
+    #[test]
+    fn esp_rejects_replayed_and_stale_packets() {
+        let km = vec![5u8; 44];
+        let sa = EspSa::new(u8::from(TransformId::Esp3Des), ESP_AUTH_HMAC_SHA96, 0, 1, &km, 1, &km).unwrap();
+        let pkts: Vec<Vec<u8>> = (0..70).map(|i| sa.encode(&[i as u8; 8]).unwrap()).collect();
+        assert!(sa.decode(&pkts[1]).is_ok());
+        assert!(sa.decode(&pkts[0]).is_ok());
+        assert!(sa.decode(&pkts[1]).is_err());
+        assert!(sa.decode(&pkts[69]).is_ok());
+        assert!(sa.decode(&pkts[2]).is_err());
+        assert!(sa.decode(&pkts[68]).is_ok());
     }
 }
 

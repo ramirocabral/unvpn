@@ -23,6 +23,7 @@ mod ivanti;
 mod leakguard;
 mod netmon;
 mod openvpn;
+mod replay;
 mod sysnet;
 mod tun;
 mod wireguard;

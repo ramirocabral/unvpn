@@ -19,6 +19,8 @@ use openssl::hash::MessageDigest;
 use openssl::pkey::{PKey, Private};
 use openssl::sign::Signer;
 
+use crate::replay::Replay;
+
 /// One direction of an OpenVPN `struct key`: 64 bytes cipher key + 64 bytes HMAC key.
 #[derive(Clone)]
 pub struct Key {
@@ -305,39 +307,6 @@ pub fn cipher_by_name(name: &str) -> Option<(&'static CipherRef, usize, CipherKi
     })
 }
 
-/// Sliding-window replay protection (64 packets), as `packet_id_test` does.
-#[derive(Default)]
-pub struct Replay {
-    top: u32,
-    bits: u64,
-}
-
-impl Replay {
-    /// True if `id` is new (and records it); false for a replay / too-old packet.
-    pub fn check(&mut self, id: u32) -> bool {
-        if id == 0 {
-            return false;
-        }
-        if id > self.top {
-            let shift = id - self.top;
-            self.bits = if shift >= 64 { 0 } else { self.bits << shift };
-            self.bits |= 1;
-            self.top = id;
-            return true;
-        }
-        let back = self.top - id;
-        if back >= 64 {
-            return false;
-        }
-        let m = 1u64 << back;
-        if self.bits & m != 0 {
-            return false;
-        }
-        self.bits |= m;
-        true
-    }
-}
-
 /// Data-channel keys for one key_id: encrypt (client→server) + decrypt contexts.
 pub struct DataCrypto {
     kind: CipherKind,
@@ -611,15 +580,5 @@ mod tests {
         let pkt = cl.encrypt(&[0x30], false, b"payload that spans more than one block").unwrap();
         assert_eq!(pkt.len(), 1 + 32 + 16 + 48);
         assert_eq!(sv.decrypt(&pkt, 1, false).unwrap(), b"payload that spans more than one block");
-    }
-
-    #[test]
-    fn replay_window() {
-        let mut r = Replay::default();
-        assert!(r.check(1) && r.check(3) && r.check(2));
-        assert!(!r.check(2) && !r.check(0));
-        assert!(r.check(100));
-        assert!(!r.check(30));
-        assert!(r.check(99));
     }
 }
