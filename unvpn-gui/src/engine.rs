@@ -109,6 +109,22 @@ fn is_reconnect_start(line: &str) -> bool {
 /// A back-end log line that means the tunnel came back up after a reconnect. (The
 /// scheduled "CHILD SA rekeyed (lifetime)" also matches, but only flips the state
 /// back when we were actually Reconnecting, so a healthy rekey is a no-op.)
+fn is_failure(line: &str) -> bool {
+    const FAILED: [&str; 8] = ["IKE", "forti", "forti-ipsec", "f5", "anyconnect", "globalprotect", "openvpn", "wireguard"];
+    FAILED.iter().any(|b| line.strip_prefix(b).is_some_and(|r| r.starts_with(" failed")))
+        || ["AUTH FAILED", "login rejected", "Two-factor Authentication failed", "auth not completed"]
+            .iter()
+            .any(|m| line.contains(m))
+}
+
+/// The tunnel IP in an engine line: "Office Mode: IP x", "PPP up — IP x" or
+/// "reconnected — tunnel back up (IP x)".
+fn tunnel_ip(line: &str) -> Option<String> {
+    let rest = ["Office Mode: IP ", "— IP ", "(IP "].iter().find_map(|m| line.split(m).nth(1))?;
+    let ip = rest.split_whitespace().next()?.trim_end_matches(')');
+    (!ip.is_empty()).then(|| ip.to_string())
+}
+
 fn is_reconnect_done(line: &str) -> bool {
     ["tunnel recovered", "reconnected", "tunnel back up", "CHILD SA rekeyed"].iter().any(|m| line.contains(m))
 }
@@ -361,16 +377,8 @@ impl Vpn {
                     let _ = tx.try_send(UiMsg::Engine(EngineEvent::Log(clean.clone())));
                     let disconnecting = *state.lock().unwrap() == State::Disconnecting;
                     if !is_err {
-                        // Internal IP: Check Point "Office Mode: IP x" / Fortinet "PPP up — IP x".
-                        if let Some(rest) = clean
-                            .split("Office Mode: IP ")
-                            .nth(1)
-                            .or_else(|| clean.split("— IP ").nth(1))
-                        {
-                            let ip = rest.split_whitespace().next().unwrap_or("").to_string();
-                            if !ip.is_empty() {
-                                let _ = tx.try_send(UiMsg::Engine(EngineEvent::Ip(ip)));
-                            }
+                        if let Some(ip) = tunnel_ip(&clean) {
+                            let _ = tx.try_send(UiMsg::Engine(EngineEvent::Ip(ip)));
                         }
                         if let Some(rest) = clean.split("DNS [").nth(1) {
                             let dns = rest.split(']').next().unwrap_or("").to_string();
@@ -388,6 +396,9 @@ impl Vpn {
                     } else if !is_err && clean.contains("TUNNEL UP") {
                         *state.lock().unwrap() = State::Connected;
                         let _ = tx.try_send(UiMsg::Engine(EngineEvent::StateChanged));
+                    } else if is_failure(&clean) {
+                        *state.lock().unwrap() = State::Error(clean.clone());
+                        let _ = tx.try_send(UiMsg::Engine(EngineEvent::StateChanged));
                     } else if is_reconnect_done(&clean) {
                         let mut st = state.lock().unwrap();
                         if *st == State::Reconnecting {
@@ -402,21 +413,6 @@ impl Vpn {
                             drop(st);
                             let _ = tx.try_send(UiMsg::Engine(EngineEvent::StateChanged));
                         }
-                    } else if clean.contains("AUTH FAILED")
-                        || clean.starts_with("IKE failed")
-                        || clean.starts_with("forti failed")
-                        || clean.starts_with("forti-ipsec failed")
-                        || clean.starts_with("f5 failed")
-                        || clean.starts_with("anyconnect failed")
-                        || clean.starts_with("globalprotect failed")
-                        || clean.starts_with("openvpn failed")
-                        || clean.starts_with("wireguard failed")
-                        || clean.contains("login rejected")
-                        || clean.contains("Two-factor Authentication failed")
-                        || clean.contains("auth not completed")
-                    {
-                        *state.lock().unwrap() = State::Error(clean.clone());
-                        let _ = tx.try_send(UiMsg::Engine(EngineEvent::StateChanged));
                     }
                 }
             });
@@ -510,6 +506,24 @@ impl Vpn {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_final_failure_wins_over_its_reconnect_wording() {
+        let gave_up = "f5 failed: tunnel dropped (read: EOF) and gave up after 5 reconnect attempts";
+        assert!(is_failure(gave_up) && is_reconnect_start(gave_up));
+        assert!(is_failure("forti-ipsec failed: no CHILD SA"));
+        assert!(is_failure("IKE failed: timeout"));
+        assert!(!is_failure("forti: reconnecting in 2s"));
+        assert!(!is_failure("reconnected — tunnel back up (IP 198.51.100.7)"));
+    }
+
+    #[test]
+    fn tunnel_ip_from_every_announcement() {
+        assert_eq!(tunnel_ip("Office Mode: IP 198.51.100.7 mask 255.255.255.0").as_deref(), Some("198.51.100.7"));
+        assert_eq!(tunnel_ip("PPP up — IP 198.51.100.8").as_deref(), Some("198.51.100.8"));
+        assert_eq!(tunnel_ip("reconnected — tunnel back up over DTLS (IP 198.51.100.9)").as_deref(), Some("198.51.100.9"));
+        assert_eq!(tunnel_ip("DNS [203.0.113.53]"), None);
+    }
 
     #[test]
     fn reconnect_markers_from_real_backend_logs() {
