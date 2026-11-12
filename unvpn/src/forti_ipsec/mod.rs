@@ -691,6 +691,7 @@ fn data_plane(
     // 1280 matches FortiClient's IPsec default and leaves ample headroom for the
     // ESP + UDP(NAT-T) + outer IP overhead, avoiding PMTU black-holes on the path.
     tun::ip(&["link", "set", "dev", &tun_name, "up", "mtu", "1280"])?;
+    crate::netmon::ignore_iface(&tun_name);
     out!("# tun {tun_name} up — {assigned}/32, mtu 1280");
 
     sysnet::install_stop_signals(&STOP);

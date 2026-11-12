@@ -284,6 +284,7 @@ fn run_tunnel(
     let tun_wr = tun_rd.try_clone().map_err(|e| e.to_string())?;
     tun::ip(&["addr", "add", &format!("{om_ip}/{prefix}"), "dev", &tun_name])?;
     tun::ip(&["link", "set", "dev", &tun_name, "up", "mtu", "1400"])?;
+    crate::netmon::ignore_iface(&tun_name);
     let _ = tun::ip(&["route", "add", "10.0.0.0/8", "dev", &tun_name]);
     println!("# tun {tun_name} up — {om_ip}/{prefix}, route 10.0.0.0/8 via {tun_name}");
 

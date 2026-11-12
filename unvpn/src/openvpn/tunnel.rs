@@ -365,6 +365,7 @@ pub fn run(mut p: Prepared, prompter: &mut dyn Prompter, opts: RunOpts) -> Resul
     tun::set_nonblocking(&tun_file);
     configure_addr(&tun_name, topology, ifc_local, ifc_peer, true)?;
     tun::ip(&["link", "set", "dev", &tun_name, "up", "mtu", &mtu.to_string()])?;
+    crate::netmon::ignore_iface(&tun_name);
     out!("# tun {tun_name} up — {}", addr_desc(topology, ifc_local, ifc_peer));
 
     if stopped() {

@@ -95,6 +95,7 @@ pub fn run(
     let (mut tun_file, tun_name) = tun::open_tun("cpfg0")?;
     tun::ip(&["addr", "add", &format!("{assigned}/32"), "dev", &tun_name])?;
     tun::ip(&["link", "set", "dev", &tun_name, "up", "mtu", &up.mtu.to_string()])?;
+    crate::netmon::ignore_iface(&tun_name);
     println!("# tun {tun_name} up — {assigned}/32, mtu {}", up.mtu);
 
     // From here on every exit path must undo what we change, so signals (incl.

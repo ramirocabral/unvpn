@@ -87,6 +87,7 @@ pub fn run(s: &mut Session, opts: RunOpts) -> Result<(), String> {
     tun::set_nonblocking(&tun_file);
     tun::ip(&["addr", "add", &format!("{assigned}/{}", cfg.prefix()), "dev", &tun_name])?;
     tun::ip(&["link", "set", "dev", &tun_name, "up", "mtu", &mtu.to_string()])?;
+    crate::netmon::ignore_iface(&tun_name);
     out!("# tun {tun_name} up — {assigned}/{}, mtu {mtu}", cfg.prefix());
 
     GP_STOP.store(false, Ordering::SeqCst);

@@ -141,6 +141,7 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
     let (mut tun_file, tun_name) = tun::open_tun(TUN_NAME)?;
     tun::ip(&["addr", "add", &format!("{assigned}/32"), "dev", &tun_name])?;
     tun::ip(&["link", "set", "dev", &tun_name, "up", "mtu", &mtu.to_string()])?;
+    crate::netmon::ignore_iface(&tun_name);
     println!("# tun {tun_name} up — {assigned}/32, mtu {mtu} (over {})", path(on_dtls));
     let mut cur_mtu = mtu;
 
