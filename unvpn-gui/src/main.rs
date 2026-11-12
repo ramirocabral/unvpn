@@ -14,6 +14,7 @@ mod engine;
 mod form;
 mod icon;
 mod list;
+mod notify;
 mod profiles;
 mod prompts;
 mod session;

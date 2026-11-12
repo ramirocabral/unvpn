@@ -5,11 +5,15 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use adw::prelude::*;
+use gtk::glib;
 
 use crate::engine::{EngineEvent, SessionId, State, TrayCmd, UiMsg, Vpn};
 use crate::profiles::{anyconnect_saml_entry, saml_entry, Backend};
 use crate::session::{Session, SessionRow};
 use crate::{profiles, tray, App};
+
+/// A drop shorter than this (a transparent reconnect) raises no notification.
+const DROP_NOTICE_AFTER: Duration = Duration::from_secs(5);
 
 impl App {
     /// The running connection that goes by `name`.
@@ -92,6 +96,7 @@ impl App {
             key_pass_to_store: None,
             waiting_prompt: None,
             shown,
+            drop_notified: false,
         });
         self.on_session_state(id);
         id
@@ -296,7 +301,7 @@ impl App {
     }
 
     /// React to connection `id` reaching a new state: its row, the prompt card,
-    /// the SSO window and toasts, then the window and the tray.
+    /// the SSO window, toasts and notifications, then the window and the tray.
     pub(crate) fn on_session_state(&self, id: SessionId) {
         let Some((prev, now, name, from_tray)) = self.with_session(id, |s| {
             let now = s.vpn.state();
@@ -318,17 +323,68 @@ impl App {
                 // A push approved on the phone leaves its card up; the tunnel answers it.
                 self.clear_prompt_of(id);
                 self.store_key_pass(id);
+                if prev == State::Reconnecting {
+                    if self.with_session(id, |s| std::mem::take(&mut s.drop_notified)) == Some(true)
+                    {
+                        self.notify(&name, &format!("Reconnected to “{name}”"), "", false);
+                    }
+                } else {
+                    let ip = self
+                        .with_session(id, |s| s.row.ip.subtitle().unwrap_or_default().to_string())
+                        .unwrap_or_default();
+                    let body = if ip.is_empty() {
+                        String::new()
+                    } else {
+                        format!("Internal IP {ip}")
+                    };
+                    self.notify(&name, &format!("Connected to “{name}”"), &body, false);
+                }
+            }
+            (State::Connected, State::Reconnecting) => {
+                let app = self.rc();
+                glib::timeout_add_local_once(DROP_NOTICE_AFTER, move || app.notify_drop(id));
             }
             (_, State::Error(e)) => {
                 self.clear_prompt_of(id);
                 self.toast(&format!("{name}: {e}"));
+                let title = if prev == State::Connecting {
+                    format!("Couldn't connect to “{name}”")
+                } else {
+                    format!("“{name}” disconnected")
+                };
+                self.notify(&name, &title, e, true);
                 if from_tray {
                     self.reveal_log();
                 }
             }
+            (State::Connected | State::Reconnecting, State::Disconnected) => {
+                self.notify(
+                    &name,
+                    &format!("“{name}” disconnected"),
+                    "The gateway ended the session",
+                    true,
+                );
+            }
             _ => {}
         }
         self.sync_ui();
+    }
+
+    /// Still reconnecting a while after the drop: say so.
+    fn notify_drop(&self, id: SessionId) {
+        let still = self.with_session(id, |s| {
+            let lost = s.vpn.state() == State::Reconnecting && !s.drop_notified;
+            s.drop_notified |= lost;
+            lost.then(|| s.name.clone())
+        });
+        if let Some(Some(name)) = still {
+            self.notify(
+                &name,
+                &format!("Connection to “{name}” lost"),
+                "Reconnecting…",
+                false,
+            );
+        }
     }
 
     pub(crate) fn handle_tray(&self, cmd: TrayCmd) {

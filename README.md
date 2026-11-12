@@ -30,6 +30,9 @@ Supported VPNs:
 - Tray icon showing the connection state.
 - Several VPNs at once: each connection has its own row in the app and its own
   entry in the tray, and starting one leaves the others up.
+- Desktop notifications while the window is in the background: a connection
+  came up, dropped (after a few seconds of reconnecting), came back, or failed —
+  with a button to connect it again.
 - A connection outlives the app: closing or restarting it leaves the tunnel up,
   and the app (or `unvpn status` / `unvpn disconnect`) picks it up again. **Quit**
   disconnects.

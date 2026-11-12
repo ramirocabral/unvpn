@@ -548,10 +548,29 @@ pub(crate) fn build_ui(app: &adw::Application, start_hidden: bool) -> Rc<App> {
         state_app,
         move |_, _| state_app.import_profiles()
     ));
+    // Used by notifications: open the window, connect a saved profile.
+    let show = gio::SimpleAction::new("show", None);
+    show.connect_activate(glib::clone!(
+        #[strong]
+        state_app,
+        move |_, _| state_app.show_window()
+    ));
+    let connect = gio::SimpleAction::new("connect-profile", Some(glib::VariantTy::STRING));
+    connect.connect_activate(glib::clone!(
+        #[strong]
+        state_app,
+        move |_, v| {
+            if let Some(name) = v.and_then(|v| v.get::<String>()) {
+                state_app.connect_profile(&name, true);
+            }
+        }
+    ));
     app.add_action(&about);
     app.add_action(&quit);
     app.add_action(&export);
     app.add_action(&import);
+    app.add_action(&show);
+    app.add_action(&connect);
 
     glib::spawn_future_local(glib::clone!(
         #[strong]

@@ -28,6 +28,8 @@ pub(crate) struct Session {
     pub waiting_prompt: Option<AuthPrompt>,
     /// The state the UI last reacted to.
     pub shown: State,
+    /// A "connection lost" notification went out for the current drop.
+    pub drop_notified: bool,
 }
 
 pub(crate) struct SessionRow {
