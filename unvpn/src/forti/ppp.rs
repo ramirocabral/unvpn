@@ -300,6 +300,9 @@ fn parse_ctrl(payload: &[u8]) -> Option<Ctrl> {
         return None;
     }
     let len = u16::from_be_bytes([payload[2], payload[3]]) as usize;
+    if len < 4 {
+        return None;
+    }
     let end = len.min(payload.len());
     Some(Ctrl { code: payload[0], id: payload[1], body: payload[4..end].to_vec() })
 }
@@ -508,6 +511,14 @@ pub fn handle_lcp_in<S: Read + Write>(conn: &mut PppConn<S>, payload: &[u8]) -> 
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn parse_ctrl_rejects_short_length_field() {
+        assert!(parse_ctrl(&[1, 1, 0, 2, 0xaa, 0xbb]).is_none());
+        assert!(parse_ctrl(&[1, 1, 0, 0]).is_none());
+        let c = parse_ctrl(&[2, 7, 0, 6, 0xaa, 0xbb, 0xcc]).unwrap();
+        assert_eq!((c.code, c.id, c.body), (2, 7, vec![0xaa, 0xbb]));
+    }
 
     #[test]
     fn nonblocking_send_waits_for_a_full_buffer_to_drain() {
