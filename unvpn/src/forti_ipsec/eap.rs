@@ -170,6 +170,50 @@ fn challenge_hash(peer: &[u8; 16], auth: &[u8; 16], username: &str) -> [u8; 8] {
     out
 }
 
+/// GenerateAuthenticatorResponse (RFC 2759 §8.7): the proof a server that knows
+/// the password returns in its Success (`S=<40 hex>`).
+pub fn authenticator_response(
+    password: &str,
+    nt_response: &[u8; 24],
+    peer_challenge: &[u8; 16],
+    authenticator_challenge: &[u8; 16],
+    username: &str,
+) -> [u8; 20] {
+    const MAGIC1: &[u8] = b"Magic server to client signing constant";
+    const MAGIC2: &[u8] = b"Pad to make it do more than one iteration";
+    let phh = nt_password_hash_hash(&nt_password_hash(password));
+    let mut h = Hasher::new(MessageDigest::sha1()).expect("sha1");
+    h.update(&phh).unwrap();
+    h.update(nt_response).unwrap();
+    h.update(MAGIC1).unwrap();
+    let digest = h.finish().unwrap();
+    let mut h = Hasher::new(MessageDigest::sha1()).expect("sha1");
+    h.update(&digest).unwrap();
+    h.update(&challenge_hash(peer_challenge, authenticator_challenge, username)).unwrap();
+    h.update(MAGIC2).unwrap();
+    let mut out = [0u8; 20];
+    out.copy_from_slice(&h.finish().unwrap());
+    out
+}
+
+/// The server's proof in an MS-CHAP-v2 Success type-data
+/// (`OpCode | MS-CHAPv2-ID | MS-Length | "S=<40 hex> M=<message>"`).
+pub fn parse_mschap_success(type_data: &[u8]) -> Option<[u8; 20]> {
+    if type_data.first() != Some(&MSCHAP_SUCCESS) {
+        return None;
+    }
+    let text = String::from_utf8_lossy(type_data.get(4..)?);
+    let hex = text.split_whitespace().next()?.strip_prefix("S=")?;
+    if hex.len() != 40 {
+        return None;
+    }
+    let mut out = [0u8; 20];
+    for (i, b) in out.iter_mut().enumerate() {
+        *b = u8::from_str_radix(hex.get(i * 2..i * 2 + 2)?, 16).ok()?;
+    }
+    Some(out)
+}
+
 /// NtPasswordHash (RFC 2759 §8.3): MD4(UnicodeLittleEndian(password)).
 pub fn nt_password_hash(password: &str) -> [u8; 16] {
     let unicode = unicode_le(password);
@@ -561,6 +605,22 @@ mod tests {
         assert_eq!(hex(&ch), "d02e4386bce91226");
         let nt = generate_nt_response(&AUTH_CH, &PEER_CH, USER, PASS);
         assert_eq!(hex(&nt), "82309ecd8d708b5ea08faa3981cd83544233114a3d85d6df");
+    }
+
+    #[test]
+    fn mschap_authenticator_response() {
+        let nt = generate_nt_response(&AUTH_CH, &PEER_CH, USER, PASS);
+        let proof = authenticator_response(PASS, &nt, &PEER_CH, &AUTH_CH, USER);
+        assert_eq!(hex(&proof), "407a5589115fd0d6209f510fe9c04566932cda56");
+        let mut success = vec![MSCHAP_SUCCESS, 1, 0, 0];
+        success.extend_from_slice(b"S=407A5589115FD0D6209F510FE9C04566932CDA56 M=Access granted");
+        assert_eq!(parse_mschap_success(&success), Some(proof));
+        let bare = [&[MSCHAP_SUCCESS, 1, 0, 0][..], b"S=407a5589115fd0d6209f510fe9c04566932cda56"].concat();
+        assert_eq!(parse_mschap_success(&bare), Some(proof));
+        assert_eq!(parse_mschap_success(&[MSCHAP_SUCCESS]), None);
+        assert_eq!(parse_mschap_success(&[MSCHAP_SUCCESS, 1, 0, 0, b'M', b'=']), None);
+        let short = [&[MSCHAP_SUCCESS, 1, 0, 0][..], b"S=407A55"].concat();
+        assert_eq!(parse_mschap_success(&short), None);
     }
 
     #[test]

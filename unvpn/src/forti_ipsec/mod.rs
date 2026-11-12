@@ -408,12 +408,18 @@ fn authenticate(session: &mut Ikev2Session, udp: &IkeUdp, o: &Opts) -> Result<Ve
     let mut resp = send_recv_retry(udp, &req, 3)?;
 
     // EAP loop.
-    let mut msk: Option<[u8; 64]> = None;
+    let mut mschap = Mschap::default();
     let mut gw_auth_checked = false;
+    // The gateway's identity from its first IKE_AUTH response: its final,
+    // MSK-keyed AUTH is computed over it too.
+    let mut idr_body: Option<Vec<u8>> = None;
     loop {
         let (_hdr, payloads) = session.decrypt(&resp)?;
         if verbose {
             session::dump_payloads("IKE_AUTH response (authenticate)", &payloads);
+        }
+        if let Some(b) = idr_of(&payloads) {
+            idr_body.get_or_insert(b);
         }
         // The gateway echoes MOBIKE_SUPPORTED when it accepts MOBIKE.
         if !session.mobike
@@ -460,7 +466,7 @@ fn authenticate(session: &mut Ikev2Session, udp: &IkeUdp, o: &Opts) -> Result<Ve
                 let signed = session.initiator_signed_octets(&idi_body);
                 let crypto = session.crypto.as_ref().unwrap();
                 let sk_pi = &session.keys.as_ref().unwrap().sk_pi;
-                let auth_data = match &msk {
+                let auth_data = match &mschap.msk {
                     Some(k) => crypto.psk_auth(k, &signed),
                     None => crypto.key_auth(sk_pi, &signed),
                 };
@@ -476,16 +482,19 @@ fn authenticate(session: &mut Ikev2Session, udp: &IkeUdp, o: &Opts) -> Result<Ve
                     return Err(format!("gateway rejected final AUTH ({code})"));
                 }
                 // Post-EAP, the gateway's AUTH is keyed by the EAP MSK (RFC 7296
-                // §2.16), NOT the group PSK — its PSK identity was already proven in
-                // the first IKE_AUTH response. Verify this final AUTH against the MSK
-                // (best-effort: authenticity is already established, so a mismatch
-                // warns rather than aborts the otherwise-complete handshake).
-                verify_gateway_msk_auth(session, &final_payloads, msk.as_ref(), verbose);
+                // §2.16): it binds the EAP exchange to this IKE SA.
+                match &mschap.msk {
+                    Some(msk) => verify_gateway_msk_auth(session, &final_payloads, msk, idr_body.as_deref())?,
+                    None if o.psk.is_none() => out!(
+                        "# warning: the gateway is not authenticated — no group key, and its EAP method proves nothing about it"
+                    ),
+                    None => {}
+                }
                 return Ok(final_payloads);
             }
             eap::EAP_FAILURE => return Err("EAP authentication failed".into()),
             eap::EAP_REQUEST => {
-                let next_eap = eap_answer(&msg, o, &password, &mut msk)?;
+                let next_eap = eap_answer(&msg, o, &password, &mut mschap)?;
                 let req = session.encrypt(model::ExchangeType::IkeAuth.into(), msg_id, &[Payload::Eap(next_eap)]);
                 resp = send_recv_retry(udp, &req, 3)?;
             }
@@ -494,8 +503,16 @@ fn authenticate(session: &mut Ikev2Session, udp: &IkeUdp, o: &Opts) -> Result<Ve
     }
 }
 
+/// What an EAP-MS-CHAP-v2 exchange leaves for later: the MSK that keys both final
+/// AUTHs, and the proof the gateway's Success must carry.
+#[derive(Default)]
+struct Mschap {
+    msk: Option<[u8; 64]>,
+    server_proof: Option<[u8; 20]>,
+}
+
 /// Produce the EAP response bytes for a given EAP Request.
-fn eap_answer(msg: &eap::Eap, o: &Opts, password: &str, msk: &mut Option<[u8; 64]>) -> Result<Vec<u8>, String> {
+fn eap_answer(msg: &eap::Eap, o: &Opts, password: &str, mschap: &mut Mschap) -> Result<Vec<u8>, String> {
     match msg.method {
         Some(eap::EAP_TYPE_IDENTITY) => Ok(eap::identity_response(msg.id, &o.user)),
         Some(eap::EAP_TYPE_GTC) => {
@@ -508,9 +525,16 @@ fn eap_answer(msg: &eap::Eap, o: &Opts, password: &str, msk: &mut Option<[u8; 64
                 let ch = eap::parse_mschap_challenge(&msg.data)?;
                 let peer: [u8; 16] = crate::ike::crypto::random(16).try_into().unwrap();
                 let (resp, nt) = eap::mschap_response(&ch, &o.user, password, &peer);
-                *msk = Some(eap::derive_msk(password, &nt));
+                mschap.msk = Some(eap::derive_msk(password, &nt));
+                mschap.server_proof = Some(eap::authenticator_response(password, &nt, &peer, &ch.challenge, &o.user));
                 Ok(eap::Eap::response(msg.id, eap::EAP_TYPE_MSCHAPV2, &resp))
             } else if msg.data.first() == Some(&eap::MSCHAP_SUCCESS) {
+                let expected = mschap.server_proof.ok_or("MS-CHAP-v2 Success before any challenge")?;
+                let proof = eap::parse_mschap_success(&msg.data).ok_or("MS-CHAP-v2 Success without the gateway's proof")?;
+                if !openssl::memcmp::eq(&proof, &expected) {
+                    return Err("the gateway's MS-CHAP-v2 proof does not match the password — not the real gateway; aborting".into());
+                }
+                out!("# gateway proved it knows the password (MS-CHAP-v2)");
                 Ok(eap::Eap::response(msg.id, eap::EAP_TYPE_MSCHAPV2, &[eap::MSCHAP_SUCCESS]))
             } else {
                 Err("unexpected MS-CHAP-v2 opcode".into())
@@ -594,41 +618,45 @@ fn auth_failed(payloads: &[Payload]) -> Option<String> {
     })
 }
 
-/// Verify the gateway's AUTH. When a group PSK is supplied (`--psk`) and the
-/// gateway authenticates by shared key (AUTH method 2), we recompute its AUTH from
-/// our transcript and the PSK and compare — proving we are talking to the real
-/// gateway, not an impostor. A mismatch aborts. Without a PSK (or against a
-/// cert-authenticated gateway) we cannot check its credential, so we only note it:
-/// the gateway would not have sent a CHILD SA had it rejected us.
-/// Verify the gateway's post-EAP AUTH payload against the EAP MSK (RFC 7296 §2.16).
-/// Non-fatal: the gateway's authenticity was already proven by its PSK AUTH in the
-/// first IKE_AUTH response, so this only reports whether the MSK-keyed final AUTH
-/// also checks out.
+/// The IDr payload body (type + 3 reserved + data) in `payloads`, as the
+/// gateway's AUTH octets hash it.
+fn idr_of(payloads: &[Payload]) -> Option<Vec<u8>> {
+    payloads.iter().find_map(|p| match p {
+        Payload::IdR { kind, data } => {
+            let mut b = vec![*kind, 0, 0, 0];
+            b.extend_from_slice(data);
+            Some(b)
+        }
+        _ => None,
+    })
+}
+
+/// Verify the gateway's post-EAP AUTH against the EAP MSK (RFC 7296 §2.16). A
+/// gateway that relayed someone else's EAP exchange can't produce it.
 fn verify_gateway_msk_auth(
     session: &Ikev2Session,
     payloads: &[Payload],
-    msk: Option<&[u8; 64]>,
-    verbose: bool,
-) {
-    let Some(msk) = msk else { return };
+    msk: &[u8; 64],
+    first_idr: Option<&[u8]>,
+) -> Result<(), String> {
     let auth = payloads.iter().find_map(|p| match p {
         Payload::Auth { data, .. } => Some(data.clone()),
         _ => None,
     });
-    let idr = payloads.iter().find_map(|p| match p {
-        Payload::IdR { kind, data } => Some((*kind, data.clone())),
-        _ => None,
-    });
-    let (Some(data), Some((kind, id))) = (auth, idr) else { return };
-    let mut idr_body = vec![kind, 0, 0, 0];
-    idr_body.extend_from_slice(&id);
-    if session.gateway_psk_auth_matches(msk, &idr_body, &data) {
-        out!("# gateway final AUTH verified against the EAP MSK — mutual authentication complete");
-    } else if verbose {
-        out!("# [verbose] gateway final AUTH did not match the MSK (gateway already authenticated via PSK upfront)");
+    let auth = auth.ok_or("the gateway sent no final AUTH")?;
+    let idr = idr_of(payloads).or_else(|| first_idr.map(<[u8]>::to_vec)).ok_or("the gateway never sent its identity (IDr)")?;
+    if session.gateway_psk_auth_matches(msk, &idr, &auth) {
+        out!("# gateway final AUTH verified against the EAP key — mutual authentication complete");
+        Ok(())
+    } else {
+        Err("the gateway's final AUTH does not match the EAP key — possible interception; aborting".into())
     }
 }
 
+/// Verify the gateway's AUTH in its first IKE_AUTH response. With a group PSK
+/// (`--psk`) and a shared-key AUTH (method 2), recompute it from our transcript
+/// and compare; a mismatch aborts. Without one, EAP-MS-CHAP-v2 authenticates the
+/// gateway later.
 fn verify_gateway_auth(session: &Ikev2Session, o: &Opts, payloads: &[Payload]) -> Result<(), String> {
     let auth = payloads.iter().find_map(|p| match p {
         Payload::Auth { method, data } => Some((*method, data.clone())),
@@ -662,7 +690,7 @@ fn verify_gateway_auth(session: &Ikev2Session, o: &Opts, payloads: &[Payload]) -
             Ok(())
         }
         None => {
-            out!("# note: gateway AUTH (method {method}) not verified — pass --psk <group-key> to authenticate the gateway");
+            out!("# note: gateway AUTH (method {method}) not checked: no group key (EAP-MS-CHAP-v2 checks the gateway instead)");
             Ok(())
         }
     }

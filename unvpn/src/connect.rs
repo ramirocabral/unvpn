@@ -233,7 +233,7 @@ fn run(p: &Profile, o: &Opts) -> Result<i32, String> {
             say!("# stdin: group key (PSK) from the keyring, before the password");
         }
         if p.backend == Backend::FortiIpsec && psk.is_none() {
-            say!("# no group key (PSK) saved for this profile: the gateway's AUTH is not verified");
+            say!("# no group key (PSK) saved for this profile: only EAP-MS-CHAP-v2 can authenticate the gateway");
         }
         return Ok(0);
     }
