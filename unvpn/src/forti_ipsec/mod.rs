@@ -48,6 +48,9 @@ struct Opts {
     /// the *gateway's* AUTH with it, which authenticates the gateway to us (detects
     /// a wrong gateway / man-in-the-middle). A mismatch aborts the connection.
     psk: Option<String>,
+    /// Read the group key from the first stdin line (before the password), keeping
+    /// it out of the process arguments.
+    psk_stdin: bool,
     /// FortiClient version to report in the `FCTVER=` field of the FORTICLIENT_CONNECT
     /// blob. From the deployment's profile; `None` ⇒ the engine's built-in default.
     fctver: Option<String>,
@@ -73,10 +76,13 @@ pub fn cmd_forti_ipsec(args: &[String]) {
         Ok(o) => o,
         Err(e) => {
             eprintln!("forti-ipsec: {e}");
-            eprintln!("usage: unvpn forti-ipsec [-g <host[:port]>] [-u <user>] [--config file.xml [--import] [--show-psk]] [--password p] [--code otp] [--emssn SN] [--fctver V] [--localid id] [--id-type fqdn|rfc822|keyid] [--psk key] [--probe|--auth-probe|--login|--connect] [--no-routes]");
+            eprintln!("usage: unvpn forti-ipsec [-g <host[:port]>] [-u <user>] [--config file.xml [--import] [--show-psk]] [--password p] [--code otp] [--emssn SN] [--fctver V] [--localid id] [--id-type fqdn|rfc822|keyid] [--psk key|--psk-stdin] [--probe|--auth-probe|--login|--connect] [--no-routes]");
             std::process::exit(2);
         }
     };
+    if opts.psk_stdin {
+        opts.psk = read_stdin_secret();
+    }
     if let Err(e) = apply_config(&mut opts) {
         out!("# forti-ipsec failed: {e}");
         std::process::exit(1);
@@ -149,6 +155,7 @@ fn parse_args(args: &[String]) -> Result<Opts, String> {
         show_psk: false,
         id_type: model::IdType::Rfc822Addr.into(),
         psk: None,
+        psk_stdin: false,
     };
     let mut i = 0;
     let mut port_set = false;
@@ -166,6 +173,7 @@ fn parse_args(args: &[String]) -> Result<Opts, String> {
             "--code" | "--otp" => o.code = Some(next(&mut i)?),
             "--emssn" => o.emssn = Some(next(&mut i)?),
             "--psk" => o.psk = Some(next(&mut i)?),
+            "--psk-stdin" => o.psk_stdin = true,
             "--fctver" => o.fctver = Some(next(&mut i)?),
             "--config" => o.config = Some(next(&mut i)?),
             "--import" => o.mode = Mode::Import,

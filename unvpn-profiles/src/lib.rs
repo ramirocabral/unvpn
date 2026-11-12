@@ -307,10 +307,11 @@ pub fn psk_account(name: &str) -> String {
 }
 
 /// The engine command line (sub-command and flags) that connects `p`. Secrets go
-/// on the engine's stdin, never here — except the FortiClient IPsec group key,
-/// which the engine only takes as `--psk`. SSO logins get `--no-browser`: the
-/// front-end, which runs as the user, opens the sign-in page itself.
-pub fn engine_args(p: &Profile, psk: Option<&str>) -> Vec<String> {
+/// on the engine's stdin, never here; with `psk` a FortiClient IPsec engine expects
+/// the group key as the first stdin line, ahead of the password. SSO logins get
+/// `--no-browser`: the front-end, which runs as the user, opens the sign-in page
+/// itself.
+pub fn engine_args(p: &Profile, psk: bool) -> Vec<String> {
     let gw = p.gateway.trim();
     let user = p.user.trim();
     let realm = p.realm.trim();
@@ -342,8 +343,8 @@ pub fn engine_args(p: &Profile, psk: Option<&str>) -> Vec<String> {
             if !realm.is_empty() {
                 a.extend(["--localid", realm]);
             }
-            if let Some(k) = psk.filter(|k| !k.is_empty()) {
-                a.extend(["--psk", k]);
+            if psk {
+                a.push("--psk-stdin");
             }
             if !p.emssn.trim().is_empty() {
                 a.extend(["--emssn", p.emssn.trim()]);
@@ -436,7 +437,7 @@ mod tests {
     }
 
     fn args(toml_body: &str) -> String {
-        engine_args(&profile(toml_body), None).join(" ")
+        engine_args(&profile(toml_body), false).join(" ")
     }
 
     #[test]
@@ -481,11 +482,11 @@ mod tests {
             "backend = \"fortiipsec\"\ngateway = \"vpn.example.com\"\nuser = \"alice\"\nrealm = \"remote\"\nemssn = \"FCTEMS0000000000\"",
         );
         assert_eq!(
-            engine_args(&p, Some("k3y")).join(" "),
-            "forti-ipsec -g vpn.example.com --localid remote --psk k3y --emssn FCTEMS0000000000 -u alice --connect"
+            engine_args(&p, true).join(" "),
+            "forti-ipsec -g vpn.example.com --localid remote --psk-stdin --emssn FCTEMS0000000000 -u alice --connect"
         );
         assert_eq!(
-            engine_args(&p, Some("")).join(" "),
+            engine_args(&p, false).join(" "),
             "forti-ipsec -g vpn.example.com --localid remote --emssn FCTEMS0000000000 -u alice --connect"
         );
     }
@@ -499,8 +500,8 @@ mod tests {
         std::fs::write(&with, "client\nremote vpn.example.com 1194\nauth-user-pass\n").unwrap();
         std::fs::write(&without, "client\nremote vpn.example.com 1194\n").unwrap();
         let p = |f: &std::path::Path| profile(&format!("backend = \"openvpn\"\ngateway = \"{}\"\nuser = \"alice\"", f.display()));
-        assert_eq!(engine_args(&p(&with), None).join(" "), format!("openvpn -c {} -u alice --connect", with.display()));
-        assert_eq!(engine_args(&p(&without), None).join(" "), format!("openvpn -c {} --connect", without.display()));
+        assert_eq!(engine_args(&p(&with), false).join(" "), format!("openvpn -c {} -u alice --connect", with.display()));
+        assert_eq!(engine_args(&p(&without), false).join(" "), format!("openvpn -c {} --connect", without.display()));
         assert!(takes_password(&p(&with)));
         assert!(!takes_password(&p(&without)));
         let _ = std::fs::remove_dir_all(&dir);

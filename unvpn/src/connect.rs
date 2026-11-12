@@ -179,8 +179,9 @@ fn drop_sudo() {
 fn run(p: &Profile, o: &Opts) -> Result<i32, String> {
     let psk = (p.backend == Backend::FortiIpsec)
         .then(|| profiles::secret_get(&profiles::psk_account(&p.name)))
-        .flatten();
-    let mut args = profiles::engine_args(p, psk.as_deref());
+        .flatten()
+        .filter(|k| !k.is_empty());
+    let mut args = profiles::engine_args(p, psk.is_some());
     let mut add = |flag: &str| {
         if !args.iter().any(|a| a == flag) {
             args.push(flag.to_string());
@@ -221,6 +222,9 @@ fn run(p: &Profile, o: &Opts) -> Result<i32, String> {
             let what = if saved_password.is_some() { "from the keyring" } else { "asked on the terminal" };
             let token = if p.backend == Backend::CheckPoint && !p.cp_cert { " + token code (asked)" } else { "" };
             say!("# stdin: {} ({what}){token}", password_label(p));
+        }
+        if psk.is_some() {
+            say!("# stdin: group key (PSK) from the keyring, before the password");
         }
         if p.backend == Backend::FortiIpsec && psk.is_none() {
             say!("# no group key (PSK) saved for this profile: the gateway's AUTH is not verified");
@@ -279,10 +283,10 @@ fn run(p: &Profile, o: &Opts) -> Result<i32, String> {
         .map_err(|e| format!("start {}: {e}", argv[0]))?;
     let mut stdin = child.stdin.take().ok_or("no engine stdin")?;
     ENGINE_STDIN.store(stdin.as_raw_fd(), Ordering::SeqCst);
-    if let Some(l) = first_line {
+    for l in psk.iter().chain(first_line.iter()) {
         let _ = writeln!(stdin, "{l}");
-        let _ = stdin.flush();
     }
+    let _ = stdin.flush();
     let stdin = Arc::new(Mutex::new(stdin));
 
     let gen = Arc::new(AtomicU64::new(0));
@@ -366,15 +370,9 @@ fn escalation() -> Vec<String> {
     }
 }
 
-/// `argv` as a shell line, the group key masked.
+/// `argv` as a shell line.
 fn shell_line(argv: &[String]) -> String {
-    let mut out = Vec::with_capacity(argv.len());
-    let mut mask = false;
-    for a in argv {
-        let shown = if std::mem::replace(&mut mask, a == "--psk") { "'<group key>'".to_string() } else { quote(a) };
-        out.push(shown);
-    }
-    out.join(" ")
+    argv.iter().map(|a| quote(a)).collect::<Vec<_>>().join(" ")
 }
 
 fn quote(a: &str) -> String {
@@ -726,15 +724,15 @@ mod tests {
     }
 
     #[test]
-    fn dry_run_line_masks_the_group_key() {
+    fn dry_run_line_quotes_arguments() {
         let argv: Vec<String> =
-            ["sudo", "/usr/local/bin/unvpn", "forti-ipsec", "-g", "vpn.example.com", "--psk", "s3cr3t", "-u", "o'neil"]
+            ["sudo", "/usr/local/bin/unvpn", "forti-ipsec", "-g", "vpn.example.com", "--psk-stdin", "-u", "o'neil"]
                 .iter()
                 .map(|s| s.to_string())
                 .collect();
         assert_eq!(
             shell_line(&argv),
-            r"sudo /usr/local/bin/unvpn forti-ipsec -g vpn.example.com --psk '<group key>' -u 'o'\''neil'"
+            r"sudo /usr/local/bin/unvpn forti-ipsec -g vpn.example.com --psk-stdin -u 'o'\''neil'"
         );
     }
 }

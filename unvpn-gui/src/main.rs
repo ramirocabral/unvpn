@@ -1465,11 +1465,11 @@ impl App {
         };
 
         let p = self.form_profile();
-        let psk = self.psk_row.text().to_string();
-        let args = profiles::engine_args(&p, Some(&psk));
+        let psk = (p.backend == Backend::FortiIpsec).then(|| self.psk_row.text().to_string()).filter(|k| !k.is_empty());
+        let args = profiles::engine_args(&p, psk.is_some());
         // Secrets go on stdin. The Check Point token code follows the PIN; a
         // second factor asked later comes as `# AUTH-PROMPT: code:`.
-        let stdin_lines = if p.backend == Backend::CheckPoint && !p.cp_cert {
+        let mut stdin_lines = if p.backend == Backend::CheckPoint && !p.cp_cert {
             let passcode = format!("{}{}", self.password_row.text(), self.token_row.text().trim());
             self.token_row.set_text(""); // one-time code
             vec![passcode]
@@ -1478,6 +1478,9 @@ impl App {
         } else {
             Vec::new()
         };
+        if let Some(k) = psk {
+            stdin_lines.insert(0, k);
+        }
         // GlobalProtect's IdP can be any host: the gateway announces it.
         let saml = match p.backend {
             _ if !p.uses_sso() => None,
