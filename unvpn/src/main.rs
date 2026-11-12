@@ -25,6 +25,7 @@ mod leakguard;
 mod net;
 mod netmon;
 mod openvpn;
+mod ppp;
 mod replay;
 mod report;
 mod sysnet;

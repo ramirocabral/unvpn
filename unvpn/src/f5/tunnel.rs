@@ -10,9 +10,9 @@
 
 use super::auth::Session;
 use super::config::{self, F5Options};
-use super::ppp::{self, Framing};
 use crate::gnutls;
 use crate::net::http::{self, Request};
+use crate::ppp::{self, Framing};
 use crate::sysnet;
 use crate::tun;
 use std::io::{Read, Write};

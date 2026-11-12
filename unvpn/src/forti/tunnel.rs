@@ -10,9 +10,10 @@
 //! the tunnel comes up over TLS instead; if DTLS dies later we reconnect over TLS.
 
 use super::auth::Session;
-use super::{config, ppp};
+use super::config;
 use crate::gnutls;
 use crate::net::http::{self, Request};
+use crate::ppp::{self, Framing};
 use crate::sysnet;
 use crate::tun;
 use std::io::{Read, Write};
@@ -375,10 +376,10 @@ fn open_dtls(session: &Session) -> Result<Up, String> {
 
     let fd = st.fd();
     st.set_read_timeout(Some(Duration::from_secs(5)));
-    let mut conn = ppp::PppConn::new(st);
+    let mut conn = ppp::PppConn::new(st, Framing::Forti);
     conn.set_record_mode();
     println!("# DTLS tunnel accepted — negotiating PPP (LCP/IPCP) over UDP …");
-    let ipc = ppp::negotiate(&mut conn)?;
+    let ipc = ppp::negotiate(&mut conn, None)?;
     conn.get_mut().set_read_timeout(None);
     conn.set_poll_fd(fd);
     let mtu = link_mtu(ipc.peer_mru, Some(record_mtu));
@@ -419,9 +420,9 @@ fn open_tls(session: &Session) -> Result<Up, String> {
         .set_read_timeout(Some(Duration::from_secs(5)))
         .ok();
     let fd = tls.get_ref().as_raw_fd();
-    let mut conn = ppp::PppConn::new(tls);
+    let mut conn = ppp::PppConn::new(tls, Framing::Forti);
     println!("# negotiating PPP (LCP/IPCP) …");
-    let ipc = ppp::negotiate(&mut conn)?;
+    let ipc = ppp::negotiate(&mut conn, None)?;
     // Non-blocking socket for the poll loop (TlsStream → inner TcpStream); sends
     // then wait for POLLOUT instead of failing when the send buffer is full.
     conn.get_ref().get_ref().set_nonblocking(true).ok();

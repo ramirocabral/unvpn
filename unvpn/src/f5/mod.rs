@@ -2,7 +2,6 @@
 
 pub mod auth;
 pub mod config;
-pub mod ppp;
 pub mod tunnel;
 
 use crate::net::http::{self, Request};

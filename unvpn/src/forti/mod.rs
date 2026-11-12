@@ -4,7 +4,6 @@
 
 pub mod auth;
 pub mod config;
-pub mod ppp;
 pub mod saml;
 pub mod tunnel;
 
