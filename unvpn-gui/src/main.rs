@@ -39,47 +39,6 @@ row.drop-below { box-shadow: inset 0 -2px @accent_color; }
 row.dragging { opacity: 0.5; }
 ";
 
-/// An F5 tunnel started outside the GUI (by the `f5-vpn://` scheme handler), read
-/// from `~/.cache/unvpn-f5/tunnel.status`. The engine writes it; deleting it stops
-/// the tunnel (the root engine watches the file and tears down cleanly).
-struct ExternalF5 {
-    gateway: String,
-    ip: String,
-    dns: String,
-}
-
-fn f5_status_path() -> Option<std::path::PathBuf> {
-    let home = std::env::var_os("HOME")?;
-    Some(std::path::PathBuf::from(home).join(".cache/unvpn-f5/tunnel.status"))
-}
-
-fn detect_external_f5() -> Option<ExternalF5> {
-    let content = std::fs::read_to_string(f5_status_path()?).ok()?;
-    let (mut pid, mut gateway, mut ip, mut dns) = (0u32, String::new(), String::new(), String::new());
-    for line in content.lines() {
-        if let Some((k, v)) = line.split_once('=') {
-            let v = v.trim().to_string();
-            match k.trim() {
-                "pid" => pid = v.parse().unwrap_or(0),
-                "gateway" => gateway = v,
-                "ip" => ip = v,
-                "dns" => dns = v,
-                _ => {}
-            }
-        }
-    }
-    if pid == 0 || !std::path::Path::new(&format!("/proc/{pid}")).exists() {
-        return None;
-    }
-    Some(ExternalF5 { gateway, ip, dns })
-}
-
-fn disconnect_external_f5() {
-    if let Some(p) = f5_status_path() {
-        let _ = std::fs::remove_file(p);
-    }
-}
-
 /// Read a tunnel interface's byte counter from the kernel (world-readable). `iface`
 /// is validated to a safe device-name charset so it can't escape the /sys path.
 fn iface_bytes(iface: &str, which: &str) -> Option<u64> {
@@ -171,11 +130,6 @@ struct App {
     /// The live tunnel's interface name and when it came up, for the stats rows.
     iface: RefCell<Option<String>>,
     conn_since: RefCell<Option<std::time::Instant>>,
-
-    ext_group: adw::PreferencesGroup,
-    ext_gw_row: adw::ActionRow,
-    ext_ip_row: adw::ActionRow,
-    ext_dns_row: adw::ActionRow,
 
     prompt_group: adw::PreferencesGroup,
     prompt_rows: RefCell<Vec<gtk::Widget>>,
@@ -380,24 +334,6 @@ impl App {
         status_group.add(&transfer_row);
         status_group.add(&uptime_row);
 
-        let ext_gw_row = adw::ActionRow::builder().title("Gateway").css_classes(["property"]).build();
-        let ext_ip_row = adw::ActionRow::builder().title("Internal IP").css_classes(["property"]).build();
-        let ext_dns_row = adw::ActionRow::builder().title("DNS").css_classes(["property"]).build();
-        let ext_disconnect = gtk::Button::builder()
-            .icon_name("media-playback-stop-symbolic")
-            .css_classes(["flat"])
-            .valign(gtk::Align::Center)
-            .tooltip_text("Disconnect")
-            .build();
-        ext_gw_row.add_suffix(&ext_disconnect);
-        let ext_group = adw::PreferencesGroup::builder()
-            .title("F5 — opened from the browser")
-            .visible(false)
-            .build();
-        ext_group.add(&ext_gw_row);
-        ext_group.add(&ext_ip_row);
-        ext_group.add(&ext_dns_row);
-
         let prompt_group = adw::PreferencesGroup::builder().visible(false).build();
 
         let log_buffer = gtk::TextBuffer::builder().build();
@@ -431,7 +367,6 @@ impl App {
             .margin_end(12)
             .build();
         content.append(&prompt_group);
-        content.append(&ext_group);
         content.append(&status_group);
         content.append(&profiles_group);
         content.append(&form_group);
@@ -514,10 +449,6 @@ impl App {
             uptime_row,
             iface: RefCell::new(None),
             conn_since: RefCell::new(None),
-            ext_group,
-            ext_gw_row,
-            ext_ip_row,
-            ext_dns_row,
             prompt_group,
             prompt_rows: RefCell::new(Vec::new()),
             #[cfg(feature = "webview")]
@@ -541,14 +472,14 @@ impl App {
         });
         *this.me.borrow_mut() = Rc::downgrade(&this);
 
-        Self::wire(&this, &add_btn, &ext_disconnect, &forget_pins_btn);
+        Self::wire(&this, &add_btn, &forget_pins_btn);
         this.refresh_profiles_list();
         this.update_form_visibility();
         this.sync_ui();
         this
     }
 
-    fn wire(app: &Rc<Self>, add_btn: &gtk::Button, ext_disconnect: &gtk::Button, forget_pins: &gtk::Button) {
+    fn wire(app: &Rc<Self>, add_btn: &gtk::Button, forget_pins: &gtk::Button) {
         app.backend_row.connect_selected_notify(glib::clone!(#[strong] app, move |_| {
             app.update_form_visibility();
             app.sync_ui();
@@ -587,11 +518,6 @@ impl App {
         app.connect_btn.connect_clicked(glib::clone!(#[strong] app, move |_| app.on_connect_clicked()));
         app.save_btn.connect_clicked(glib::clone!(#[strong] app, move |_| app.save_profile()));
         add_btn.connect_clicked(glib::clone!(#[strong] app, move |_| app.on_new_profile()));
-
-        ext_disconnect.connect_clicked(glib::clone!(#[strong] app, move |_| {
-            disconnect_external_f5();
-            app.ext_group.set_visible(false);
-        }));
 
         // Closing the window keeps the app (and the tunnel) running in the tray; only
         // "Quit" exits. Without a tray, closing quits (the window would be unreachable).
@@ -1554,8 +1480,9 @@ impl App {
 
         let profs = self.profiles.borrow();
         let saved = profs.iter().find(|p| p.backend == Backend::F5 && profiles::gateway_endpoint(&p.gateway) == endpoint);
-        *self.active_profile.lock().unwrap() = saved.map(|p| p.name.clone()).unwrap_or_else(|| endpoint.clone());
-        let mut args: Vec<String> = ["f5", "--launch", url, "--watch-stdin"].map(String::from).to_vec();
+        let name = saved.map(|p| p.name.clone()).unwrap_or_else(|| endpoint.clone());
+        *self.active_profile.lock().unwrap() = name.clone();
+        let mut args: Vec<String> = ["f5", "--launch", url, "--watch-stdin", "--label", &name].map(String::from).to_vec();
         if saved.is_some_and(|p| p.killswitch) {
             args.push("--killswitch".into());
         }
@@ -1616,17 +1543,19 @@ impl App {
         };
         let label = format!("connecting to {gw}");
 
-            *self.active_profile.lock().unwrap() = {
+        let name = {
             let n = self.name_row.text().trim().to_string();
             if n.is_empty() { gw.clone() } else { n }
         };
+        *self.active_profile.lock().unwrap() = name.clone();
 
         let mut p = self.form_profile();
         for (endpoint, fp) in self.session_pins.borrow().iter() {
             p.pins.entry(endpoint.clone()).or_insert_with(|| fp.clone());
         }
         let psk = (p.backend == Backend::FortiIpsec).then(|| self.psk_row.text().to_string()).filter(|k| !k.is_empty());
-        let args = profiles::engine_args(&p, psk.is_some());
+        let mut args = profiles::engine_args(&p, psk.is_some());
+        args.extend(["--label".to_string(), name]);
         // Secrets go on stdin. The Check Point token code follows the PIN; a
         // second factor asked later comes as `# AUTH-PROMPT: code:`.
         let mut stdin_lines = if p.backend == Backend::CheckPoint && !p.cp_cert {
@@ -1678,6 +1607,17 @@ impl App {
                         self.conn_since.replace(Some(std::time::Instant::now()));
                     }
                     self.status_group.set_visible(true);
+                }
+                EngineEvent::Attached { name, since } => {
+                    self.log_buffer.set_text("");
+                    self.clear_prompt();
+                    *self.active_profile.lock().unwrap() = name;
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    let up_for = Duration::from_secs(now.saturating_sub(since));
+                    self.conn_since.replace((since > 0).then(|| std::time::Instant::now() - up_for));
                 }
                 EngineEvent::StateChanged => self.sync_ui(),
             },
@@ -1784,20 +1724,10 @@ impl App {
     }
 
     fn tick(&self) {
-        if self.vpn.borrow_mut().poll_exit() {
+        if self.vpn.borrow_mut().poll() {
             self.sync_ui();
         }
         self.update_stats();
-        match detect_external_f5() {
-            Some(e) => {
-                self.ext_gw_row.set_subtitle(&e.gateway);
-                self.ext_ip_row.set_subtitle(&e.ip);
-                self.ext_dns_row.set_subtitle(&e.dns);
-                self.ext_dns_row.set_visible(!e.dns.is_empty());
-                self.ext_group.set_visible(true);
-            }
-            None => self.ext_group.set_visible(false),
-        }
     }
 
     /// Refresh the live-connection stats (transfer counters from the tunnel device,

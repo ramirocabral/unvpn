@@ -133,7 +133,6 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
         "# CSTP options: mtu {mtu} routes {} exclude {} default_route {} keepalive {} dpd {} rekey {} dtls_port {} dtls_cipher {:?}",
         cfg.split_include.len(), cfg.split_exclude.len(), cfg.default_route, cfg.keepalive, cfg.dpd, cfg.rekey, cfg.dtls_port, cfg.dtls_cipher
     );
-    // This exact "— IP <ip> DNS [..]" shape is what the GUI's log parser reads.
     println!("# CSTP up — IP {assigned}  DNS {:?}  (mtu {mtu})", dns);
     if let Some(b) = &cfg.banner {
         println!("# banner: {}", sysnet::one_line(b));
@@ -178,6 +177,7 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
     let ka = Liveness { dpd_secs: dpd, keepalive_secs: keepalive, dpd_dead_secs: (dpd * 2).max(90) };
     out!("# liveness: DPD {}s, keepalive {}s, dead-peer {}s", ka.dpd_secs, ka.keepalive_secs, ka.dpd_dead_secs);
     out!("# TUNNEL UP. (send 'disconnect' on stdin or SIGTERM to stop)");
+    crate::report::up(&tun_name, Some(assigned.into()));
 
     // DTLS fast path (best-effort): data on UDP, CSTP kept for control + fallback.
     let mut dtls = try_dtls(session, &chan, &cfg, opts.no_dtls);
@@ -190,6 +190,7 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
         }
         let reason = outcome.err().unwrap_or_else(|| "closed by peer".into());
         out!("# tunnel dropped ({reason})");
+        crate::report::reconnecting();
         dtls = None; // the DTLS session is tied to this CSTP channel; rebuild after reconnect
 
         let mut reconnected = false;
@@ -213,6 +214,7 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
                         let _ = tun::ip(&["addr", "add", &format!("{new_ip}/{}", newcfg.prefix()), "dev", &tun_name]);
                     }
                     out!("# reconnected — tunnel back up (IP {new_ip})");
+                    crate::report::recovered(Some(new_ip.into()));
                     dtls = try_dtls(session, &chan, &newcfg, opts.no_dtls);
                     reconnected = true;
                     break;

@@ -71,13 +71,8 @@ pub struct RunOpts {
     pub no_routes: bool,
     /// Watch stdin for `disconnect`/EOF. Off for the `f5-vpn://` launch path, where
     /// stdin is `/dev/null` and an immediate EOF would tear the tunnel straight back
-    /// down — there we stop on SIGTERM only.
+    /// down — there we stop on SIGTERM or over the control socket.
     pub watch_stdin: bool,
-    /// Status file the browser-launch path writes so the GUI can detect this tunnel.
-    /// Deleting the file is how the GUI stops it (the GUI, running as the user, can't
-    /// signal this root process directly). `None` on `--connect`, which the GUI
-    /// controls via stdin.
-    pub status_file: Option<String>,
 }
 
 /// Blocks until the stop flag is set (SIGTERM / `disconnect` on stdin).
@@ -192,16 +187,8 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
         }
     }
 
-    if let Some(ref sf) = opts.status_file {
-        if write_status_file(sf, &session.host, assigned, &dns) {
-            spawn_status_watch(sf.clone());
-            out!("# status file {sf} (GUI can see + stop this tunnel)");
-        } else {
-            out!("# (status file {sf} not writable — GUI won't see this tunnel)");
-        }
-    }
-
     out!("# TUNNEL UP over {}. (send 'disconnect' on stdin or SIGTERM to stop)", path(on_dtls));
+    crate::report::up(&tun_name, Some(assigned.into()));
     tun::set_nonblocking(&tun_file);
 
     let mut fail_streak = 0u32;
@@ -215,6 +202,7 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
             Err(e) => e,
         };
         out!("# tunnel dropped ({reason})");
+        crate::report::reconnecting();
         if on_dtls {
             // UDP died (NAT/firewall timeout…): reconnect over the reliable TLS path.
             want_dtls = false;
@@ -249,11 +237,9 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
                         let _ = tun::ip(&["addr", "add", &format!("{new_ip}/32"), "dev", &tun_name]);
                         assigned = new_ip;
                         ka.src = new_ip; // keepalive ICMP must use the current tunnel IP
-                        if let Some(ref sf) = opts.status_file {
-                            write_status_file(sf, &session.host, assigned, &dns);
-                        }
                     }
                     out!("# reconnected — tunnel back up over {} (IP {assigned})", path(on_dtls));
+                    crate::report::recovered(Some(assigned.into()));
                     reconnected = true;
                     break;
                 }
@@ -278,9 +264,6 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
         &mut session.cookies, &[], b"", session.timeout,
     );
     drop(restore);
-    if let Some(ref sf) = opts.status_file {
-        let _ = sysnet::remove_user_file(sf);
-    }
     final_result
 }
 
@@ -473,28 +456,6 @@ fn reconnect_delay(attempt: u32) -> u64 {
         3 => 5,
         _ => 10,
     }
-}
-
-/// Returns whether the write succeeded, so the caller only arms the delete-watcher
-/// when the file exists — a failed write must not look like a stop request.
-fn write_status_file(path: &str, gateway: &str, ip: Ipv4Addr, dns: &[Ipv4Addr]) -> bool {
-    let dns_s = dns.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(", ");
-    let body = format!("pid={}\ngateway={}\nip={}\ndns={}\n", std::process::id(), gateway, ip, dns_s);
-    sysnet::write_user_file(path, body.as_bytes()).is_ok()
-}
-
-/// Raise the stop flag when the GUI deletes the status file.
-fn spawn_status_watch(path: String) {
-    std::thread::spawn(move || loop {
-        if F5_STOP.load(Ordering::SeqCst) {
-            return;
-        }
-        if !std::path::Path::new(&path).exists() {
-            F5_STOP.store(true, Ordering::SeqCst);
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(800));
-    });
 }
 
 /// Tokens are appended as: sess/Z raw, hostname base64.

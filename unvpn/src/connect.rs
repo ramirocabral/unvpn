@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use unvpn_profiles::marker::{self, Marker};
 use unvpn_profiles::{self as profiles, Backend, Profile};
 
 /// The engine's stdin, where the signal handler writes `disconnect`; -1 before it starts.
@@ -209,6 +210,7 @@ fn run(p: &Profile, o: &Opts) -> Result<i32, String> {
     if o.allow_ipv6 {
         add("--allow-ipv6");
     }
+    args.extend(["--label".to_string(), p.name.clone()]);
     args.extend(o.tls_flags.iter().cloned());
 
     let bin = engine_bin()?;
@@ -319,15 +321,19 @@ fn run(p: &Profile, o: &Opts) -> Result<i32, String> {
             push_since = None;
             gen.fetch_add(1, Ordering::SeqCst);
         }
-        let clean = line.trim_start_matches(['#', ' ']);
-        if let Some((kind, message)) = parse_prompt(clean) {
-            if kind == "push" {
-                push_since = Some(Instant::now());
+        let m = marker::parse(line);
+        let (print, open) = match m {
+            Some(Marker::Prompt { kind, message }) => {
+                if kind == "push" {
+                    push_since = Some(Instant::now());
+                }
+                let _ = ptx.send(Prompt { kind, message, id: gen.load(Ordering::SeqCst) });
+                continue;
             }
-            let _ = ptx.send(Prompt { kind, message, id: gen.load(Ordering::SeqCst) });
-            continue;
-        }
-        let (print, open) = sso.on_line(clean);
+            Some(Marker::State(_) | Marker::Ip(_) | Marker::Dns(_) | Marker::Iface(_) | Marker::Error { .. }) => continue,
+            Some(m) => sso.on_marker(&m),
+            None => (true, None),
+        };
         if print {
             let mut so = std::io::stdout().lock();
             let _ = writeln!(so, "{line}");
@@ -388,13 +394,6 @@ fn quote(a: &str) -> String {
     } else {
         format!("'{}'", a.replace('\'', r"'\''"))
     }
-}
-
-/// `AUTH-PROMPT: <kind>: <message>` at the start of a line (already stripped of `# `).
-fn parse_prompt(line: &str) -> Option<(String, String)> {
-    let rest = line.strip_prefix("AUTH-PROMPT: ")?;
-    let (kind, message) = rest.split_once(": ").unwrap_or((rest, ""));
-    Some((kind.trim().to_string(), message.trim().to_string()))
 }
 
 struct Prompt {
@@ -665,13 +664,13 @@ impl Sso {
         Sso { backend: p.backend, entry, gp_headers: false, opened: false, page: None }
     }
 
-    /// Looks at one engine line: whether to print it as is, and what to open in
-    /// the browser once it is.
-    fn on_line(&mut self, clean: &str) -> (bool, Option<String>) {
-        if clean.starts_with("SAML-HEADERS:") {
+    /// Looks at one SSO marker: whether to print its line as is, and what to open
+    /// in the browser once it is.
+    fn on_marker(&mut self, m: &Marker) -> (bool, Option<String>) {
+        if matches!(m, Marker::SamlHeaders(_)) {
             self.gp_headers = true;
         }
-        let Some(url) = clean.strip_prefix("SAML-URL: ").map(str::trim) else { return (true, None) };
+        let Marker::SamlUrl(url) = m else { return (true, None) };
         if self.opened {
             return (true, None);
         }
@@ -762,10 +761,21 @@ mod tests {
     }
 
     #[test]
-    fn prompt_markers() {
-        assert_eq!(parse_prompt("AUTH-PROMPT: code: Enter the code"), Some(("code".into(), "Enter the code".into())));
-        assert_eq!(parse_prompt("AUTH-PROMPT: push"), Some(("push".into(), String::new())));
-        assert_eq!(parse_prompt("gateway says AUTH-PROMPT: code: x"), None);
+    fn sso_opens_only_the_profiles_own_entry_point_once() {
+        let mut prof = named(&["sso"]).remove(0);
+        prof.backend = Backend::Forti;
+        prof.gateway = "vpn.example.com".into();
+        prof.sso = true;
+        let mut sso = Sso::new(&prof);
+        let entry = profiles::saml_entry("vpn.example.com");
+        assert_eq!(sso.on_marker(&Marker::SamlUrl("https://evil.example.net/x".into())), (true, None));
+        assert_eq!(sso.on_marker(&Marker::SamlUrl(format!("{entry}x=1"))), (true, Some(format!("{entry}x=1"))));
+        assert_eq!(sso.on_marker(&Marker::SamlUrl(format!("{entry}x=2"))), (true, None));
+        prof.backend = Backend::GlobalProtect;
+        let mut gp = Sso::new(&prof);
+        assert_eq!(gp.on_marker(&Marker::SamlUrl("https://idp.example.com/a".into())), (true, None));
+        gp.on_marker(&Marker::SamlHeaders("saml-username".into()));
+        assert_eq!(gp.on_marker(&Marker::SamlUrl("https://idp.example.com/a".into())), (true, Some("https://idp.example.com/a".into())));
     }
 
     #[test]

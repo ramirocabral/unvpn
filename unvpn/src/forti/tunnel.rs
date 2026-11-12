@@ -125,6 +125,7 @@ pub fn run(
     let dead_secs = (hb * 6).max(60);
 
     out!("# TUNNEL UP over {}. (send 'disconnect' on stdin or SIGTERM to stop)", path(up.dtls));
+    crate::report::up(&tun_name, Some(assigned.into()));
     let result = 'session: loop {
         let outcome = data_loop(&mut up.conn, &mut tun_file, up.fd, hb, dead_secs, up.dtls);
         if FORTI_STOP.load(Ordering::SeqCst) {
@@ -149,6 +150,7 @@ pub fn run(
             want_dtls = false;
         }
         out!("# warning: link dropped ({e}) — reconnecting over TLS …");
+        crate::report::reconnecting();
         // Rebuild the link, retrying with a short backoff. Only once we hold a fresh
         // link do we loop back into data_loop — never re-run it on the dead one.
         let mut attempt = 0u32;
@@ -206,6 +208,7 @@ pub fn run(
                     }
                     up = new;
                     out!("# reconnected over {}", path(up.dtls));
+                    crate::report::recovered(Some(assigned.into()));
                     break;
                 }
                 Err(e2) => {

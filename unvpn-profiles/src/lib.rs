@@ -5,6 +5,12 @@
 //! Service / libsecret) under service `unvpn`, keyed by the profile name; an
 //! OpenVPN private-key passphrase likewise, under `<name>#keypass`. A 2FA token is
 //! single-use and never stored.
+//!
+//! Also what the engine and its front-ends share: the engine's output markers
+//! ([`marker`]) and its control socket ([`control`]).
+
+pub mod control;
+pub mod marker;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

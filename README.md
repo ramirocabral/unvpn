@@ -28,6 +28,9 @@ Supported VPNs:
 - GTK4 app with saved connection profiles; passwords in the system keyring. The
   same profiles connect from the command line (`unvpn connect <profile>`).
 - Tray icon showing the connection state.
+- A connection outlives the app: closing or restarting it leaves the tunnel up,
+  and the app (or `unvpn status` / `unvpn disconnect`) picks it up again. **Quit**
+  disconnects.
 - Encrypted export / import of all profiles, to move them between machines.
 - Auto-reconnect after sleep or a network change, without re-auth.
 - Leak protection: optional kill switch and an IPv6 egress block.
@@ -59,6 +62,14 @@ password the keyring doesn't have are asked on the terminal; Ctrl-C disconnects.
 unvpn connect --list               # the saved profiles
 unvpn connect office               # by name (or a unique start of it)
 unvpn connect office --dry-run     # print the engine command instead of running it
+```
+
+Any running tunnel, wherever it was started (the app, `unvpn connect`, the F5
+**Start** button), shows up in `unvpn status` and stops with `unvpn disconnect`:
+
+```sh
+unvpn status                       # the running tunnels (--json for scripts)
+unvpn disconnect office            # by name, gateway or interface; --all stops them all
 ```
 
 Or give the details directly:

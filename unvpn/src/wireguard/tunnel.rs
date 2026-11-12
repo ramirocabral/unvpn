@@ -130,9 +130,12 @@ pub fn run(cfg: Config, opts: RunOpts) -> Result<(), String> {
         return Ok(());
     }
 
-    let ip = iface.addresses.first().map(|a| a.addr.to_string()).unwrap_or_default();
-    // This exact "— IP <ip> DNS [..]" shape is what the GUI's log parser reads.
-    out!("# WireGuard up — IP {ip}  DNS {:?}  (mtu {mtu})", if opts.no_routes { &[][..] } else { &iface.dns[..] });
+    let ip = iface.addresses.first().map(|a| a.addr);
+    out!(
+        "# WireGuard up — IP {}  DNS {:?}  (mtu {mtu})",
+        ip.map(|a| a.to_string()).unwrap_or_default(),
+        if opts.no_routes { &[][..] } else { &iface.dns[..] }
+    );
 
     let mut restore = sysnet::NetRestore::default();
     if opts.no_routes {
@@ -152,6 +155,10 @@ pub fn run(cfg: Config, opts: RunOpts) -> Result<(), String> {
         return Err("disconnect requested before the tunnel came up".into());
     }
     out!("# TUNNEL UP. (send 'disconnect' on stdin or SIGTERM to stop)");
+    if let Some(e) = cfg.peers.iter().find_map(|p| p.endpoint.as_deref()) {
+        crate::report::gateway(e);
+    }
+    crate::report::up(&ifname, ip);
 
     let result = monitor(&mut nl, &ifname);
     out!("# disconnecting — removing {ifname}, restoring DNS/routes …");

@@ -2,7 +2,7 @@
 name = "unvpn-profiles"
 version = "0.1.0"
 edition = "2021"
-description = "unvpn connection profiles: the profiles.toml model, their keyring secrets and the engine command line each one maps to."
+description = "unvpn connection profiles (the profiles.toml model, their keyring secrets and the engine command line each one maps to), plus the engine's output markers and control socket shared with its front-ends."
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

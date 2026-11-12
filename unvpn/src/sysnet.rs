@@ -2,8 +2,9 @@
 //!
 //! - DNS: point `/etc/resolv.conf` at the corporate resolver while connected and
 //!   restore it on disconnect (symlink-aware: systemd-resolved / resolvconf).
-//! - A stop flag driven by SIGTERM/SIGINT and by the GUI's stdin pipe
-//!   (`disconnect` line or EOF), so a back-end's data loop can shut down cleanly.
+//! - A stop flag driven by SIGTERM/SIGINT, by the GUI's stdin pipe (`disconnect`
+//!   line or EOF) and by the control socket, so a back-end's data loop can shut
+//!   down cleanly.
 //! - A stdin pump: ONE thread reads stdin for the whole process and hands lines
 //!   out through a channel, so the auth prompts (2FA code, SAML paste, push), and
 //!   later the tunnel's `disconnect` watcher, never race each other for a line.
@@ -76,26 +77,20 @@ pub fn set_dns<A: std::fmt::Display + std::fmt::Debug>(dns: &[A], domains: &str)
         let _ = std::fs::remove_file(RESOLV_CONF);
     }
     match std::fs::write(RESOLV_CONF, content) {
-        Ok(_) if search.is_empty() => out!("# DNS → {dns:?}"),
-        Ok(_) => out!("# DNS → {dns:?} (search {})", search.join(" ")),
+        Ok(_) => {
+            if search.is_empty() {
+                out!("# DNS → {dns:?}");
+            } else {
+                out!("# DNS → {dns:?} (search {})", search.join(" "));
+            }
+            crate::report::dns(dns);
+        }
         Err(e) => out!("# (could not set DNS: {e})"),
     }
     Some(backup)
 }
 
-/// Gateway text flattened to one short line for the log and the `# …:` markers:
-/// control characters become spaces, whitespace runs collapse, cut at 300 chars.
-pub fn one_line(s: &str) -> String {
-    let flat: String = s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
-    let flat = flat.split_whitespace().collect::<Vec<_>>().join(" ");
-    flat.chars().take(300).collect()
-}
-
-/// A gateway-supplied URL or name for a marker line, with control and whitespace
-/// characters removed.
-pub fn one_word(s: &str) -> String {
-    s.chars().filter(|c| !c.is_control() && !c.is_whitespace()).collect()
-}
+pub use unvpn_profiles::marker::{one_line, one_word};
 
 /// The gateway's search list, keeping only plausible domain names so nothing it
 /// sends can add a line of its own to resolv.conf.
@@ -249,7 +244,22 @@ pub fn install_stop_signals(flag: &'static AtomicBool) {
     }
 }
 
-/// Spawn a thread that sets `flag` when stdin yields a `disconnect` line or EOF.
+/// Stop as a `disconnect` line on stdin would (asked over the control socket).
+pub fn request_stop() {
+    STOP_REQUESTED.store(true, Ordering::SeqCst);
+    on_stop_signal(0);
+}
+
+/// With `--detachable`, stdin closing once the tunnel is up leaves it running (the
+/// front-end went away; the control socket can still stop it).
+static DETACHABLE: AtomicBool = AtomicBool::new(false);
+
+pub fn set_detachable(on: bool) {
+    DETACHABLE.store(on, Ordering::SeqCst);
+}
+
+/// Spawn a thread that sets `flag` when stdin yields a `disconnect` line or EOF
+/// (unless the tunnel is detachable and up), or a stop is requested otherwise.
 /// The GUI owns this pipe; a TTY user can type `disconnect` + Enter or ^D.
 /// Reads through the [`stdin_next`] pump, so lines typed during auth aren't lost.
 pub fn spawn_stdin_disconnect(flag: &'static AtomicBool) {
@@ -264,7 +274,8 @@ pub fn spawn_stdin_disconnect(flag: &'static AtomicBool) {
             match stdin_next(Some(Duration::from_millis(250))) {
                 StdinEvent::Line(l) if is_disconnect(&l) => break,
                 StdinEvent::Line(_) | StdinEvent::Timeout => continue,
-                StdinEvent::Eof => break,
+                StdinEvent::Eof if stop_requested() => break,
+                StdinEvent::Eof => return,
             }
         }
         flag.store(true, Ordering::SeqCst);
@@ -295,10 +306,13 @@ impl Drop for StdinWatchPause {
 pub enum StdinEvent {
     /// A line, without its trailing newline.
     Line(String),
-    /// stdin closed (the GUI went away, or ^D on a TTY).
+    /// stdin closed (the GUI went away, or ^D on a TTY), or a stop was requested.
     Eof,
     Timeout,
 }
+
+/// How often a wait on stdin looks at [`stop_requested`].
+const STOP_POLL: Duration = Duration::from_millis(200);
 
 /// Receiving end of the pump; the reader thread starts on first use. Dropping its
 /// sender (on EOF) makes every later receive report `Eof`.
@@ -335,7 +349,11 @@ fn stdin_rx() -> &'static Mutex<mpsc::Receiver<String>> {
                 line.clear();
                 match std::io::stdin().read_line(&mut line) {
                     Ok(0) | Err(_) => {
-                        STOP_REQUESTED.store(true, Ordering::SeqCst);
+                        if DETACHABLE.load(Ordering::SeqCst) && crate::report::was_up() && !stop_requested() {
+                            out!("# the front-end is gone — the tunnel stays up (`unvpn disconnect` stops it)");
+                        } else {
+                            STOP_REQUESTED.store(true, Ordering::SeqCst);
+                        }
                         return; // drops tx → Eof for the receiver
                     }
                     Ok(_) => {
@@ -365,13 +383,34 @@ pub fn stdin_next(timeout: Option<Duration>) -> StdinEvent {
         return StdinEvent::Line(l);
     }
     let rx = stdin_rx().lock().unwrap_or_else(|e| e.into_inner());
-    match timeout {
-        None => rx.recv().map(StdinEvent::Line).unwrap_or(StdinEvent::Eof),
-        Some(t) => match rx.recv_timeout(t) {
-            Ok(l) => StdinEvent::Line(l),
-            Err(RecvTimeoutError::Timeout) => StdinEvent::Timeout,
-            Err(RecvTimeoutError::Disconnected) => StdinEvent::Eof,
-        },
+    match recv_until(&rx, timeout.map(|t| Instant::now() + t), &stop_requested) {
+        Ok(l) => StdinEvent::Line(l),
+        Err(RecvTimeoutError::Timeout) => StdinEvent::Timeout,
+        Err(RecvTimeoutError::Disconnected) => StdinEvent::Eof,
+    }
+}
+
+/// The next line before `deadline` (`None` = no limit). Ends as `Disconnected`
+/// when the pump closed or `stopped()` turns true.
+fn recv_until(
+    rx: &mpsc::Receiver<String>,
+    deadline: Option<Instant>,
+    stopped: &dyn Fn() -> bool,
+) -> Result<String, RecvTimeoutError> {
+    loop {
+        let step = match deadline {
+            None => STOP_POLL,
+            Some(d) => d.checked_duration_since(Instant::now()).ok_or(RecvTimeoutError::Timeout)?.min(STOP_POLL),
+        };
+        match rx.recv_timeout(step) {
+            Ok(l) => return Ok(l),
+            Err(RecvTimeoutError::Timeout) if stopped() => return Err(RecvTimeoutError::Disconnected),
+            Err(RecvTimeoutError::Timeout) if deadline.is_some_and(|d| Instant::now() >= d) => {
+                return Err(RecvTimeoutError::Timeout)
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return Err(RecvTimeoutError::Disconnected),
+        }
     }
 }
 
@@ -387,21 +426,19 @@ pub fn stdin_ask<T>(
 ) -> Option<T> {
     let rx = stdin_rx().lock().unwrap_or_else(|e| e.into_inner());
     announce();
-    ask_from(&rx, &STDIN_HELD, timeout, pick)
+    ask_from(&rx, &STDIN_HELD, timeout, &stop_requested, pick)
 }
 
 fn ask_from<T>(
     rx: &mpsc::Receiver<String>,
     held: &Mutex<VecDeque<String>>,
     timeout: Option<Duration>,
+    stopped: &dyn Fn() -> bool,
     mut pick: impl FnMut(&str) -> Option<T>,
 ) -> Option<T> {
     let deadline = timeout.map(|t| Instant::now() + t);
     loop {
-        let line = match deadline {
-            None => rx.recv().ok()?,
-            Some(d) => rx.recv_timeout(d.checked_duration_since(Instant::now())?).ok()?,
-        };
+        let line = recv_until(rx, deadline, stopped).ok()?;
         if is_disconnect(&line) {
             return None;
         }
@@ -440,6 +477,12 @@ pub fn write_all_polling<W: std::io::Write>(w: &mut W, fd: Option<i32>, mut buf:
 
 pub fn is_disconnect(line: &str) -> bool {
     line.trim().eq_ignore_ascii_case("disconnect")
+}
+
+/// `(uid, gid)` of the user who started us through sudo or pkexec, when we run as
+/// root on their behalf.
+pub fn invoker_ids() -> Option<(u32, u32)> {
+    invoker().map(|(u, g, _)| (u, g))
 }
 
 /// The user who started us through sudo or pkexec, when we run as root on their
@@ -548,10 +591,6 @@ pub fn write_user_file(path: impl AsRef<Path>, data: &[u8]) -> std::io::Result<(
     })
 }
 
-pub fn remove_user_file(path: impl AsRef<Path>) -> std::io::Result<()> {
-    as_invoker(|| std::fs::remove_file(path.as_ref()))
-}
-
 /// Turns terminal echo off on stdin while alive (no-op when stdin isn't a TTY), so
 /// a secret typed at a prompt isn't shown. Echo comes back on drop.
 pub struct EchoOff(Option<libc::termios>);
@@ -596,15 +635,31 @@ mod tests {
             tx.send(l.to_string()).unwrap();
         }
         let pick = |l: &str| l.strip_prefix("tag ").map(str::to_string);
-        assert_eq!(ask_from(&rx, &held, None, pick).as_deref(), Some("yes"));
+        let go_on = || false;
+        assert_eq!(ask_from(&rx, &held, None, &go_on, pick).as_deref(), Some("yes"));
         assert_eq!(held.lock().unwrap().iter().collect::<Vec<_>>(), ["the password", "a second secret"]);
         assert_eq!(rx.recv().unwrap(), "later");
 
         tx.send("disconnect".into()).unwrap();
-        assert_eq!(ask_from(&rx, &held, None, pick), None);
-        assert_eq!(ask_from(&rx, &held, Some(Duration::from_millis(20)), pick), None);
+        assert_eq!(ask_from(&rx, &held, None, &go_on, pick), None);
+        assert_eq!(ask_from(&rx, &held, Some(Duration::from_millis(20)), &go_on, pick), None);
+        let t = Instant::now();
+        assert_eq!(ask_from(&rx, &held, None, &|| t.elapsed() > Duration::from_millis(50), pick), None);
         drop(tx);
-        assert_eq!(ask_from(&rx, &held, None, pick), None);
+        assert_eq!(ask_from(&rx, &held, None, &go_on, pick), None);
+    }
+
+    #[test]
+    fn a_wait_ends_at_its_deadline_or_on_a_stop() {
+        let (tx, rx) = mpsc::channel::<String>();
+        let t = Instant::now();
+        assert_eq!(recv_until(&rx, Some(t + Duration::from_millis(30)), &|| false), Err(RecvTimeoutError::Timeout));
+        assert!(t.elapsed() < Duration::from_millis(150));
+        let t = Instant::now();
+        let stop_at = Duration::from_millis(250);
+        assert_eq!(recv_until(&rx, None, &|| t.elapsed() > stop_at), Err(RecvTimeoutError::Disconnected));
+        tx.send("x".into()).unwrap();
+        assert_eq!(recv_until(&rx, None, &|| true).as_deref(), Ok("x"));
     }
 
     /// Meaningful only under sudo/pkexec (run the test binary with `sudo`); a no-op otherwise.
@@ -627,13 +682,6 @@ mod tests {
         assert!(write_user_file("/dev/null", b"x").is_err());
         assert!(std::fs::read("/etc/shadow").is_ok(), "fs identity restored");
         std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn one_line_strips_controls() {
-        assert_eq!(one_line("a\r\n# SAML-URL: x\tb"), "a # SAML-URL: x b");
-        assert_eq!(one_line(&"x".repeat(400)).len(), 300);
-        assert_eq!(one_word("https://idp.example.com/a\n# AUTH-PROMPT: keypass: x"), "https://idp.example.com/a#AUTH-PROMPT:keypass:x");
     }
 
     #[test]

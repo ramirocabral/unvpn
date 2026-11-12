@@ -65,8 +65,7 @@ pub fn cmd_forti(args: &[String]) {
         Action::Connect => connect(&parsed),
     };
     if let Err(e) = r {
-        eprintln!("forti failed: {e}");
-        std::process::exit(1);
+        crate::report::fail("forti", &e);
     }
 }
 
@@ -193,7 +192,7 @@ const MAX_AUTH_ROUNDS: usize = 8;
 
 /// Read the password: the GUI pipes it as the first stdin line; a TTY user types it
 /// (echo off). Only a TTY gets the label: on the GUI's pipe it would glue itself to
-/// the next stderr line and hide the "forti failed: …" the GUI looks for.
+/// the next stderr line.
 fn read_password() -> Option<String> {
     if std::io::stdin().is_terminal() {
         eprint!("Password: ");
@@ -210,8 +209,7 @@ fn read_password() -> Option<String> {
 /// `# AUTH-PROMPT: <kind>: <message>` (kinds: code, code2, answer, newpass, renew,
 /// push). One stdin line answers it.
 fn announce(kind: &str, msg: &str) {
-    println!("# AUTH-PROMPT: {kind}: {}", sysnet::one_line(msg));
-    let _ = std::io::stdout().flush();
+    crate::report::prompt(kind, msg);
 }
 
 /// One stdin line as the answer to a prompt: `disconnect`/EOF cancel, `deadline`

@@ -640,7 +640,7 @@ fn describe_err(err: &str) -> String {
 }
 
 /// One printable line, at most 300 chars: gateway text ends up in our stdout,
-/// which the GUI parses line by line.
+/// which front-ends read line by line.
 #[cfg(test)]
 mod tests {
     use super::*;

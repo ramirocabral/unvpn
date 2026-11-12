@@ -14,7 +14,6 @@ pub mod tunnel;
 
 use auth::{Creds, IvantiError, Prompter, Session};
 use http::Endpoint;
-use std::io::Write;
 use std::time::Duration;
 
 /// Default sign-in policy URL segment.
@@ -55,8 +54,7 @@ pub fn cmd_ivanti(args: &[String]) {
         Action::Connect => connect(&parsed),
     };
     if let Err(e) = r {
-        eprintln!("ivanti failed: {e}");
-        std::process::exit(1);
+        crate::report::fail("ivanti", &e);
     }
 }
 
@@ -154,8 +152,7 @@ struct CliPrompter {
 
 impl Prompter for CliPrompter {
     fn password(&mut self, label: &str) -> Result<String, String> {
-        println!("# AUTH-PROMPT: answer: {}", crate::sysnet::one_line(label));
-        let _ = std::io::stdout().flush();
+        crate::report::prompt("answer", label);
         crate::anyconnect::read_secret(&format!("{label}: ")).ok_or_else(|| "no password provided".into())
     }
 
@@ -164,13 +161,12 @@ impl Prompter for CliPrompter {
             return Ok(c);
         }
         let msg = if message.trim().is_empty() { "Enter the verification code" } else { message };
-        println!("# AUTH-PROMPT: code: {}", crate::sysnet::one_line(msg));
-        let _ = std::io::stdout().flush();
+        crate::report::prompt("code", msg);
         crate::anyconnect::read_secret("Code: ").ok_or_else(|| "verification code required but none provided".into())
     }
 
     fn info(&mut self, line: &str) {
-        println!("# {line}");
+        crate::report::note(line);
     }
 }
 

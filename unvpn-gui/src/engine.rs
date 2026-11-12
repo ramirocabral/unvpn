@@ -3,18 +3,26 @@
 //!
 //! The GUI runs as the user and escalates the engine via `pkexec`/`sudo -n`. The
 //! password (or SecurID PIN) is piped on the engine's stdin — never argv; writing
-//! `disconnect` (or closing stdin) triggers a clean teardown. Engine stdout is
-//! parsed for live status and for `# AUTH-PROMPT: <kind>: <message>` lines — a
-//! mid-login question (2FA code, challenge, new password, push) answered with one
+//! `disconnect` triggers a clean teardown. The engine's markers on stdout (see
+//! `unvpn_profiles::marker`) carry its state, address, DNS and mid-login
+//! questions (2FA code, challenge, new password, push), each answered with one
 //! stdin line.
+//!
+//! The engine runs `--detachable`: once up, it outlives the app, and a later app
+//! (or this one, for a tunnel started from the command line) attaches to it over
+//! its control socket.
 
 use std::io::{BufRead, BufReader, Write};
+use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use unvpn_profiles::control::{self as ctl, Status};
+use unvpn_profiles::marker::{self, Marker};
+
 /// Connection state. Shared with the tray (which colours its icon from it).
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum State {
     Disconnected,
     Connecting,
@@ -47,9 +55,11 @@ pub enum EngineEvent {
     /// `sso` prompt with what `watch` captures. `user_agent`, when set, overrides
     /// the sign-in window's User-Agent (e.g. to present as Windows).
     SsoBrowser { login: String, watch: SsoWatch, user_agent: Option<String> },
-    /// The tunnel device name ("tun <name> up" / "interface <name> up"), so the UI
-    /// can read its byte counters from /sys and time the session.
+    /// The tunnel device, so the UI can read its byte counters from /sys and time
+    /// the session.
     Iface(String),
+    /// Attached to a tunnel this app didn't start: its name and when it came up.
+    Attached { name: String, since: u64 },
     StateChanged,
 }
 
@@ -83,52 +93,6 @@ pub enum UiMsg {
 }
 
 pub type Tx = async_channel::Sender<UiMsg>;
-
-/// Parse `AUTH-PROMPT: <kind>: <message>` (already stripped of the `# ` prefix).
-/// Only at the start of a line: gateway-supplied text (a challenge message) can
-/// appear later in a line and must not be able to fake a marker.
-fn parse_auth_prompt(line: &str) -> Option<AuthPrompt> {
-    let rest = line.strip_prefix("AUTH-PROMPT: ")?;
-    let (kind, message) = rest.split_once(": ").unwrap_or((rest, ""));
-    Some(AuthPrompt { kind: kind.trim().to_string(), message: message.trim().to_string() })
-}
-
-/// A back-end log line that means the live tunnel dropped and a rebuild has begun.
-fn is_reconnect_start(line: &str) -> bool {
-    [
-        "tunnel dropped",
-        "link dropped",
-        "link event",
-        "reconnecting in",
-        "rebinding the tunnel socket",
-        "probing the gateway",
-    ]
-    .iter()
-    .any(|m| line.contains(m))
-}
-
-/// A back-end log line that means the tunnel came back up after a reconnect. (The
-/// scheduled "CHILD SA rekeyed (lifetime)" also matches, but only flips the state
-/// back when we were actually Reconnecting, so a healthy rekey is a no-op.)
-fn is_failure(line: &str) -> bool {
-    const FAILED: [&str; 8] = ["IKE", "forti", "forti-ipsec", "f5", "anyconnect", "globalprotect", "openvpn", "wireguard"];
-    FAILED.iter().any(|b| line.strip_prefix(b).is_some_and(|r| r.starts_with(" failed")))
-        || ["AUTH FAILED", "login rejected", "Two-factor Authentication failed", "auth not completed"]
-            .iter()
-            .any(|m| line.contains(m))
-}
-
-/// The tunnel IP in an engine line: "Office Mode: IP x", "PPP up — IP x" or
-/// "reconnected — tunnel back up (IP x)".
-fn tunnel_ip(line: &str) -> Option<String> {
-    let rest = ["Office Mode: IP ", "— IP ", "(IP "].iter().find_map(|m| line.split(m).nth(1))?;
-    let ip = rest.split_whitespace().next()?.trim_end_matches(')');
-    (!ip.is_empty()).then(|| ip.to_string())
-}
-
-fn is_reconnect_done(line: &str) -> bool {
-    ["tunnel recovered", "reconnected", "tunnel back up", "CHILD SA rekeyed"].iter().any(|m| line.contains(m))
-}
 
 /// `https://host[:port]` of a URL (`None` if it isn't https).
 fn sso_origin(url: &str) -> Option<&str> {
@@ -192,12 +156,21 @@ fn priv_escalation() -> (&'static str, Vec<&'static str>) {
     }
 }
 
+/// A tunnel this app follows over its control socket instead of a pipe.
+struct Attached {
+    socket: PathBuf,
+    status: Status,
+    /// The engine's log lines shown so far.
+    log_seen: u64,
+}
+
 /// Manages the privileged engine subprocess. Lives on the GTK main thread; the
 /// stdout/stderr reader threads only *send* [`UiMsg`]s, never touch this struct.
 pub struct Vpn {
     pub state: Arc<Mutex<State>>,
     child: Option<Child>,
     stdin: Option<ChildStdin>,
+    attached: Option<Attached>,
     /// Bumped per connection: a previous engine's late output can't touch this one.
     gen: Arc<AtomicU64>,
     tx: Tx,
@@ -209,6 +182,7 @@ impl Vpn {
             state: Arc::new(Mutex::new(State::Disconnected)),
             child: None,
             stdin: None,
+            attached: None,
             gen: Arc::new(AtomicU64::new(0)),
             tx,
         }
@@ -224,6 +198,7 @@ impl Vpn {
 
     pub fn is_busy(&self) -> bool {
         self.child.is_some()
+            || self.attached.is_some()
             || matches!(
                 *self.state.lock().unwrap(),
                 State::Connecting | State::Connected | State::Reconnecting | State::Disconnecting
@@ -256,6 +231,7 @@ impl Vpn {
             .args(&pre)
             .arg(unvpn_bin())
             .args(&engine_args)
+            .arg("--detachable")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -300,24 +276,32 @@ impl Vpn {
                     if gen.load(Ordering::SeqCst) != my_gen {
                         continue; // a previous connection's engine, still draining
                     }
+                    let send = |ev: EngineEvent| {
+                        let _ = tx.try_send(UiMsg::Engine(ev));
+                    };
+                    let set_state = |to: State, only_from: &[State]| {
+                        let mut st = state.lock().unwrap();
+                        if *st != State::Disconnecting && (only_from.is_empty() || only_from.contains(&st)) && *st != to {
+                            *st = to;
+                            drop(st);
+                            let _ = tx.try_send(UiMsg::Engine(EngineEvent::StateChanged));
+                        }
+                    };
 
-                    // Markers come only from the engine's stdout, only at the start of a
-                    // line (gateway text is flattened into the middle of other lines).
-                    if !is_err {
-                        // SAML: open the IdP sign-in in the user's browser (the engine
-                        // runs as root and can't reach the user's session) — once, and
-                        // only the exact entry point of the gateway the user typed.
-                        if let Some(rest) = clean.strip_prefix("SAML-FINAL: ") {
-                            saml_final = Some(rest.trim().to_string());
-                        }
-                        if let Some(rest) = clean.strip_prefix("SAML-COOKIE: ") {
-                            saml_cookie = Some(rest.trim().to_string());
-                        }
-                        if clean.starts_with("SAML-HEADERS:") {
-                            saml_headers = true;
-                        }
-                        if let Some(rest) = clean.strip_prefix("SAML-URL: ") {
-                            let url = rest.trim();
+                    // Markers come only from the engine's stdout.
+                    let m = if is_err { None } else { marker::parse(&line) };
+                    let Some(m) = m else {
+                        send(EngineEvent::Log(clean));
+                        continue;
+                    };
+                    match m {
+                        Marker::SamlFinal(u) => saml_final = Some(u),
+                        Marker::SamlCookie(c) => saml_cookie = Some(c),
+                        Marker::SamlHeaders(_) => saml_headers = true,
+                        // SAML: open the IdP sign-in (the engine runs as root and can't
+                        // reach the user's session) — once, and only the exact entry
+                        // point of the gateway the user typed.
+                        Marker::SamlUrl(url) => {
                             // GlobalProtect hands over the IdP's own URL (any host —
                             // the gateway picks the IdP) or an auto-posting form as a
                             // `data:` page; the latter only ever goes to the embedded view.
@@ -326,13 +310,13 @@ impl Vpn {
                             if !saml_opened && saml_headers && saml_entry.is_some() && (gp_https || gp_form) {
                                 saml_opened = true;
                                 if cfg!(feature = "webview") {
-                                    let _ = tx.try_send(UiMsg::Engine(EngineEvent::SsoBrowser {
-                                        login: url.to_string(),
+                                    send(EngineEvent::SsoBrowser {
+                                        login: url.clone(),
                                         watch: SsoWatch::GpHeaders,
                                         user_agent: sso_user_agent.clone(),
-                                    }));
+                                    });
                                 } else if gp_https {
-                                    let _ = Command::new("xdg-open").arg(url).spawn();
+                                    let _ = Command::new("xdg-open").arg(&url).spawn();
                                 }
                             } else if !saml_opened && saml_entry.as_deref().is_some_and(|e| url.starts_with(e)) {
                                 saml_opened = true;
@@ -341,79 +325,46 @@ impl Vpn {
                                 let same_host = |u: &str| saml_entry.as_deref().and_then(sso_origin) == sso_origin(u);
                                 match (&saml_final, &saml_cookie) {
                                     (Some(f), Some(c)) if cfg!(feature = "webview") && same_host(f) => {
-                                        let _ = tx.try_send(UiMsg::Engine(EngineEvent::SsoBrowser {
-                                            login: url.to_string(),
+                                        send(EngineEvent::SsoBrowser {
+                                            login: url.clone(),
                                             watch: SsoWatch::Cookie { final_url: f.clone(), cookie: c.clone() },
                                             user_agent: sso_user_agent.clone(),
-                                        }));
+                                        });
                                     }
                                     // Fortinet (no cookie/headers to scrape): host the login in
                                     // the embedded window only when a UA override is set — that's
                                     // the whole point of routing it here instead of the browser.
                                     // Otherwise keep the default: open the user's own browser.
                                     _ if cfg!(feature = "webview") && sso_user_agent.is_some() => {
-                                        let _ = tx.try_send(UiMsg::Engine(EngineEvent::SsoBrowser {
-                                            login: url.to_string(),
+                                        send(EngineEvent::SsoBrowser {
+                                            login: url.clone(),
                                             watch: SsoWatch::Loopback,
                                             user_agent: sso_user_agent.clone(),
-                                        }));
+                                        });
                                     }
                                     _ => {
-                                        let _ = Command::new("xdg-open").arg(url).spawn();
+                                        let _ = Command::new("xdg-open").arg(&url).spawn();
                                     }
                                 }
                             }
+                            send(EngineEvent::Log(clean));
                         }
-                        // A mid-login question carries gateway text — don't mine it for
-                        // IP/DNS/state. The engine blocks on stdin per question, so there's
-                        // never more than one outstanding.
-                        if let Some(p) = parse_auth_prompt(&clean) {
+                        // The engine blocks on stdin per question, so there's never more
+                        // than one outstanding.
+                        Marker::Prompt { kind, message } => {
                             if *state.lock().unwrap() != State::Disconnecting {
-                                let _ = tx.try_send(UiMsg::Engine(EngineEvent::Prompt(p)));
+                                send(EngineEvent::Prompt(AuthPrompt { kind, message }));
                             }
-                            continue;
                         }
-                    }
-
-                    let _ = tx.try_send(UiMsg::Engine(EngineEvent::Log(clean.clone())));
-                    let disconnecting = *state.lock().unwrap() == State::Disconnecting;
-                    if !is_err {
-                        if let Some(ip) = tunnel_ip(&clean) {
-                            let _ = tx.try_send(UiMsg::Engine(EngineEvent::Ip(ip)));
+                        Marker::State(marker::State::Up) => {
+                            set_state(State::Connected, &[State::Connecting, State::Reconnecting])
                         }
-                        if let Some(rest) = clean.split("DNS [").nth(1) {
-                            let dns = rest.split(']').next().unwrap_or("").to_string();
-                            let _ = tx.try_send(UiMsg::Engine(EngineEvent::Dns(dns)));
-                        }
-                        // The tunnel device: "tun <name> up …" / "interface <name> up …".
-                        let toks: Vec<&str> = clean.split_whitespace().collect();
-                        if toks.len() >= 3 && (toks[0] == "tun" || toks[0] == "interface") && toks[2] == "up" {
-                            let _ = tx.try_send(UiMsg::Engine(EngineEvent::Iface(toks[1].to_string())));
-                        }
-                    }
-
-                    if disconnecting {
-                    // teardown chatter ("cancelled", …) must not override Disconnecting
-                    } else if !is_err && clean.contains("TUNNEL UP") {
-                        *state.lock().unwrap() = State::Connected;
-                        let _ = tx.try_send(UiMsg::Engine(EngineEvent::StateChanged));
-                    } else if is_failure(&clean) {
-                        *state.lock().unwrap() = State::Error(clean.clone());
-                        let _ = tx.try_send(UiMsg::Engine(EngineEvent::StateChanged));
-                    } else if is_reconnect_done(&clean) {
-                        let mut st = state.lock().unwrap();
-                        if *st == State::Reconnecting {
-                            *st = State::Connected;
-                            drop(st);
-                            let _ = tx.try_send(UiMsg::Engine(EngineEvent::StateChanged));
-                        }
-                    } else if is_reconnect_start(&clean) {
-                        let mut st = state.lock().unwrap();
-                        if *st == State::Connected {
-                            *st = State::Reconnecting;
-                            drop(st);
-                            let _ = tx.try_send(UiMsg::Engine(EngineEvent::StateChanged));
-                        }
+                        Marker::State(marker::State::Reconnecting) => set_state(State::Reconnecting, &[State::Connected]),
+                        Marker::State(_) => {}
+                        Marker::Ip(ip) => send(EngineEvent::Ip(ip.to_string())),
+                        Marker::Dns(d) => send(EngineEvent::Dns(dns_text(&d))),
+                        Marker::Iface(i) => send(EngineEvent::Iface(i)),
+                        Marker::Error { message, .. } => set_state(State::Error(message), &[]),
                     }
                 }
             });
@@ -431,12 +382,31 @@ impl Vpn {
     }
 
     /// Ask the engine to stop — never blocks the UI. The engine aborts a login in
-    /// progress, or restores DNS/routes, and exits; [`Vpn::poll_exit`] reaps it.
+    /// progress, or restores DNS/routes, and exits; [`Vpn::poll`] notices.
     pub fn disconnect(&mut self) {
+        if let Some(a) = &self.attached {
+            match ctl::disconnect(&a.socket) {
+                Ok(()) => {
+                    let mut st = self.state.lock().unwrap();
+                    if *st != State::Disconnecting {
+                        *st = State::Disconnecting;
+                        drop(st);
+                        self.log("disconnecting…");
+                    }
+                }
+                Err(e) => {
+                    self.log(format!("could not reach the tunnel to disconnect it: {e}"));
+                    self.attached = None;
+                    *self.state.lock().unwrap() = State::Disconnected;
+                }
+            }
+            let _ = self.tx.try_send(UiMsg::Engine(EngineEvent::StateChanged));
+            return;
+        }
         if let Some(mut si) = self.stdin.take() {
             let _ = writeln!(si, "disconnect");
             let _ = si.flush();
-        } // stdin dropped: EOF too
+        }
         let mut st = self.state.lock().unwrap();
         if self.child.is_some() {
             if *st != State::Disconnecting {
@@ -445,7 +415,7 @@ impl Vpn {
                 self.log("disconnecting…");
             }
         } else {
-        *st = State::Disconnected;
+            *st = State::Disconnected;
         }
         let _ = self.tx.try_send(UiMsg::Engine(EngineEvent::StateChanged));
     }
@@ -455,16 +425,32 @@ impl Vpn {
     pub fn shutdown(&mut self) {
         self.disconnect();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-        while let Some(c) = self.child.as_mut() {
-            if !matches!(c.try_wait(), Ok(None)) || std::time::Instant::now() >= deadline {
-                break;
-            }
+        let gone = |v: &mut Self| match (v.child.as_mut(), &v.attached) {
+            (Some(c), _) => !matches!(c.try_wait(), Ok(None)),
+            (None, Some(a)) => ctl::status(&a.socket).is_err(),
+            (None, None) => true,
+        };
+        while !gone(self) && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
     }
 
-    /// Reap the engine if it exited. Returns true if the state changed.
-    pub fn poll_exit(&mut self) -> bool {
+    /// Follow the engine: reap ours when it exits, keep an attached one's status
+    /// current, and attach to a running tunnel while idle. Returns true when the
+    /// state changed here (an attached tunnel's changes come as events).
+    pub fn poll(&mut self) -> bool {
+        if self.child.is_some() {
+            return self.poll_exit();
+        }
+        if self.attached.is_some() {
+            self.poll_attached();
+        } else if matches!(self.state(), State::Disconnected | State::Error(_)) {
+            self.try_attach();
+        }
+        false
+    }
+
+    fn poll_exit(&mut self) -> bool {
         if let Some(c) = self.child.as_mut() {
             if let Ok(Some(status)) = c.try_wait() {
                 self.child = None;
@@ -477,17 +463,16 @@ impl Vpn {
                         self.log("disconnected");
                         return true;
                     }
-                    // Exited before the tunnel came up, and the stdout parser didn't
-                    // already record a specific error → pkexec cancelled or auth failed.
+                    // Exited before the tunnel came up, and no ERROR marker already
+                    // recorded why → pkexec cancelled or auth failed.
                     State::Connecting => {
-                            *st = State::Error(format!(
+                        *st = State::Error(format!(
                             "engine exited before connecting ({status}) — auth cancelled or failed; see log"
                         ));
                     }
                     // Exited on its own while up (or mid-reconnect): a clean peer close
                     // is a plain disconnect; a non-zero exit means the tunnel dropped and
-                    // the engine gave up (e.g. an IKE session that can't rekey) — surface
-                    // it so the user knows to reconnect.
+                    // the engine gave up — surface it so the user knows to reconnect.
                     State::Connected | State::Reconnecting => {
                         *st = if status.success() {
                             State::Disconnected
@@ -502,6 +487,109 @@ impl Vpn {
         }
         false
     }
+
+    fn send(&self, ev: EngineEvent) {
+        let _ = self.tx.try_send(UiMsg::Engine(ev));
+    }
+
+    /// Take over the display of a tunnel this app isn't running (started from the
+    /// command line, by the browser, or by this app before it restarted).
+    fn try_attach(&mut self) {
+        let Some((socket, status)) = ctl::running().into_iter().find(|(_, s)| s.state != marker::State::Down) else {
+            return;
+        };
+        self.gen.fetch_add(1, Ordering::SeqCst);
+        self.send(EngineEvent::Attached { name: status.name().to_string(), since: status.since });
+        let mut log_seen = 0;
+        if let Ok((next, lines)) = ctl::log(&socket, 0) {
+            log_seen = next;
+            for l in lines.iter().filter_map(|l| shown(l)) {
+                self.log(l);
+            }
+        }
+        self.log(format!(
+            "— following “{}” ({}, pid {}), which is running outside this window —",
+            status.name(),
+            status.backend,
+            status.pid
+        ));
+        self.announce(&status, &Status::default());
+        *self.state.lock().unwrap() = state_of(status.state, &State::Disconnected);
+        self.attached = Some(Attached { socket, status, log_seen });
+        self.send(EngineEvent::StateChanged);
+    }
+
+    fn poll_attached(&mut self) {
+        let Some(a) = self.attached.as_mut() else { return };
+        let mut lines = Vec::new();
+        if let Ok((next, l)) = ctl::log(&a.socket, a.log_seen) {
+            a.log_seen = next;
+            lines = l;
+        }
+        let now = ctl::status(&a.socket);
+        let prev = a.status.clone();
+        if let Ok(s) = &now {
+            a.status = s.clone();
+        }
+        for l in lines.iter().filter_map(|l| shown(l)) {
+            self.log(l);
+        }
+        let mut st = self.state.lock().unwrap();
+        let next = match &now {
+            Ok(s) if !s.error.is_empty() && *st != State::Disconnecting => State::Error(s.error.clone()),
+            Ok(s) => state_of(s.state, &st),
+            Err(_) => match &*st {
+                State::Error(e) => State::Error(e.clone()),
+                _ => State::Disconnected,
+            },
+        };
+        let changed = *st != next;
+        *st = next;
+        drop(st);
+        match now {
+            Ok(s) => self.announce(&s, &prev),
+            Err(_) => {
+                self.attached = None;
+                self.log("disconnected");
+            }
+        }
+        if changed {
+            self.send(EngineEvent::StateChanged);
+        }
+    }
+
+    /// The address, DNS and interface of `s` that differ from `prev`.
+    fn announce(&self, s: &Status, prev: &Status) {
+        if !s.iface.is_empty() && s.iface != prev.iface && marker::is_iface_name(&s.iface) {
+            self.send(EngineEvent::Iface(s.iface.clone()));
+        }
+        if !s.ip.is_empty() && s.ip != prev.ip {
+            self.send(EngineEvent::Ip(s.ip.clone()));
+        }
+        if s.dns != prev.dns {
+            self.send(EngineEvent::Dns(s.dns.join(", ")));
+        }
+    }
+}
+
+/// The app's state for an engine reporting `s`, while the app shows `current`.
+fn state_of(s: marker::State, current: &State) -> State {
+    match s {
+        _ if *current == State::Disconnecting => State::Disconnecting,
+        marker::State::Connecting => State::Connecting,
+        marker::State::Up => State::Connected,
+        marker::State::Reconnecting => State::Reconnecting,
+        marker::State::Down => State::Disconnecting,
+    }
+}
+
+/// A line of an engine's log as the log view shows it; markers are not shown.
+fn shown(line: &str) -> Option<String> {
+    marker::parse(line).is_none().then(|| line.trim_start_matches(['#', ' ']).to_string())
+}
+
+fn dns_text(d: &[std::net::IpAddr]) -> String {
+    d.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", ")
 }
 
 #[cfg(test)]
@@ -509,49 +597,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_final_failure_wins_over_its_reconnect_wording() {
-        let gave_up = "f5 failed: tunnel dropped (read: EOF) and gave up after 5 reconnect attempts";
-        assert!(is_failure(gave_up) && is_reconnect_start(gave_up));
-        assert!(is_failure("forti-ipsec failed: no CHILD SA"));
-        assert!(is_failure("IKE failed: timeout"));
-        assert!(!is_failure("forti: reconnecting in 2s"));
-        assert!(!is_failure("reconnected — tunnel back up (IP 198.51.100.7)"));
+    fn an_attached_engines_state_maps_to_the_apps() {
+        assert_eq!(state_of(marker::State::Up, &State::Disconnected), State::Connected);
+        assert_eq!(state_of(marker::State::Reconnecting, &State::Connected), State::Reconnecting);
+        assert_eq!(state_of(marker::State::Connecting, &State::Disconnected), State::Connecting);
+        assert_eq!(state_of(marker::State::Down, &State::Connected), State::Disconnecting);
+        assert_eq!(state_of(marker::State::Up, &State::Disconnecting), State::Disconnecting);
     }
 
     #[test]
-    fn tunnel_ip_from_every_announcement() {
-        assert_eq!(tunnel_ip("Office Mode: IP 198.51.100.7 mask 255.255.255.0").as_deref(), Some("198.51.100.7"));
-        assert_eq!(tunnel_ip("PPP up — IP 198.51.100.8").as_deref(), Some("198.51.100.8"));
-        assert_eq!(tunnel_ip("reconnected — tunnel back up over DTLS (IP 198.51.100.9)").as_deref(), Some("198.51.100.9"));
-        assert_eq!(tunnel_ip("DNS [203.0.113.53]"), None);
+    fn the_log_view_leaves_markers_out() {
+        assert_eq!(shown("# TUNNEL UP. (send 'disconnect' on stdin or SIGTERM to stop)").as_deref(), Some("TUNNEL UP. (send 'disconnect' on stdin or SIGTERM to stop)"));
+        assert_eq!(shown("f5 failed: tunnel dropped"), Some("f5 failed: tunnel dropped".into()));
+        assert_eq!(shown("# STATE: up"), None);
+        assert_eq!(shown("# AUTH-PROMPT: code: Enter the code"), None);
+        assert_eq!(shown("# IP: 198.51.100.7"), None);
     }
 
     #[test]
-    fn reconnect_markers_from_real_backend_logs() {
-        // Drop / rebuild starts (lines the back-ends actually print).
-        for l in [
-            "warning: link dropped (udp timeout) — reconnecting over TLS …",
-            "tunnel dropped (link kicked (network changed))",
-            "reconnecting in 1s (attempt 1/10) …",
-            "link event (network changed) — rekeying the CHILD SA",
-            "local address changed to 203.0.113.9 — rebinding the tunnel socket",
-            "link event (network changed) — probing the gateway",
-        ] {
-            assert!(is_reconnect_start(l), "should start: {l}");
-            assert!(!is_reconnect_done(l), "should not be done: {l}");
-        }
-        // Back-up / recovered.
-        for l in [
-            "reconnected — tunnel back up (IP 10.0.0.2)",
-            "reconnected over TLS",
-            "tunnel recovered (ESP SA refreshed spi_in=0x1 spi_out=0x2)",
-            "CHILD SA rekeyed — tunnel recovered",
-        ] {
-            assert!(is_reconnect_done(l), "should be done: {l}");
-        }
-        // Steady-state chatter must not flip the state.
-        for l in ["stats: esp_in=1 esp_out=2 dec_err=0", "TUNNEL UP (ESP over NAT-T)."] {
-            assert!(!is_reconnect_start(l), "false start: {l}");
-        }
+    fn dns_reads_as_a_list() {
+        let d: Vec<std::net::IpAddr> = vec!["203.0.113.53".parse().unwrap(), "203.0.113.54".parse().unwrap()];
+        assert_eq!(dns_text(&d), "203.0.113.53, 203.0.113.54");
+        assert_eq!(dns_text(&[]), "");
     }
 }

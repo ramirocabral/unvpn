@@ -6,8 +6,8 @@
 # the connection like any other (its questions, such as whether to trust the
 # gateway's certificate, show in its window). Otherwise we exchange the token
 # for a session and bring the tunnel up (as root) ourselves, with the gateway
-# certificates the saved profiles trust, publishing a status file the app reads
-# to show and stop the tunnel.
+# certificates the saved profiles trust; `unvpn status` / `unvpn disconnect`
+# (and the app, once it runs) see and stop it.
 #
 # Registered by unvpn-f5-handler.desktop (MimeType x-scheme-handler/f5-vpn).
 #
@@ -26,7 +26,6 @@ esac
 
 cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/unvpn-f5"
 mkdir -p "$cache_dir"
-status_file="$cache_dir/tunnel.status"
 log="$cache_dir/launch.log"
 
 gui="${UNVPN_GUI:-}"
@@ -68,4 +67,4 @@ pins=()
 while IFS= read -r p; do pins+=("$p"); done < <("$engine" pins "$url" 2>>"$log" || true)
 
 # New session so closing the browser/launcher doesn't SIGHUP the tunnel.
-exec setsid "$@" f5 --launch "$url" ${pins[@]+"${pins[@]}"} --status-file "$status_file" </dev/null >>"$log" 2>&1
+exec setsid "$@" f5 --launch "$url" ${pins[@]+"${pins[@]}"} </dev/null >>"$log" 2>&1

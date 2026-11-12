@@ -80,7 +80,6 @@ pub fn run(s: &mut Session, opts: RunOpts) -> Result<(), String> {
         }
     }
 
-    // This exact "— IP <ip> DNS [..]" shape is what the GUI's log parser reads.
     out!("# GP up — IP {assigned}  DNS {:?}  (mtu {mtu})", cfg.dns);
 
     let (mut tun_file, tun_name) = tun::open_tun(TUN_NAME)?;
@@ -121,6 +120,7 @@ pub fn run(s: &mut Session, opts: RunOpts) -> Result<(), String> {
         }
     };
     out!("# TUNNEL UP. (send 'disconnect' on stdin or SIGTERM to stop)");
+    crate::report::up(&tun_name, Some(assigned.into()));
 
     let mut fail_streak = 0u32;
     let result: Result<(), String> = 'session: loop {
@@ -148,6 +148,7 @@ pub fn run(s: &mut Session, opts: RunOpts) -> Result<(), String> {
             }
             End::Dropped(r) => {
                 out!("# tunnel dropped ({r})");
+                crate::report::reconnecting();
                 r
             }
         };
@@ -181,6 +182,7 @@ pub fn run(s: &mut Session, opts: RunOpts) -> Result<(), String> {
                     cfg = c;
                     link = l;
                     out!("# reconnected — tunnel back up (IP {ip})");
+                    crate::report::recovered(Some(ip.into()));
                     back = true;
                     break;
                 }

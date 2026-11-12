@@ -22,9 +22,6 @@ struct Args {
     no_routes: bool,
     /// The `f5-vpn://…` URL from the webtop "Start" handoff.
     launch_url: Option<String>,
-    /// Status file the GUI reads to see/stop a browser-launched tunnel. Set by the
-    /// scheme-handler wrapper on the `--launch` path.
-    status_file: Option<String>,
     /// `--launch` run by a front-end that owns stdin (the app): `disconnect` or EOF
     /// there stops the tunnel, as on the other paths.
     watch_stdin: bool,
@@ -56,8 +53,7 @@ pub fn cmd_f5(args: &[String]) {
         Action::Launch => launch(&parsed),
     };
     if let Err(e) = r {
-        eprintln!("f5 failed: {e}");
-        std::process::exit(1);
+        crate::report::fail("f5", &e);
     }
 }
 
@@ -71,7 +67,6 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
     let mut no_dtls = false;
     let mut no_routes = false;
     let mut launch_url: Option<String> = None;
-    let mut status_file: Option<String> = None;
     let mut watch_stdin = false;
 
     let mut it = args.iter();
@@ -99,7 +94,6 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
             "--connect" => action = Action::Connect,
             "--no-dtls" => no_dtls = true,
             "--no-routes" => no_routes = true,
-            "--status-file" => status_file = it.next().cloned(),
             "--watch-stdin" => watch_stdin = true,
             "--launch" => {
                 action = Action::Launch;
@@ -116,13 +110,13 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
     if action == Action::Launch {
         // host/user come from the URL.
         let host = host.unwrap_or_default();
-        return Ok(Args { host, port, user, password, code, action, no_dtls, no_routes, launch_url, status_file, watch_stdin });
+        return Ok(Args { host, port, user, password, code, action, no_dtls, no_routes, launch_url, watch_stdin });
     }
     let host = host.ok_or("f5 requires --gateway <host[:port]>")?;
     if action != Action::Probe && user.is_empty() {
         return Err("f5 requires --user <user>".into());
     }
-    Ok(Args { host, port, user, password, code, action, no_dtls, no_routes, launch_url, status_file, watch_stdin })
+    Ok(Args { host, port, user, password, code, action, no_dtls, no_routes, launch_url, watch_stdin })
 }
 
 fn usage() {
@@ -132,8 +126,7 @@ fn usage() {
     eprintln!("  unvpn f5 -g <host[:port]> -u <user> [...] --connect     # brings up the tunnel (sudo)");
     eprintln!("      [--no-routes]  tunnel up but install no routes/DNS (safe data-plane test;");
     eprintln!("                     verify with: ping -I f5vpn0 <internal-host>)");
-    eprintln!("  unvpn f5 --launch \"f5-vpn://…\" [--status-file PATH]   # webtop 'Start' handoff (SSO token → tunnel, sudo)");
-    eprintln!("      --status-file  publish pid/IP/DNS here so the GUI can show + stop this tunnel");
+    eprintln!("  unvpn f5 --launch \"f5-vpn://…\"   # webtop 'Start' handoff (SSO token → tunnel, sudo)");
     eprintln!("      --watch-stdin  stop on a `disconnect` line or EOF on stdin (when a front-end runs it)");
     eprintln!("  password/OTP are read from stdin (no echo) when not given with --password/--code");
 }
@@ -218,10 +211,9 @@ fn do_login(a: &Args) -> Result<Session, String> {
                 match &a.code {
                     Some(c) => c.clone(),
                     None => {
-                        // The AUTH-PROMPT marker drives the GUI's prompt card. The code is
-                        // often emailed/SMS and doesn't exist until the password is in.
+                        // The code is often emailed/SMS and doesn't exist until the password is in.
                         let msg = if form.banner.is_empty() { "One-time passcode" } else { form.banner.as_str() };
-                        println!("# AUTH-PROMPT: code: {}", crate::sysnet::one_line(msg));
+                        crate::report::prompt("code", msg);
                         crate::anyconnect::read_secret("Token code (OTP): ").ok_or("OTP required but none provided")?
                     }
                 }
@@ -254,7 +246,7 @@ fn connect(a: &Args) -> Result<(), String> {
     let mut session = do_login(a)?;
     tunnel::run(
         &mut session,
-        tunnel::RunOpts { no_dtls: a.no_dtls, no_routes: a.no_routes, watch_stdin: true, status_file: None },
+        tunnel::RunOpts { no_dtls: a.no_dtls, no_routes: a.no_routes, watch_stdin: true },
     )
 }
 
@@ -270,12 +262,7 @@ fn launch(a: &Args) -> Result<(), String> {
     println!("# session acquired via handoff (MRHSession set)");
     tunnel::run(
         &mut session,
-        tunnel::RunOpts {
-            no_dtls: a.no_dtls,
-            no_routes: a.no_routes,
-            watch_stdin: a.watch_stdin,
-            status_file: a.status_file.clone(),
-        },
+        tunnel::RunOpts { no_dtls: a.no_dtls, no_routes: a.no_routes, watch_stdin: a.watch_stdin },
     )
 }
 

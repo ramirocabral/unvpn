@@ -84,15 +84,13 @@ pub fn cmd_forti_ipsec(args: &[String]) {
         opts.psk = read_stdin_secret();
     }
     if let Err(e) = apply_config(&mut opts) {
-        out!("# forti-ipsec failed: {e}");
-        std::process::exit(1);
+        crate::report::fail("forti-ipsec", &e);
     }
     if opts.mode == Mode::Import {
         return; // apply_config already printed the parsed settings
     }
     if let Err(e) = run(&opts) {
-        out!("# forti-ipsec failed: {e}");
-        std::process::exit(1);
+        crate::report::fail("forti-ipsec", &e);
     }
 }
 
@@ -554,7 +552,7 @@ fn otp_value(o: &Opts, prompt: &str) -> Result<String, String> {
         return Ok(c.clone());
     }
     let p = sysnet::StdinWatchPause::new();
-    out!("# AUTH-PROMPT: code: {}", sysnet::one_line(prompt));
+    crate::report::prompt("code", prompt);
     let v = match sysnet::stdin_next(Some(Duration::from_secs(180))) {
         sysnet::StdinEvent::Line(l) => l,
         sysnet::StdinEvent::Eof => return Err("stdin closed while waiting for the token".into()),
@@ -747,6 +745,7 @@ fn data_plane(
     tun::set_nonblocking(&tun_file);
 
     out!("# TUNNEL UP (ESP over NAT-T). (send 'disconnect' on stdin or SIGTERM to stop)");
+    crate::report::up(&tun_name, Some(assigned.into()));
     let tun_fd = tun_file.as_raw_fd();
     let kick_fd = crate::netmon::kick_fd();
     let mut buf = [0u8; 2048];
@@ -766,6 +765,8 @@ fn data_plane(
     let mut last_tin = 0u64;
     let mut recover_fails = 0u32;
     let mut lost: Option<String> = None;
+    // A link event was announced as a reconnect, still to be answered by a recovery.
+    let mut reported = false;
 
     loop {
         if STOP.load(Ordering::SeqCst) {
@@ -861,6 +862,9 @@ fn data_plane(
         let stale = last_rx_at.elapsed().as_secs() >= PROBE_SECS;
 
         if let Some(why) = kicked {
+            if !std::mem::replace(&mut reported, true) {
+                crate::report::reconnecting();
+            }
             // Resume / network change. If our source address to the gateway changed
             // (Wi-Fi ↔ cable, resume on a new network), rebind the socket from the new
             // address and tell the gateway: MOBIKE's UPDATE_SA_ADDRESSES when it was
@@ -904,6 +908,9 @@ fn data_plane(
                     recover_fails = 0;
                     rekey_next = Instant::now() + child_rekey;
                     out!("# tunnel recovered");
+                    if std::mem::take(&mut reported) {
+                        crate::report::recovered(None);
+                    }
                 }
                 Err(e) => {
                     recover_fails += 1;
@@ -922,6 +929,9 @@ fn data_plane(
                 Ok(()) => {
                     last_rx_at = Instant::now();
                     recover_fails = 0;
+                    if std::mem::take(&mut reported) {
+                        crate::report::recovered(None);
+                    }
                 }
                 Err(e) => {
                     recover_fails += 1;

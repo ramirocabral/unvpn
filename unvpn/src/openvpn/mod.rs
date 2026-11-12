@@ -53,8 +53,7 @@ pub fn cmd_openvpn(args: &[String]) {
         }
     };
     if let Err(e) = run(&parsed) {
-        eprintln!("openvpn failed: {e}");
-        std::process::exit(1);
+        crate::report::fail("openvpn", &e);
     }
 }
 
@@ -151,14 +150,12 @@ impl tunnel::Prompter for CliPrompter {
             }
         }
         let msg = crate::sysnet::one_line(message);
-        println!("# AUTH-PROMPT: {kind}: {msg}");
-        let _ = std::io::stdout().flush();
+        crate::report::prompt(kind, &msg);
         read_secret(&format!("{msg}: ")).ok_or_else(|| format!("{kind} required but none provided"))
     }
 
     fn open_url(&mut self, url: &str) {
-        println!("# SAML-URL: {}", crate::sysnet::one_word(url));
-        let _ = std::io::stdout().flush();
+        crate::report::saml_url(url);
     }
 }
 

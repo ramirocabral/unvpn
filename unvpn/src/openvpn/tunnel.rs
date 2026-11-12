@@ -358,7 +358,6 @@ pub fn run(mut p: Prepared, prompter: &mut dyn Prompter, opts: RunOpts) -> Resul
     let mtu = tun_mtu(&p.cfg, &push);
     let compress = push.compress.or(p.cfg.compress).unwrap_or(Compress::None);
     let dns = if p.cfg.route_nopull { Vec::new() } else { push.dns.clone() };
-    // This exact "— IP <ip> DNS [..]" shape is what the GUI's log parser reads.
     out!("# OpenVPN up — IP {ifc_local}  DNS {:?}  (mtu {mtu})", dns);
 
     let (mut tun_file, tun_name) = tun::open_tun(TUN_NAME)?;
@@ -396,6 +395,8 @@ pub fn run(mut p: Prepared, prompter: &mut dyn Prompter, opts: RunOpts) -> Resul
     let reneg = p.cfg.reneg_sec.filter(|&s| s > 0);
     out!("# liveness: ping {ping}s, ping-restart {ping_restart}s{}", reneg.map(|r| format!(", reneg {r}s")).unwrap_or_default());
     out!("# TUNNEL UP. (send 'disconnect' on stdin or SIGTERM to stop)");
+    crate::report::gateway(&p.cfg.remotes[remote_idx].host);
+    crate::report::up(&tun_name, Some(ifc_local.into()));
 
     let mut fail_streak = 0u32;
     let result: Result<(), String> = 'session: loop {
@@ -408,6 +409,7 @@ pub fn run(mut p: Prepared, prompter: &mut dyn Prompter, opts: RunOpts) -> Resul
             Err(e) => e,
         };
         out!("# tunnel dropped ({reason})");
+        crate::report::reconnecting();
         let explicit_restart = reason.contains("RESTART") || reason.contains("server exiting");
         let mut reconnected = false;
         while fail_streak < MAX_RECONNECT_TRIES {
@@ -433,7 +435,9 @@ pub fn run(mut p: Prepared, prompter: &mut dyn Prompter, opts: RunOpts) -> Resul
                     }
                     engine = est.engine;
                     push = est.push;
-                    out!("# reconnected — tunnel back up (IP {})", push.ifconfig.map(|x| x.0).unwrap_or(ifc_local));
+                    let ip = push.ifconfig.map(|x| x.0).unwrap_or(ifc_local);
+                    out!("# reconnected — tunnel back up (IP {ip})");
+                    crate::report::recovered(Some(ip.into()));
                     reconnected = true;
                     break;
                 }

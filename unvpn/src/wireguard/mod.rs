@@ -45,8 +45,7 @@ pub fn cmd_wireguard(args: &[String]) {
         }
     };
     if let Err(e) = run(parsed) {
-        eprintln!("wireguard failed: {e}");
-        std::process::exit(1);
+        crate::report::fail("wireguard", &e);
     }
 }
 

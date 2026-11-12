@@ -12,6 +12,7 @@ macro_rules! out {
 mod anyconnect;
 mod ccc;
 mod connect;
+mod control;
 mod cpcert;
 mod forti;
 mod forti_ipsec;
@@ -25,6 +26,7 @@ mod net;
 mod netmon;
 mod openvpn;
 mod replay;
+mod report;
 mod sysnet;
 mod tun;
 mod wireguard;
@@ -195,10 +197,6 @@ static TUNNEL_STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBoo
 /// re-auth needs a fresh passcode): the main loop turns this into an error exit so
 /// the GUI shows the drop instead of a silent stop.
 static TUNNEL_LOST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-extern "C" fn tunnel_sig_handler(_sig: libc::c_int) {
-    TUNNEL_STOP.store(true, std::sync::atomic::Ordering::SeqCst);
-}
-
 fn ip_checksum(header: &[u8]) -> u16 {
     let mut sum = 0u32;
     let mut i = 0;
@@ -281,8 +279,16 @@ fn run_tunnel(
     let _ = sock.send(&[0xff]); // NAT-T keepalive
     println!("# ESP on socket {:?} (same NAT-T port as IKE)", sock.local_addr().ok());
 
-    // Restores DNS when dropped — also on an early return or a panic (e.g. a print
-    // to the GUI's stdout pipe after the GUI is gone).
+    // From here every exit path must undo what we change; a disconnect asked for
+    // while connecting means we touch no routes or DNS at all.
+    TUNNEL_STOP.store(false, Ordering::SeqCst);
+    TUNNEL_LOST.store(false, Ordering::SeqCst);
+    sysnet::install_stop_signals(&TUNNEL_STOP);
+    if sysnet::stop_requested() {
+        return Err("disconnect requested before the tunnel came up".into());
+    }
+
+    // Restores DNS when dropped — also on an early return or a panic.
     let gw_v4 = sock.peer_addr().ok().and_then(|a| match a.ip() {
         std::net::IpAddr::V4(v) => Some(v),
         std::net::IpAddr::V6(_) => None,
@@ -296,25 +302,8 @@ fn run_tunnel(
             _restore.leak = leakguard::enable(&tun_name, &gw_v4.into_iter().collect::<Vec<_>>())?;
         }
     }
-    TUNNEL_STOP.store(false, Ordering::SeqCst);
-    TUNNEL_LOST.store(false, Ordering::SeqCst);
-    unsafe {
-        let h = tunnel_sig_handler as extern "C" fn(libc::c_int) as libc::sighandler_t;
-        libc::signal(libc::SIGTERM, h);
-        libc::signal(libc::SIGINT, h);
-        libc::signal(libc::SIGHUP, h); // terminal closed (sudo relays it)
-        libc::signal(libc::SIGQUIT, h);
-    }
-    // Disconnect when stdin gets "disconnect" or EOF (the GUI owns this pipe). Read
-    // through the shared reader: a code prompt during login may have started it.
-    std::thread::spawn(|| {
-        while let sysnet::StdinEvent::Line(l) = sysnet::stdin_next(None) {
-            if sysnet::is_disconnect(&l) {
-                break;
-            }
-        }
-        TUNNEL_STOP.store(true, Ordering::SeqCst);
-    });
+    // Through the shared reader: a code prompt during login may have started it.
+    sysnet::spawn_stdin_disconnect(&TUNNEL_STOP);
 
     // The current ESP SA, swappable so a rekey can replace it under the live
     // data-plane threads (they clone the Arc per packet; the swap is a brief write).
@@ -428,7 +417,8 @@ fn run_tunnel(
         });
     }
 
-    println!("# TUNNEL UP. (send 'disconnect' on stdin or SIGTERM to stop)");
+    out!("# TUNNEL UP. (send 'disconnect' on stdin or SIGTERM to stop)");
+    report::up(&tun_name, Some(om_ip.into()));
     let mut ticks = 0u32;
     while !TUNNEL_STOP.load(Ordering::SeqCst) {
         std::thread::sleep(std::time::Duration::from_millis(500));
@@ -581,6 +571,8 @@ fn ike_control_loop(
     let mut last_uin = uin.load(Ordering::Relaxed);
     let mut last_progress = Instant::now();
     let mut recover_fails = 0u32;
+    // A link event was announced as a reconnect, still to be answered by a recovery.
+    let mut reported = false;
 
     let mut esp_interval = rekey_interval(lifetime_secs);
     let mut esp_next = Instant::now() + esp_interval;
@@ -611,7 +603,13 @@ fn ike_control_loop(
         let stale = last_progress.elapsed() >= Duration::from_secs(LIVENESS_STALE_SECS);
         if kicked.is_some() || stale {
             match kicked {
-                Some(why) => out!("# link event ({why}) — probing the gateway"),
+                Some(why) => {
+                    out!("# link event ({why}) — probing the gateway");
+                    if !reported {
+                        report::reconnecting();
+                        reported = true;
+                    }
+                }
                 None => out!("# no data from the gateway for {}s — probing", last_progress.elapsed().as_secs()),
             }
             match do_rekey(&mut session, &sock, &esp, om_ip, &ike_rx) {
@@ -624,6 +622,9 @@ fn ike_control_loop(
                     recover_fails = 0;
                     last_progress = Instant::now();
                     out!("# tunnel recovered (ESP SA refreshed spi_in={si:#010x} spi_out={so:#010x})");
+                    if std::mem::take(&mut reported) {
+                        report::recovered(None);
+                    }
                 }
                 Err(e) => {
                     recover_fails += 1;
@@ -928,8 +929,7 @@ fn cmd_tunnel_up(args: &[String]) {
         run_tunnel(om_ip, om_mask, esp_sa, sock, dns, domains, 0, 0, Vec::new(), None, Some(vec![CP_FALLBACK_ROUTE]))
     };
     if let Err(e) = run() {
-        eprintln!("tunnel-up failed: {e}");
-        std::process::exit(1);
+        report::fail("tunnel-up", &e);
     }
 }
 
@@ -1038,10 +1038,7 @@ fn cmd_ike(args: &[String]) {
     let cert_login = match &cert {
         Some(path) => match prepare_cert_login(&host, path, realm.as_deref()) {
             Ok(c) => Some(c),
-            Err(e) => {
-                eprintln!("IKE failed: {e}");
-                std::process::exit(1);
-            }
+            Err(e) => report::fail("IKE", &e),
         },
         None => None,
     };
@@ -1264,7 +1261,7 @@ fn cmd_ike(args: &[String]) {
                         match passcode.take() {
                             Some(p) => p,
                             None => {
-                                println!("# AUTH-PROMPT: code: {}", sysnet::one_line(&label));
+                                report::prompt("code", &label);
                                 match anyconnect::read_secret("Code: ") {
                                     Some(c) => c.trim().to_string(),
                                     None => {
@@ -1460,8 +1457,7 @@ fn cmd_ike(args: &[String]) {
     };
 
     if let Err(e) = run() {
-        eprintln!("IKE failed: {e}");
-        std::process::exit(1);
+        report::fail("IKE", &e);
     }
 }
 
@@ -1472,17 +1468,28 @@ fn main() {
     //   --allow-ipv6   keep IPv6 egress (default: blocked, since the tunnels are v4)
     //   --pin [<host>:<port>=]sha256:<hex>   trust that gateway certificate (repeatable)
     //   --insecure     trust any gateway certificate
+    //   --label <name> the connection's name in `unvpn status`
+    //   --detachable   once up, keep the tunnel when stdin closes
     let mut killswitch = false;
     let mut block_ipv6 = true;
     let mut tls_flags: Vec<String> = Vec::new();
     let mut pins: Vec<String> = Vec::new();
     let mut insecure = false;
+    let mut label = String::new();
     let mut args: Vec<String> = Vec::new();
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
             "--killswitch" => killswitch = true,
             "--allow-ipv6" => block_ipv6 = false,
+            "--detachable" => sysnet::set_detachable(true),
+            "--label" => {
+                let Some(v) = it.next() else {
+                    eprintln!("--label needs a value");
+                    std::process::exit(2);
+                };
+                label = v;
+            }
             "--insecure" => {
                 insecure = true;
                 tls_flags.push(a);
@@ -1510,8 +1517,28 @@ fn main() {
         std::process::exit(2);
     }
 
+    let tunnel = match args.first().map(String::as_str) {
+        Some("ike") => Some("ike"),
+        Some("tunnel-up") => Some("ike"),
+        Some("forti") => Some("forti"),
+        Some("forti-ipsec" | "fortiipsec") => Some("forti-ipsec"),
+        Some("f5") => Some("f5"),
+        Some("anyconnect") => Some("anyconnect"),
+        Some("gp" | "globalprotect") => Some("gp"),
+        Some("ivanti" | "pulse") => Some("ivanti"),
+        Some("openvpn") => Some("openvpn"),
+        Some("wireguard" | "wg") => Some("wireguard"),
+        _ => None,
+    };
+    if let Some(backend) = tunnel {
+        control::start(backend, &label, &args[1..]);
+        report::connecting();
+    }
+
     match args.first().map(String::as_str) {
         Some("connect") => connect::cmd_connect(&args[1..], killswitch, !block_ipv6, &tls_flags),
+        Some("status") => control::cmd_status(&args[1..]),
+        Some("disconnect") => control::cmd_disconnect(&args[1..]),
         Some("hello") => cmd_hello(&args[1..]),
         Some("login") => cmd_login(&args[1..]),
         Some("deob") => cmd_deob(&args[1..]),
@@ -1534,6 +1561,9 @@ fn main() {
             usage(&mut std::io::stderr());
             std::process::exit(2);
         }
+    }
+    if tunnel.is_some() {
+        report::down();
     }
 }
 
@@ -1567,6 +1597,8 @@ fn usage(out: &mut dyn Write) {
     let _ = writeln!(out, "usage:");
     let _ = writeln!(out, "  unvpn connect <profile>          # connect a profile saved in the app (run as your user)");
     let _ = writeln!(out, "  unvpn connect --list             # the saved profiles");
+    let _ = writeln!(out, "  unvpn status [--json]            # the running tunnels");
+    let _ = writeln!(out, "  unvpn disconnect [<name> | --all]  # stop a running tunnel (the app's too)");
     let _ = writeln!(out, "  unvpn hello [--gateway <host>] [--send]");
     let _ = writeln!(out, "  unvpn login --gateway <host> [--user <u>] [--realm <r>] [--passcode <p>] [--probe]");
     let _ = writeln!(out, "  unvpn tunnel --gateway <host> --active-key <obfuscated-hex> [--om-ip <ip>]");
@@ -1593,6 +1625,8 @@ fn usage(out: &mut dyn Write) {
     let _ = writeln!(out, "                 trust this gateway certificate when no system CA vouches for it (repeatable);");
     let _ = writeln!(out, "                 without one, an unknown certificate is shown and you are asked");
     let _ = writeln!(out, "  --insecure     accept any gateway certificate without checking it");
+    let _ = writeln!(out, "  --label <name> the connection's name in `unvpn status`");
+    let _ = writeln!(out, "  --detachable   once connected, stay up when stdin closes (for front-ends that may restart)");
 }
 
 fn cmd_hello(args: &[String]) {

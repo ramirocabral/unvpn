@@ -137,8 +137,7 @@ pub fn login(host: &str, port: u16, realm: &str, opts: &SamlOpts) -> Result<Sess
     let listeners = bind_listeners(lport)?;
 
     let start = start_url(host, port, realm);
-    // The GUI parses this exact marker to open the user's browser.
-    println!("# SAML-URL: {start}");
+    crate::report::saml_url(&start);
     println!("# Sign in with your browser:\n#   {start}");
     if opts.open_browser {
         open_browser(&start);

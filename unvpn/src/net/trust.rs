@@ -179,10 +179,7 @@ fn ask(endpoint: &str, fp: &str, cert: &X509Ref, why: &str) -> Result<bool, Stri
     }
     let _watch = sysnet::StdinWatchPause::new();
     let details = sysnet::one_line(&format!("{why}; subject {subject}; issuer {issuer}"));
-    let announce = || {
-        out!("# AUTH-PROMPT: trust: {endpoint} {fp} {details}");
-        let _ = std::io::stdout().flush();
-    };
+    let announce = || crate::report::prompt("trust", &format!("{endpoint} {fp} {details}"));
     sysnet::stdin_ask(announce, None, |l| answer_for(fp, l))
         .ok_or_else(|| format!("cancelled while asking whether to trust the certificate of {endpoint}"))
 }
