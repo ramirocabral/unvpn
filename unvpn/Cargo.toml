@@ -5,8 +5,8 @@ edition = "2021"
 description = "Native Linux multi-vendor VPN client engine (Check Point / Fortinet / F5 / AnyConnect / GlobalProtect / OpenVPN, plus kernel WireGuard)."
 
 [dependencies]
-native-tls = "0.2.12"
 openssl = "0.10"
+openssl-probe = "0.2"
 libc = "0.2"
 unvpn-profiles = { path = "../unvpn-profiles" }
 
@@ -16,7 +16,7 @@ unvpn-profiles = { path = "../unvpn-profiles" }
 # The AnyConnect DTLS fast-path uses libgnutls, but loads it at RUNTIME via dlopen
 # (see anyconnect/dtls.rs) — no link-time dependency — so a single binary still runs
 # on any distro: DTLS where libgnutls is present, CSTP everywhere else.
-vendored = ["openssl/vendored", "native-tls/vendored", "unvpn-profiles/vendored"]
+vendored = ["openssl/vendored", "unvpn-profiles/vendored"]
 
 [[bin]]
 name = "unvpn"

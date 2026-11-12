@@ -26,9 +26,9 @@ use super::http;
 use crate::ike::esp::EspSa;
 use crate::sysnet;
 use crate::tun;
-use native_tls::TlsStream;
+use crate::net::tls::TlsStream;
 use std::io::{Read, Write};
-use std::net::{Ipv4Addr, TcpStream, UdpSocket};
+use std::net::{Ipv4Addr, UdpSocket};
 use std::os::unix::io::AsRawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -397,7 +397,7 @@ fn esp_loop(l: &mut EspLink, tun_file: &mut std::fs::File, rekey_at: Option<Inst
 }
 
 struct SslLink {
-    tls: TlsStream<TcpStream>,
+    tls: TlsStream,
     fd: i32,
     rx: Vec<u8>,
 }

@@ -20,9 +20,9 @@ use super::dtls;
 use super::http;
 use crate::sysnet;
 use crate::tun;
-use native_tls::TlsStream;
+use crate::net::tls::TlsStream;
 use std::io::{Read, Write};
-use std::net::{Ipv4Addr, TcpStream};
+use std::net::Ipv4Addr;
 use std::os::unix::io::AsRawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -49,7 +49,7 @@ pub struct RunOpts {
 }
 
 struct Channel {
-    tls: TlsStream<TcpStream>,
+    tls: TlsStream,
     fd: i32,
     /// Bytes read from the socket but not yet split into frames.
     rx: Vec<u8>,

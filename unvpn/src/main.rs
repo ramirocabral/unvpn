@@ -21,6 +21,7 @@ mod gp;
 mod ike;
 mod ivanti;
 mod leakguard;
+mod net;
 mod netmon;
 mod openvpn;
 mod replay;
@@ -29,7 +30,6 @@ mod tun;
 mod wireguard;
 
 use std::io::{Read, Write};
-use std::net::TcpStream;
 use std::time::Duration;
 
 const USER_AGENT: &str = "Mozilla/5.0 (compatible; CPSC 5.0; Windows NT 5.0)";
@@ -100,18 +100,7 @@ fn cmd_tunnel(args: &[String]) {
         }
     };
 
-    let connector = native_tls::TlsConnector::builder()
-        .danger_accept_invalid_certs(true)
-        .danger_accept_invalid_hostnames(true)
-        .build()
-        .expect("tls builder");
-    let tcp = TcpStream::connect((host.as_str(), 443)).unwrap_or_else(|e| {
-        eprintln!("connect failed: {e}");
-        std::process::exit(1);
-    });
-    tcp.set_read_timeout(Some(Duration::from_secs(20))).ok();
-    tcp.set_write_timeout(Some(Duration::from_secs(20))).ok();
-    let mut tls = connector.connect(&host, tcp).unwrap_or_else(|e| {
+    let mut tls = net::tls::connect(&host, 443, Duration::from_secs(20)).unwrap_or_else(|e| {
         eprintln!("TLS failed: {e}");
         std::process::exit(1);
     });
@@ -1289,23 +1278,13 @@ fn cmd_ike(args: &[String]) {
                         println!("# gateway challenge [{:?}]: {}", ctype, sysnet::one_line(&prompt));
                         match passcode.take() {
                             Some(p) => p,
-                            None => {
-                                // Read the passcode from stdin: the GUI pipes it; a TTY prompts.
-                                // (Only a TTY gets the label: on the GUI's pipe it would glue
-                                // itself to the next stderr line and hide "IKE failed".)
-                                if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-                                    eprint!("Passcode (PIN+tokencode): ");
-                                    let _ = std::io::stderr().flush();
-                                }
-                                let mut line = String::new();
-                                if std::io::stdin().read_line(&mut line).unwrap_or(0) == 0
-                                    || line.trim().is_empty()
-                                {
+                            None => match anyconnect::read_secret("Passcode (PIN+tokencode): ") {
+                                Some(p) if !p.trim().is_empty() => p.trim().to_string(),
+                                _ => {
                                     println!("# no passcode provided; stopping.");
                                     return Ok(());
                                 }
-                                line.trim().to_string()
-                            }
+                            },
                         }
                     }
                 };
@@ -1486,26 +1465,48 @@ fn main() {
     // back-end sees the same policy without each parsing these itself.
     //   --killswitch   fail-closed firewall (default off)
     //   --allow-ipv6   keep IPv6 egress (default: blocked, since the tunnels are v4)
+    //   --pin [<host>:<port>=]sha256:<hex>   trust that gateway certificate (repeatable)
+    //   --insecure     trust any gateway certificate
     let mut killswitch = false;
     let mut block_ipv6 = true;
-    let args: Vec<String> = std::env::args()
-        .skip(1)
-        .filter(|a| match a.as_str() {
-            "--killswitch" => {
-                killswitch = true;
-                false
+    let mut tls_flags: Vec<String> = Vec::new();
+    let mut pins: Vec<String> = Vec::new();
+    let mut insecure = false;
+    let mut args: Vec<String> = Vec::new();
+    let mut it = std::env::args().skip(1);
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--killswitch" => killswitch = true,
+            "--allow-ipv6" => block_ipv6 = false,
+            "--insecure" => {
+                insecure = true;
+                tls_flags.push(a);
             }
-            "--allow-ipv6" => {
-                block_ipv6 = false;
-                false
+            "--pin" => {
+                let Some(v) = it.next() else {
+                    eprintln!("--pin needs a value: [<host>:<port>=]sha256:<hex>");
+                    std::process::exit(2);
+                };
+                pins.push(v.clone());
+                tls_flags.extend([a, v]);
             }
-            _ => true,
-        })
-        .collect();
+            _ => match a.strip_prefix("--pin=") {
+                Some(v) => {
+                    pins.push(v.to_string());
+                    tls_flags.extend(["--pin".to_string(), v.to_string()]);
+                }
+                None => args.push(a),
+            },
+        }
+    }
     leakguard::configure(killswitch, block_ipv6);
+    if let Err(e) = net::trust::configure(&pins, insecure) {
+        eprintln!("{e}");
+        std::process::exit(2);
+    }
 
     match args.first().map(String::as_str) {
-        Some("connect") => connect::cmd_connect(&args[1..], killswitch, !block_ipv6),
+        Some("connect") => connect::cmd_connect(&args[1..], killswitch, !block_ipv6, &tls_flags),
         Some("hello") => cmd_hello(&args[1..]),
         Some("login") => cmd_login(&args[1..]),
         Some("deob") => cmd_deob(&args[1..]),
@@ -1556,6 +1557,10 @@ fn usage(out: &mut dyn Write) {
     let _ = writeln!(out, "\nglobal flags (any back-end):");
     let _ = writeln!(out, "  --killswitch   fail-closed firewall: block all egress but the tunnel, gateway, LAN and DHCP");
     let _ = writeln!(out, "  --allow-ipv6   keep IPv6 egress (default: blocked, since the tunnels are IPv4-only)");
+    let _ = writeln!(out, "  --pin [<host>:<port>=]sha256:<hex>");
+    let _ = writeln!(out, "                 trust this gateway certificate when no system CA vouches for it (repeatable);");
+    let _ = writeln!(out, "                 without one, an unknown certificate is shown and you are asked");
+    let _ = writeln!(out, "  --insecure     accept any gateway certificate without checking it");
 }
 
 fn cmd_hello(args: &[String]) {
@@ -1749,19 +1754,13 @@ fn cmd_login(args: &[String]) {
                     );
                     return;
                 } else {
-                    print!("Passcode: ");
-                    std::io::stdout().flush().ok();
-                    let mut line = String::new();
-                    if std::io::stdin().read_line(&mut line).is_err() {
-                        eprintln!("could not read passcode");
-                        std::process::exit(1);
+                    match anyconnect::read_secret("Passcode: ") {
+                        Some(l) if !l.trim().is_empty() => l.trim().to_string(),
+                        _ => {
+                            println!("(no passcode entered; stopping)");
+                            return;
+                        }
                     }
-                    let line = line.trim().to_string();
-                    if line.is_empty() {
-                        println!("(no passcode entered; stopping)");
-                        return;
-                    }
-                    line
                 };
 
                 let chr = ccc::multi_challenge(new_request_id(), &sid, &input);
@@ -1842,20 +1841,9 @@ fn http_request(host: &str, path: &str, body: &str) -> String {
     )
 }
 
-/// POST over TLS. The gateway presents an internal-CA certificate; for this
-/// pre-auth probe we accept it and (later) pin it via internal_ca_sha1_hash.
+/// One CCC request over TLS to the gateway's port 443.
 fn post(host: &str, request: &str) -> Result<String, String> {
-    let connector = native_tls::TlsConnector::builder()
-        .danger_accept_invalid_certs(true)
-        .danger_accept_invalid_hostnames(true)
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    let tcp = TcpStream::connect((host, 443)).map_err(|e| e.to_string())?;
-    tcp.set_read_timeout(Some(Duration::from_secs(15))).ok();
-    tcp.set_write_timeout(Some(Duration::from_secs(15))).ok();
-
-    let mut tls = connector.connect(host, tcp).map_err(|e| e.to_string())?;
+    let mut tls = net::tls::connect(host, 443, Duration::from_secs(15))?;
     tls.write_all(request.as_bytes()).map_err(|e| e.to_string())?;
 
     let mut buf = Vec::new();

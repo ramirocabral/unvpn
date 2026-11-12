@@ -4,14 +4,10 @@
 //! `X-Aggregate-Auth`). Redirects are handed back to the caller: the auth layer
 //! decides whether a `Location` is a load-balancer hop to another gateway (follow)
 //! or something XML-POST can't handle (fail).
-//!
-//! The gateway certificate is accepted (corporate CAs are often not in the system
-//! store); the session is bound by the `webvpn` cookie, not by the certificate.
 
-use native_tls::{TlsConnector, TlsStream};
+pub use crate::net::tls::connect as connect_tls;
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
-use std::net::TcpStream;
 use std::time::Duration;
 
 #[derive(Default, Clone, Debug)]
@@ -81,34 +77,6 @@ impl Endpoint {
     pub fn base_url(&self) -> String {
         format!("https://{}", self.host_header())
     }
-}
-
-pub fn connect_tls(host: &str, port: u16, timeout: Duration) -> Result<TlsStream<TcpStream>, String> {
-    let connector = TlsConnector::builder()
-        .danger_accept_invalid_certs(true)
-        .danger_accept_invalid_hostnames(true)
-        .build()
-        .map_err(|e| format!("tls builder: {e}"))?;
-    let tcp = connect_tcp(host, port, timeout)?;
-    tcp.set_read_timeout(Some(timeout)).ok();
-    tcp.set_write_timeout(Some(timeout)).ok();
-    tcp.set_nodelay(true).ok();
-    connector.connect(host, tcp).map_err(|e| format!("TLS to {host}: {e}"))
-}
-
-/// TCP connect with a per-address timeout (a plain `connect` to a dead gateway
-/// hangs ~2 min), trying each resolved address in turn.
-fn connect_tcp(host: &str, port: u16, timeout: Duration) -> Result<TcpStream, String> {
-    use std::net::ToSocketAddrs;
-    let addrs = (host, port).to_socket_addrs().map_err(|e| format!("resolve {host}: {e}"))?;
-    let mut last = format!("connect {host}:{port}: no address");
-    for a in addrs {
-        match TcpStream::connect_timeout(&a, timeout) {
-            Ok(s) => return Ok(s),
-            Err(e) => last = format!("connect {host}:{port} ({a}): {e}"),
-        }
-    }
-    Err(last)
 }
 
 /// The headers every AnyConnect control request carries: identity, cookies and

@@ -39,18 +39,20 @@ struct Opts {
     no_dtls: bool,
     killswitch: bool,
     allow_ipv6: bool,
+    tls_flags: Vec<String>,
 }
 
 fn usage() {
     eprintln!("usage:");
-    eprintln!("  unvpn connect <profile> [--no-dtls] [--killswitch] [--allow-ipv6]");
+    eprintln!("  unvpn connect <profile> [--no-dtls] [--killswitch] [--allow-ipv6] [--pin <pin>] [--insecure]");
     eprintln!("  unvpn connect <profile> --dry-run      # show the engine command, connect nothing");
     eprintln!("  unvpn connect --list                   # the saved profiles");
     eprintln!("Run it as your user: it reads your profiles and keyring, and asks for sudo itself.");
 }
 
-pub fn cmd_connect(args: &[String], killswitch: bool, allow_ipv6: bool) {
-    let mut o = Opts { killswitch, allow_ipv6, ..Default::default() };
+/// `tls_flags`: the global `--pin`/`--insecure` flags given, passed on to the engine.
+pub fn cmd_connect(args: &[String], killswitch: bool, allow_ipv6: bool, tls_flags: &[String]) {
+    let mut o = Opts { killswitch, allow_ipv6, tls_flags: tls_flags.to_vec(), ..Default::default() };
     for a in args {
         match a.as_str() {
             "--list" | "-l" => o.list = true,
@@ -207,6 +209,7 @@ fn run(p: &Profile, o: &Opts) -> Result<i32, String> {
     if o.allow_ipv6 {
         add("--allow-ipv6");
     }
+    args.extend(o.tls_flags.iter().cloned());
 
     let bin = engine_bin()?;
     let mut argv: Vec<String> = escalation();

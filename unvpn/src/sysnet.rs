@@ -8,12 +8,13 @@
 //!   out through a channel, so the auth prompts (2FA code, SAML paste, push), and
 //!   later the tunnel's `disconnect` watcher, never race each other for a line.
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub const RESOLV_CONF: &str = "/etc/resolv.conf";
 /// First line of the resolv.conf we write, used to recognise our own leftover.
@@ -353,9 +354,16 @@ fn stdin_rx() -> &'static Mutex<mpsc::Receiver<String>> {
     })
 }
 
+/// Lines [`stdin_ask`] read past while waiting for its answer, handed out before
+/// anything newer.
+static STDIN_HELD: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
+
 /// Next stdin line, waiting at most `timeout` (`None` = until a line or EOF). Code
 /// that mixes this with direct `stdin.read_line` must do its direct reads first.
 pub fn stdin_next(timeout: Option<Duration>) -> StdinEvent {
+    if let Some(l) = STDIN_HELD.lock().unwrap_or_else(|e| e.into_inner()).pop_front() {
+        return StdinEvent::Line(l);
+    }
     let rx = stdin_rx().lock().unwrap_or_else(|e| e.into_inner());
     match timeout {
         None => rx.recv().map(StdinEvent::Line).unwrap_or(StdinEvent::Eof),
@@ -364,6 +372,43 @@ pub fn stdin_next(timeout: Option<Duration>) -> StdinEvent {
             Err(RecvTimeoutError::Timeout) => StdinEvent::Timeout,
             Err(RecvTimeoutError::Disconnected) => StdinEvent::Eof,
         },
+    }
+}
+
+/// Ask a question whose answer the front-end tags, so it can't be confused with
+/// the lines it wrote ahead of time (the password, …). `announce` prints the
+/// question once this holds the reader, so no other reader can take the answer.
+/// Lines `pick` rejects stay queued, in order, for the next [`stdin_next`].
+/// `None` on `disconnect`, EOF or timeout.
+pub fn stdin_ask<T>(
+    announce: impl FnOnce(),
+    timeout: Option<Duration>,
+    pick: impl FnMut(&str) -> Option<T>,
+) -> Option<T> {
+    let rx = stdin_rx().lock().unwrap_or_else(|e| e.into_inner());
+    announce();
+    ask_from(&rx, &STDIN_HELD, timeout, pick)
+}
+
+fn ask_from<T>(
+    rx: &mpsc::Receiver<String>,
+    held: &Mutex<VecDeque<String>>,
+    timeout: Option<Duration>,
+    mut pick: impl FnMut(&str) -> Option<T>,
+) -> Option<T> {
+    let deadline = timeout.map(|t| Instant::now() + t);
+    loop {
+        let line = match deadline {
+            None => rx.recv().ok()?,
+            Some(d) => rx.recv_timeout(d.checked_duration_since(Instant::now())?).ok()?,
+        };
+        if is_disconnect(&line) {
+            return None;
+        }
+        match pick(&line) {
+            Some(v) => return Some(v),
+            None => held.lock().unwrap_or_else(|e| e.into_inner()).push_back(line),
+        }
     }
 }
 
@@ -542,6 +587,25 @@ impl Drop for EchoOff {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_asked_question_leaves_earlier_lines_queued_in_order() {
+        let (tx, rx) = mpsc::channel();
+        let held = Mutex::new(VecDeque::new());
+        for l in ["the password", "a second secret", "tag yes", "later"] {
+            tx.send(l.to_string()).unwrap();
+        }
+        let pick = |l: &str| l.strip_prefix("tag ").map(str::to_string);
+        assert_eq!(ask_from(&rx, &held, None, pick).as_deref(), Some("yes"));
+        assert_eq!(held.lock().unwrap().iter().collect::<Vec<_>>(), ["the password", "a second secret"]);
+        assert_eq!(rx.recv().unwrap(), "later");
+
+        tx.send("disconnect".into()).unwrap();
+        assert_eq!(ask_from(&rx, &held, None, pick), None);
+        assert_eq!(ask_from(&rx, &held, Some(Duration::from_millis(20)), pick), None);
+        drop(tx);
+        assert_eq!(ask_from(&rx, &held, None, pick), None);
+    }
 
     /// Meaningful only under sudo/pkexec (run the test binary with `sudo`); a no-op otherwise.
     #[test]

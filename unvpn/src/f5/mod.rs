@@ -7,7 +7,6 @@ pub mod ppp;
 pub mod tunnel;
 
 use auth::{Outcome, Session};
-use std::io::Write;
 use std::time::Duration;
 
 struct Args {
@@ -173,50 +172,6 @@ fn probe(a: &Args) -> Result<(), String> {
     Ok(())
 }
 
-/// Read one secret line from stdin (the GUI pipes secrets here). On a TTY, echo is
-/// off for the duration.
-fn read_stdin_line(prompt: &str) -> Option<String> {
-    // Only a TTY gets the label: on a pipe it would glue itself to the next stderr line.
-    let fd = libc::STDIN_FILENO;
-    let is_tty = unsafe { libc::isatty(fd) == 1 };
-    if is_tty {
-        eprint!("{prompt}");
-        let _ = std::io::stderr().flush();
-    }
-    let saved = if is_tty {
-        unsafe {
-            let mut t: libc::termios = std::mem::zeroed();
-            if libc::tcgetattr(fd, &mut t) == 0 {
-                let mut raw = t;
-                raw.c_lflag &= !libc::ECHO;
-                libc::tcsetattr(fd, libc::TCSANOW, &raw);
-                Some(t)
-            } else {
-                None
-            }
-        }
-    } else {
-        None
-    };
-
-    let mut line = String::new();
-    let res = std::io::stdin().read_line(&mut line);
-
-    if let Some(t) = saved {
-        unsafe { libc::tcsetattr(fd, libc::TCSANOW, &t) };
-        eprintln!(); // the user's Enter wasn't echoed; move to the next line
-    }
-
-    match res {
-        Ok(0) => None,
-        Ok(_) => {
-            let t = line.trim_end_matches(['\n', '\r']).to_string();
-            if t.is_empty() { None } else { Some(t) }
-        }
-        Err(_) => None,
-    }
-}
-
 /// Authenticate with password (+ optional OTP), walking the APM form chain.
 fn do_login(a: &Args) -> Result<Session, String> {
     let mut s = Session::new(a.host.clone(), a.port, timeout());
@@ -249,7 +204,7 @@ fn do_login(a: &Args) -> Result<Session, String> {
             let secret = if !password_sent {
                 let p = match &a.password {
                     Some(p) => p.clone(),
-                    None => read_stdin_line("Password: ").ok_or("no password provided")?,
+                    None => crate::anyconnect::read_secret("Password: ").ok_or("no password provided")?,
                 };
                 password_sent = true;
                 p
@@ -261,7 +216,7 @@ fn do_login(a: &Args) -> Result<Session, String> {
                         // often emailed/SMS and doesn't exist until the password is in.
                         let msg = if form.banner.is_empty() { "One-time passcode" } else { form.banner.as_str() };
                         println!("# AUTH-PROMPT: code: {}", crate::sysnet::one_line(msg));
-                        read_stdin_line("Token code (OTP): ").ok_or("OTP required but none provided")?
+                        crate::anyconnect::read_secret("Token code (OTP): ").ok_or("OTP required but none provided")?
                     }
                 }
             };

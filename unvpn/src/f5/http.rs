@@ -4,13 +4,10 @@
 //! `302 …` steps (hence [`request_follow`]); the session is only established once
 //! both the `MRHSession` and `F5_ST` cookies are set. After `GET /myvpn?…` the same
 //! TLS stream ([`connect_tls`] + [`build_request`]) carries PPP.
-//!
-//! The gateway cert is accepted (corporate CAs are often not in the system store).
 
-use native_tls::{TlsConnector, TlsStream};
+pub use crate::net::tls::connect as connect_tls;
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
-use std::net::TcpStream;
 use std::time::Duration;
 
 /// The exact User-Agent the official F5 client sends. Some APM access policies
@@ -71,33 +68,6 @@ impl Response {
     pub fn location(&self) -> Option<&str> {
         self.header("location")
     }
-}
-
-pub fn connect_tls(host: &str, port: u16, timeout: Duration) -> Result<TlsStream<TcpStream>, String> {
-    let connector = TlsConnector::builder()
-        .danger_accept_invalid_certs(true)
-        .danger_accept_invalid_hostnames(true)
-        .build()
-        .map_err(|e| format!("tls builder: {e}"))?;
-    let tcp = connect_tcp(host, port, timeout)?;
-    tcp.set_read_timeout(Some(timeout)).ok();
-    tcp.set_write_timeout(Some(timeout)).ok();
-    tcp.set_nodelay(true).ok();
-    connector.connect(host, tcp).map_err(|e| format!("TLS to {host}: {e}"))
-}
-
-/// Timeout per address: a plain `connect` to a dead gateway hangs ~2 min.
-fn connect_tcp(host: &str, port: u16, timeout: Duration) -> Result<TcpStream, String> {
-    use std::net::ToSocketAddrs;
-    let addrs = (host, port).to_socket_addrs().map_err(|e| format!("resolve {host}: {e}"))?;
-    let mut last = format!("connect {host}:{port}: no address");
-    for a in addrs {
-        match TcpStream::connect_timeout(&a, timeout) {
-            Ok(s) => return Ok(s),
-            Err(e) => last = format!("connect {host}:{port} ({a}): {e}"),
-        }
-    }
-    Err(last)
 }
 
 /// `extra` holds additional header lines ("Name: value"); `body` is already encoded.
