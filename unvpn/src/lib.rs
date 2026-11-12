@@ -13,6 +13,7 @@ mod anyconnect;
 mod checkpoint;
 mod connect;
 mod control;
+mod dns;
 mod f5;
 mod forti;
 mod forti_ipsec;

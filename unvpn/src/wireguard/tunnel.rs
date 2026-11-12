@@ -166,7 +166,11 @@ pub fn run(cfg: Config, opts: RunOpts) -> Result<(), String> {
         out!("# --no-routes: NOT installing routes or DNS.");
     } else {
         restore.routes = setup_routes(&cfg, &ifname, &endpoints);
-        restore.dns = sysnet::set_dns(&iface.dns, &iface.search.join(" "));
+        let full = cfg
+            .peers
+            .iter()
+            .any(|p| p.allowed_ips.iter().any(|n| n.is_default()));
+        restore.dns = crate::dns::set_dns(&ifname, &iface.dns, &iface.search.join(" "), full);
         if crate::leakguard::killswitch_requested() {
             // WireGuard is dual-stack and the kernel owns its routing; a crude v4/v6
             // egress firewall would break a legitimate IPv6 tunnel. Use the profile's

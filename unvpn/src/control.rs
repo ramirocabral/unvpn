@@ -669,7 +669,7 @@ pub fn cmd_recover(args: &[String]) {
         }
     }
 
-    if live.is_empty() && crate::sysnet::restore_orphaned_dns() {
+    if crate::dns::recover() {
         println!("# restored /etc/resolv.conf");
         did += 1;
     }

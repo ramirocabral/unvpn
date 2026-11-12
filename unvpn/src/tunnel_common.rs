@@ -32,6 +32,11 @@ struct Lines {
 }
 
 impl RoutePlan {
+    /// Everything goes into the tunnel.
+    pub fn is_full(&self) -> bool {
+        self.full || self.include.iter().any(|&(_, len)| len == 0)
+    }
+
     fn lines(&self, tun: &str, path: impl Fn(IpAddr) -> Option<String>) -> Lines {
         let mut add = Vec::new();
         let mut pin = None;
@@ -46,7 +51,7 @@ impl RoutePlan {
                 add.push(format!("route add {net}/{len} {p}"));
             }
         }
-        if self.full || self.include.iter().any(|&(_, len)| len == 0) {
+        if self.is_full() {
             for half in ["0.0.0.0/1", "128.0.0.0/1"] {
                 add.push(format!("route add {half} dev {tun}"));
             }
@@ -61,7 +66,7 @@ impl RoutePlan {
     /// routes this added (not those that already existed).
     pub fn install(&self, tun: &str) -> Vec<String> {
         let Lines { add, pin } = self.lines(tun, original_path);
-        let full = self.full || self.include.iter().any(|&(_, len)| len == 0);
+        let full = self.is_full();
         let split = self.include.iter().filter(|&&(_, len)| len > 0).count();
         if full {
             out!("# full tunnel: 0.0.0.0/1 + 128.0.0.0/1 via {tun}");
@@ -185,7 +190,8 @@ pub fn configure(
         None => out!("# --no-routes: installing no routes/DNS (reach hosts with `ping -I {dev}`)"),
         Some(plan) => {
             restore.routes = plan.install(dev);
-            restore.dns = sysnet::set_dns(&sysnet::tunnelled_dns(dns, dev), domains);
+            let dns = crate::dns::tunnelled_dns(dns, dev);
+            restore.dns = crate::dns::set_dns(dev, &dns, domains, plan.is_full());
             let pinned: Vec<Ipv4Addr> = plan.gateway.into_iter().collect();
             restore.leak = crate::leakguard::enable(dev, &pinned)?;
         }

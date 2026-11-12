@@ -34,6 +34,10 @@ Supported VPNs:
 - Encrypted export / import of all profiles, to move them between machines.
 - Auto-reconnect after sleep or a network change, without re-auth.
 - Leak protection: optional kill switch and an IPv6 egress block.
+- Split DNS: with systemd-resolved, a tunnel's DNS servers go on its own link and
+  answer only for its domains (all names for a full tunnel); without it,
+  `/etc/resolv.conf` points at them while connected (`UNVPN_DNS=file|resolved`
+  forces either).
 
 ## Install
 
