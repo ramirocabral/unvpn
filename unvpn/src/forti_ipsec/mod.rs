@@ -1071,6 +1071,9 @@ fn data_plane(
         }
     }
 
+    if lost.is_none() {
+        delete_ike_sa(&udp, &sock, &mut tun_file, &esp, &mut session);
+    }
     out!("# disconnecting — restoring DNS/routes …");
     drop(restore);
     match lost {
@@ -1215,6 +1218,30 @@ fn rekey_child(
     session.esp_spi_i = new_spi_i;
     session.esp_spi_r = new_spi_r;
     Ok(new_esp)
+}
+
+/// End the session on the gateway too: a Delete of the IKE SA, which takes its
+/// CHILD SAs with it. Without it the gateway keeps the session until it times
+/// out, and one that allows a single session per user refuses new logins.
+fn delete_ike_sa(
+    udp: &IkeUdp,
+    sock: &std::net::UdpSocket,
+    tun_file: &mut std::fs::File,
+    esp: &crate::ike::esp::EspSa,
+    session: &mut Ikev2Session,
+) {
+    let msg_id = session.next_msg_id;
+    session.next_msg_id = msg_id + 1;
+    let delete = Payload::Delete {
+        protocol: model::PROTO_IKE,
+        spi_size: 0,
+        spis: Vec::new(),
+    };
+    let req = session.encrypt(model::ExchangeType::Informational.into(), msg_id, &[delete]);
+    match ike_exchange(udp, sock, tun_file, esp, session, &req, msg_id, 1) {
+        Ok(_) => out!("# session closed on the gateway"),
+        Err(e) => out!("# the gateway did not confirm the session close ({e})"),
+    }
 }
 
 /// Liveness probe: an empty INFORMATIONAL request the gateway must answer.

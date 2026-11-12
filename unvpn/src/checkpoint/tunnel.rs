@@ -248,12 +248,14 @@ pub(super) fn run_tunnel(
             }
         });
     }
+    let (control_done_tx, control_done) = mpsc::channel::<()>();
     if let (Some(session), Some(ike_rx)) = (session, ike_rx) {
         let (esp_c, sock_c, uin_c) = (esp.clone(), sock.clone(), uin.clone());
         std::thread::spawn(move || {
             ike_control_loop(
                 session, sock_c, esp_c, om_ip, ike_rx, rekey_secs, lease_secs, mac, uin_c,
-            )
+            );
+            let _ = control_done_tx.send(());
         });
     }
 
@@ -274,6 +276,8 @@ pub(super) fn run_tunnel(
             );
         }
     }
+    // The control thread closes the session on the gateway as it stops.
+    let _ = control_done.recv_timeout(std::time::Duration::from_secs(3));
     out!("# disconnecting — restoring DNS, tearing down tun/routes…");
     // `_restore` puts DNS/routes/leak back as it drops.
     if TUNNEL_LOST.load(Ordering::SeqCst) {
@@ -350,6 +354,10 @@ pub(super) fn ike_control_loop(
 
     loop {
         if TUNNEL_STOP.load(Ordering::SeqCst) {
+            if !TUNNEL_LOST.load(Ordering::SeqCst) {
+                let spi_in = esp.read().map(|e| e.spi_in).unwrap_or(0);
+                send_deletes(&mut session, &sock, spi_in);
+            }
             break;
         }
 
@@ -533,6 +541,44 @@ pub(super) fn do_lease_renew(
 }
 
 /// Prepend the NAT-T Non-ESP marker and send an IKE message on the shared socket.
+/// End the session on the gateway too: Deletes for the ESP SA (by the SPI the
+/// gateway sends to) and for the IKE SA, so it doesn't keep them until they expire.
+fn send_deletes(session: &mut ike::session::Ikev1Session, sock: &std::net::UdpSocket, spi_in: u32) {
+    use ike::model::{ExchangeType, ProtocolId};
+    use ike::wire::Payload;
+    let ike_spi = [
+        session.initiator_spi.to_be_bytes(),
+        session.responder_spi.to_be_bytes(),
+    ]
+    .concat();
+    let sas = [
+        (ProtocolId::IpsecEsp, spi_in.to_be_bytes().to_vec()),
+        (ProtocolId::Isakmp, ike_spi),
+    ];
+    for (proto, spi) in sas {
+        let mut body = 1u32.to_be_bytes().to_vec(); // DOI: IPsec
+        body.push(proto.into());
+        body.push(spi.len() as u8);
+        body.extend_from_slice(&1u16.to_be_bytes());
+        body.extend_from_slice(&spi);
+        let delete = Payload::Delete(body);
+        let mid = ike::crypto::random_u32();
+        let hash = ike::service::make_hash(session, mid, std::slice::from_ref(&delete));
+        let sent = ike::service::encrypt_message(
+            session,
+            ExchangeType::Informational.into(),
+            mid,
+            &[Payload::Hash(hash), delete],
+        )
+        .and_then(|m| send_natt(sock, &m));
+        if let Err(e) = sent {
+            out!("# could not close the session on the gateway: {e}");
+            return;
+        }
+    }
+    out!("# session closed on the gateway");
+}
+
 pub(super) fn send_natt(sock: &std::net::UdpSocket, msg: &[u8]) -> Result<(), String> {
     let mut buf = Vec::with_capacity(4 + msg.len());
     buf.extend_from_slice(&[0, 0, 0, 0]);
