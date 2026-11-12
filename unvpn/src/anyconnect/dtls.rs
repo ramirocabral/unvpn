@@ -52,31 +52,82 @@ struct Params {
 
 /// `dtls12` selects the modern (DTLS 1.2) table vs the classic (DTLS 1.0) one.
 fn resolve(name: &str, dtls12: bool) -> Option<Params> {
-    let p = |version, kx, cipher, mac, prio| Params { version, kx, cipher, mac, prio };
+    let p = |version, kx, cipher, mac, prio| Params {
+        version,
+        kx,
+        cipher,
+        mac,
+        prio,
+    };
     Some(if dtls12 {
         match name {
-            "ECDHE-RSA-AES256-GCM-SHA384" => p(GNUTLS_DTLS1_2, GNUTLS_KX_ECDHE_RSA, GNUTLS_CIPHER_AES_256_GCM, GNUTLS_MAC_AEAD,
-                "NONE:+VERS-DTLS1.2:+COMP-NULL:+AES-256-GCM:+AEAD:+ECDHE-RSA:+SIGN-ALL:%COMPAT"),
-            "ECDHE-RSA-AES128-GCM-SHA256" => p(GNUTLS_DTLS1_2, GNUTLS_KX_ECDHE_RSA, GNUTLS_CIPHER_AES_128_GCM, GNUTLS_MAC_AEAD,
-                "NONE:+VERS-DTLS1.2:+COMP-NULL:+AES-128-GCM:+AEAD:+ECDHE-RSA:+SIGN-ALL:%COMPAT"),
-            "AES256-GCM-SHA384" => p(GNUTLS_DTLS1_2, GNUTLS_KX_RSA, GNUTLS_CIPHER_AES_256_GCM, GNUTLS_MAC_AEAD,
-                "NONE:+VERS-DTLS1.2:+COMP-NULL:+AES-256-GCM:+AEAD:+RSA:+SIGN-ALL:%COMPAT"),
-            "AES128-GCM-SHA256" => p(GNUTLS_DTLS1_2, GNUTLS_KX_RSA, GNUTLS_CIPHER_AES_128_GCM, GNUTLS_MAC_AEAD,
-                "NONE:+VERS-DTLS1.2:+COMP-NULL:+AES-128-GCM:+AEAD:+RSA:+SIGN-ALL:%COMPAT"),
+            "ECDHE-RSA-AES256-GCM-SHA384" => p(
+                GNUTLS_DTLS1_2,
+                GNUTLS_KX_ECDHE_RSA,
+                GNUTLS_CIPHER_AES_256_GCM,
+                GNUTLS_MAC_AEAD,
+                "NONE:+VERS-DTLS1.2:+COMP-NULL:+AES-256-GCM:+AEAD:+ECDHE-RSA:+SIGN-ALL:%COMPAT",
+            ),
+            "ECDHE-RSA-AES128-GCM-SHA256" => p(
+                GNUTLS_DTLS1_2,
+                GNUTLS_KX_ECDHE_RSA,
+                GNUTLS_CIPHER_AES_128_GCM,
+                GNUTLS_MAC_AEAD,
+                "NONE:+VERS-DTLS1.2:+COMP-NULL:+AES-128-GCM:+AEAD:+ECDHE-RSA:+SIGN-ALL:%COMPAT",
+            ),
+            "AES256-GCM-SHA384" => p(
+                GNUTLS_DTLS1_2,
+                GNUTLS_KX_RSA,
+                GNUTLS_CIPHER_AES_256_GCM,
+                GNUTLS_MAC_AEAD,
+                "NONE:+VERS-DTLS1.2:+COMP-NULL:+AES-256-GCM:+AEAD:+RSA:+SIGN-ALL:%COMPAT",
+            ),
+            "AES128-GCM-SHA256" => p(
+                GNUTLS_DTLS1_2,
+                GNUTLS_KX_RSA,
+                GNUTLS_CIPHER_AES_128_GCM,
+                GNUTLS_MAC_AEAD,
+                "NONE:+VERS-DTLS1.2:+COMP-NULL:+AES-128-GCM:+AEAD:+RSA:+SIGN-ALL:%COMPAT",
+            ),
             _ => return None,
         }
     } else {
         match name {
-            "AES256-SHA" => p(GNUTLS_DTLS1_0, GNUTLS_KX_RSA, GNUTLS_CIPHER_AES_256_CBC, GNUTLS_MAC_SHA1,
-                "NONE:+VERS-DTLS1.0:+COMP-NULL:+AES-256-CBC:+SHA1:+RSA:+SIGN-ALL:%COMPAT"),
-            "AES128-SHA" => p(GNUTLS_DTLS1_0, GNUTLS_KX_RSA, GNUTLS_CIPHER_AES_128_CBC, GNUTLS_MAC_SHA1,
-                "NONE:+VERS-DTLS1.0:+COMP-NULL:+AES-128-CBC:+SHA1:+RSA:+SIGN-ALL:%COMPAT"),
-            "DES-CBC3-SHA" => p(GNUTLS_DTLS1_0, GNUTLS_KX_RSA, GNUTLS_CIPHER_3DES_CBC, GNUTLS_MAC_SHA1,
-                "NONE:+VERS-DTLS1.0:+COMP-NULL:+3DES-CBC:+SHA1:+RSA:+SIGN-ALL:%COMPAT"),
-            "DHE-RSA-AES256-SHA" => p(GNUTLS_DTLS1_0, GNUTLS_KX_DHE_RSA, GNUTLS_CIPHER_AES_256_CBC, GNUTLS_MAC_SHA1,
-                "NONE:+VERS-DTLS1.0:+COMP-NULL:+AES-256-CBC:+SHA1:+DHE-RSA:+SIGN-ALL:%COMPAT"),
-            "DHE-RSA-AES128-SHA" => p(GNUTLS_DTLS1_0, GNUTLS_KX_DHE_RSA, GNUTLS_CIPHER_AES_128_CBC, GNUTLS_MAC_SHA1,
-                "NONE:+VERS-DTLS1.0:+COMP-NULL:+AES-128-CBC:+SHA1:+DHE-RSA:+SIGN-ALL:%COMPAT"),
+            "AES256-SHA" => p(
+                GNUTLS_DTLS1_0,
+                GNUTLS_KX_RSA,
+                GNUTLS_CIPHER_AES_256_CBC,
+                GNUTLS_MAC_SHA1,
+                "NONE:+VERS-DTLS1.0:+COMP-NULL:+AES-256-CBC:+SHA1:+RSA:+SIGN-ALL:%COMPAT",
+            ),
+            "AES128-SHA" => p(
+                GNUTLS_DTLS1_0,
+                GNUTLS_KX_RSA,
+                GNUTLS_CIPHER_AES_128_CBC,
+                GNUTLS_MAC_SHA1,
+                "NONE:+VERS-DTLS1.0:+COMP-NULL:+AES-128-CBC:+SHA1:+RSA:+SIGN-ALL:%COMPAT",
+            ),
+            "DES-CBC3-SHA" => p(
+                GNUTLS_DTLS1_0,
+                GNUTLS_KX_RSA,
+                GNUTLS_CIPHER_3DES_CBC,
+                GNUTLS_MAC_SHA1,
+                "NONE:+VERS-DTLS1.0:+COMP-NULL:+3DES-CBC:+SHA1:+RSA:+SIGN-ALL:%COMPAT",
+            ),
+            "DHE-RSA-AES256-SHA" => p(
+                GNUTLS_DTLS1_0,
+                GNUTLS_KX_DHE_RSA,
+                GNUTLS_CIPHER_AES_256_CBC,
+                GNUTLS_MAC_SHA1,
+                "NONE:+VERS-DTLS1.0:+COMP-NULL:+AES-256-CBC:+SHA1:+DHE-RSA:+SIGN-ALL:%COMPAT",
+            ),
+            "DHE-RSA-AES128-SHA" => p(
+                GNUTLS_DTLS1_0,
+                GNUTLS_KX_DHE_RSA,
+                GNUTLS_CIPHER_AES_128_CBC,
+                GNUTLS_MAC_SHA1,
+                "NONE:+VERS-DTLS1.0:+COMP-NULL:+AES-128-CBC:+SHA1:+DHE-RSA:+SIGN-ALL:%COMPAT",
+            ),
             _ => return None,
         }
     })

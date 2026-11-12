@@ -102,7 +102,12 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
                     host = Some(v.clone());
                 }
             }
-            "--port" => port = it.next().and_then(|s| s.parse().ok()).ok_or("--port needs a number")?,
+            "--port" => {
+                port = it
+                    .next()
+                    .and_then(|s| s.parse().ok())
+                    .ok_or("--port needs a number")?
+            }
             "--user" | "-u" => user = it.next().cloned().ok_or("--user needs a value")?,
             "--realm" | "-r" => realm = it.next().cloned().unwrap_or_default(),
             "--password" | "-p" => password = it.next().cloned(),
@@ -116,15 +121,32 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
             "--no-dtls" => no_dtls = true,
             "--no-browser" => no_browser = true,
             "--no-routes" => no_routes = true,
-            "--cookie-file" => cookie_file = Some(it.next().cloned().ok_or("--cookie-file needs a path")?),
-            "--save-cookie" => save_cookie = Some(it.next().cloned().ok_or("--save-cookie needs a path")?),
+            "--cookie-file" => {
+                cookie_file = Some(it.next().cloned().ok_or("--cookie-file needs a path")?)
+            }
+            "--save-cookie" => {
+                save_cookie = Some(it.next().cloned().ok_or("--save-cookie needs a path")?)
+            }
             other => return Err(format!("unknown argument: {other}")),
         }
     }
     let host = host.ok_or("forti requires --gateway <host[:port]>")?;
     Ok(Args {
-        host, port, user, realm, password, code, action, no_push, no_dtls, saml, saml_port, no_browser, no_routes,
-        cookie_file, save_cookie,
+        host,
+        port,
+        user,
+        realm,
+        password,
+        code,
+        action,
+        no_push,
+        no_dtls,
+        saml,
+        saml_port,
+        no_browser,
+        no_routes,
+        cookie_file,
+        save_cookie,
     })
 }
 
@@ -133,8 +155,12 @@ fn usage() {
     eprintln!("  unvpn forti -g <host[:port]> --probe");
     eprintln!("  unvpn forti -g <host[:port]> -u <user> [--realm r] [--password p] [--code otp] [--no-push] --login");
     eprintln!("  unvpn forti -g <host[:port]> -u <user> [...] --connect     # brings up the tunnel (sudo)");
-    eprintln!("  unvpn forti -g <host[:port]> [--saml] --connect            # SSO/SAML via browser");
-    eprintln!("      [--realm r] [--saml-port n] [--no-browser]  (SAML is auto-detected without -u)");
+    eprintln!(
+        "  unvpn forti -g <host[:port]> [--saml] --connect            # SSO/SAML via browser"
+    );
+    eprintln!(
+        "      [--realm r] [--saml-port n] [--no-browser]  (SAML is auto-detected without -u)"
+    );
     eprintln!("      [--no-routes]  tunnel up but install no routes/DNS (safe data-plane test)");
     eprintln!("      [--no-dtls]    stay on TLS even if the gateway offers DTLS (UDP)");
     eprintln!("      [--save-cookie f] store the SVPNCOOKIE (0600)   [--cookie-file f] reuse it, no login");
@@ -149,11 +175,26 @@ fn timeout() -> Duration {
 fn probe(a: &Args) -> Result<(), String> {
     let mut cookies = http::Cookies::new();
     println!("# probing {}:{} …", a.host, a.port);
-    let resp = http::request(&a.host, a.port, "GET", INFO_PATH, &mut cookies, &[], b"", timeout())?;
+    let resp = http::request(
+        &a.host,
+        a.port,
+        "GET",
+        INFO_PATH,
+        &mut cookies,
+        &[],
+        b"",
+        timeout(),
+    )?;
     let server = resp.header("server").unwrap_or("(no Server header)");
-    println!("# GET {INFO_PATH} → HTTP {} · Server: {server}", resp.status);
+    println!(
+        "# GET {INFO_PATH} → HTTP {} · Server: {server}",
+        resp.status
+    );
     let body = resp.body_str();
-    if body.contains("fgt_lang") || body.contains("<api ") || server.to_ascii_lowercase().contains("forti") {
+    if body.contains("fgt_lang")
+        || body.contains("<api ")
+        || server.to_ascii_lowercase().contains("forti")
+    {
         println!("# looks like a FortiGate SSL-VPN portal");
     }
     let info = saml::parse_remote_info(&body);
@@ -161,7 +202,9 @@ fn probe(a: &Args) -> Result<(), String> {
         println!(
             "# remote info: sso_port={} remoteauthtimeout={}",
             info.sso_port.map(|p| p.to_string()).unwrap_or("-".into()),
-            info.auth_timeout.map(|t| format!("{t}s")).unwrap_or("-".into())
+            info.auth_timeout
+                .map(|t| format!("{t}s"))
+                .unwrap_or("-".into())
         );
     }
 
@@ -170,7 +213,10 @@ fn probe(a: &Args) -> Result<(), String> {
             let idp = url.split('/').nth(2).unwrap_or(&url);
             println!("# SAML/SSO is ENABLED → IdP {idp}");
             if info.sso_port.is_some() {
-                println!("#   external-browser SSO supported (redirect back to 127.0.0.1:{})", info.sso_port.unwrap());
+                println!(
+                    "#   external-browser SSO supported (redirect back to 127.0.0.1:{})",
+                    info.sso_port.unwrap()
+                );
             }
             println!("#   (use: unvpn forti -g {}:{} --connect)", a.host, a.port);
         }
@@ -183,7 +229,16 @@ fn probe(a: &Args) -> Result<(), String> {
 /// `Some(idp_url)` if `/remote/saml/start` sends the browser to an IdP.
 fn saml_idp(a: &Args) -> Result<Option<String>, String> {
     let mut c = http::Cookies::new();
-    let r = http::request(&a.host, a.port, "GET", SAML_START, &mut c, &[], b"", timeout())?;
+    let r = http::request(
+        &a.host,
+        a.port,
+        "GET",
+        SAML_START,
+        &mut c,
+        &[],
+        b"",
+        timeout(),
+    )?;
     Ok(saml::idp_redirect(&r))
 }
 
@@ -244,7 +299,11 @@ fn ask(kind: &str, msg: &str, deadline: Option<Duration>, secret: bool) -> Resul
     }
     let _quiet = (secret && tty).then(sysnet::EchoOff::new);
     let line = answer_line(deadline)?;
-    Ok(if secret { line } else { line.trim().to_string() })
+    Ok(if secret {
+        line
+    } else {
+        line.trim().to_string()
+    })
 }
 
 /// On a TTY, type the new password a second time before anything is sent (the GUI
@@ -272,13 +331,22 @@ fn deadline(ch: &Challenge) -> Option<Duration> {
 /// FortiToken (code or push), email/SMS code, clock-drift next code, RADIUS
 /// challenge, expired password. Shared by `--login` and `--connect`.
 fn do_login(a: &Args) -> Result<Session, String> {
-    let mut s = Session::new(a.host.clone(), a.port, a.realm.clone(), a.user.clone(), timeout());
+    let mut s = Session::new(
+        a.host.clone(),
+        a.port,
+        a.realm.clone(),
+        a.user.clone(),
+        timeout(),
+    );
 
     let password = match &a.password {
         Some(p) => p.clone(),
         None => read_password().ok_or("no password provided")?,
     };
-    println!("# authenticating {} @ {}:{} (realm {:?}) …", a.user, a.host, a.port, a.realm);
+    println!(
+        "# authenticating {} @ {}:{} (realm {:?}) …",
+        a.user, a.host, a.port, a.realm
+    );
 
     let mut outcome = s.login(&password)?;
     let mut preset = a.code.clone(); // --code answers the first code question only
@@ -288,7 +356,10 @@ fn do_login(a: &Args) -> Result<Session, String> {
     for round in 0..=MAX_AUTH_ROUNDS {
         let ch = match outcome {
             AuthOutcome::Authenticated => {
-                println!("# authenticated — SVPNCOOKIE acquired ({} bytes).", s.svpncookie().map(|c| c.len()).unwrap_or(0));
+                println!(
+                    "# authenticated — SVPNCOOKIE acquired ({} bytes).",
+                    s.svpncookie().map(|c| c.len()).unwrap_or(0)
+                );
                 return Ok(s);
             }
             AuthOutcome::Failed(msg) => return Err(msg),
@@ -300,26 +371,33 @@ fn do_login(a: &Args) -> Result<Session, String> {
         if sysnet::stop_requested() {
             return Err("authentication cancelled".into());
         }
-        let pushing = ch.kind == ChallengeKind::Token && ch.ftm_push && preset.is_none() && push_allowed;
+        let pushing =
+            ch.kind == ChallengeKind::Token && ch.ftm_push && preset.is_none() && push_allowed;
         let msg = ch.prompt_text(pushing);
-        println!("# gateway asks for {:?} (auth timeout {}s)", ch.kind, s.auth_budget.as_secs());
+        println!(
+            "# gateway asks for {:?} (auth timeout {}s)",
+            ch.kind,
+            s.auth_budget.as_secs()
+        );
         outcome = match ch.kind {
-            ChallengeKind::Token if pushing => match push_or_code(&mut s, &ch, &msg)? {
-                PushEnd::Done(o, typed) => {
-                    if let Some(c) = typed {
-                        last_code = c;
+            ChallengeKind::Token if pushing => {
+                match push_or_code(&mut s, &ch, &msg)? {
+                    PushEnd::Done(o, typed) => {
+                        if let Some(c) = typed {
+                            last_code = c;
+                        }
+                        o
                     }
-                    o
+                    PushEnd::Refused(why) => {
+                        // Some gateways offer ftm_push and then refuse the push request
+                        // (HTTP 405), which may also drop the pending login. Start over
+                        // and ask for the code instead.
+                        println!("# FortiToken push refused ({why}) — logging in again to ask for the code");
+                        push_allowed = false;
+                        s.login(&password)?
+                    }
                 }
-                PushEnd::Refused(why) => {
-                    // Some gateways offer ftm_push and then refuse the push request
-                    // (HTTP 405), which may also drop the pending login. Start over
-                    // and ask for the code instead.
-                    println!("# FortiToken push refused ({why}) — logging in again to ask for the code");
-                    push_allowed = false;
-                    s.login(&password)?
-                }
-            },
+            }
             ChallengeKind::Token | ChallengeKind::Email | ChallengeKind::Sms => {
                 let code = match preset.take() {
                     Some(c) => c,
@@ -334,7 +412,10 @@ fn do_login(a: &Args) -> Result<Session, String> {
             ChallengeKind::Drift => {
                 let next = ask("code2", &msg, deadline(&ch), false)?;
                 if next.is_empty() {
-                    return Err("the gateway needs the next token code (clock drift) but none was entered".into());
+                    return Err(
+                        "the gateway needs the next token code (clock drift) but none was entered"
+                            .into(),
+                    );
                 }
                 // The portal's order (login.js): code = the code already sent, code2 =
                 // the next one. FortiClient's engine sends them the other way round;
@@ -361,7 +442,9 @@ fn do_login(a: &Args) -> Result<Session, String> {
                         println!("# keeping the current password (skip)");
                         s.skip_renew(&ch)?
                     }
-                    (true, false) => return Err("the password expired and no new one was entered".into()),
+                    (true, false) => {
+                        return Err("the password expired and no new one was entered".into())
+                    }
                     (false, _) => {
                         confirm_on_tty(&new, deadline(&ch))?;
                         s.answer(&ch, &new)?
@@ -370,7 +453,9 @@ fn do_login(a: &Args) -> Result<Session, String> {
             }
         };
     }
-    Err(format!("gave up after {MAX_AUTH_ROUNDS} authentication rounds"))
+    Err(format!(
+        "gave up after {MAX_AUTH_ROUNDS} authentication rounds"
+    ))
 }
 
 enum PushEnd {
@@ -410,7 +495,10 @@ fn push_or_code(s: &mut Session, ch: &Challenge, msg: &str) -> Result<PushEnd, S
             }
             // The push thread died without answering (it panicked): nothing will come.
             Err(mpsc::TryRecvError::Disconnected) => {
-                return Err("FortiToken push failed (internal error) — log in again, or use --no-push".into());
+                return Err(
+                    "FortiToken push failed (internal error) — log in again, or use --no-push"
+                        .into(),
+                );
             }
             Err(mpsc::TryRecvError::Empty) => {}
         }
@@ -424,7 +512,9 @@ fn push_or_code(s: &mut Session, ch: &Challenge, msg: &str) -> Result<PushEnd, S
                 cancel.cancel();
                 // The push may have been approved while we read this line: it already
                 // used up this login's reqid, so keep its session instead of the code.
-                if let Ok((Ok(AuthOutcome::Authenticated), cookies)) = rx.recv_timeout(Duration::from_secs(2)) {
+                if let Ok((Ok(AuthOutcome::Authenticated), cookies)) =
+                    rx.recv_timeout(Duration::from_secs(2))
+                {
                     s.cookies = cookies;
                     return Ok(PushEnd::Done(AuthOutcome::Authenticated, None));
                 }
@@ -451,9 +541,18 @@ fn authenticate(a: &Args) -> Result<Session, String> {
         if v.is_empty() {
             return Err(format!("--cookie-file {path} is empty"));
         }
-        let mut s = Session::new(a.host.clone(), a.port, a.realm.clone(), a.user.clone(), timeout());
+        let mut s = Session::new(
+            a.host.clone(),
+            a.port,
+            a.realm.clone(),
+            a.user.clone(),
+            timeout(),
+        );
         s.cookies.0.insert("SVPNCOOKIE".into(), v.to_string());
-        println!("# reusing SVPNCOOKIE from {path} ({} bytes) — no login", v.len());
+        println!(
+            "# reusing SVPNCOOKIE from {path} ({} bytes) — no login",
+            v.len()
+        );
         return Ok(s);
     }
     let s = authenticate_fresh(a)?;
@@ -471,17 +570,30 @@ fn authenticate_fresh(a: &Args) -> Result<Session, String> {
         || (a.user.is_empty() && {
             match saml_idp(a) {
                 Ok(Some(url)) => {
-                    println!("# gateway uses SAML/SSO (IdP {}) — signing in with the browser", url.split('/').nth(2).unwrap_or(""));
+                    println!(
+                        "# gateway uses SAML/SSO (IdP {}) — signing in with the browser",
+                        url.split('/').nth(2).unwrap_or("")
+                    );
                     true
                 }
-                Ok(None) => return Err("no --user given and the gateway has no SAML/SSO — pass -u <user>".into()),
+                Ok(None) => {
+                    return Err(
+                        "no --user given and the gateway has no SAML/SSO — pass -u <user>".into(),
+                    )
+                }
                 Err(e) => return Err(format!("no --user given and SAML detection failed: {e}")),
             }
         });
     if use_saml {
-        let opts = saml::SamlOpts { port: a.saml_port, open_browser: !a.no_browser };
+        let opts = saml::SamlOpts {
+            port: a.saml_port,
+            open_browser: !a.no_browser,
+        };
         let s = saml::login(&a.host, a.port, &a.realm, &opts)?;
-        println!("# SAML authenticated — SVPNCOOKIE acquired ({} bytes).", s.svpncookie().map(|c| c.len()).unwrap_or(0));
+        println!(
+            "# SAML authenticated — SVPNCOOKIE acquired ({} bytes).",
+            s.svpncookie().map(|c| c.len()).unwrap_or(0)
+        );
         Ok(s)
     } else {
         do_login(a)

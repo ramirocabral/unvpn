@@ -24,13 +24,20 @@ pub struct RunOpts {
 
 impl Default for RunOpts {
     fn default() -> Self {
-        RunOpts { no_routes: false, no_esp: false, watch_stdin: true }
+        RunOpts {
+            no_routes: false,
+            no_esp: false,
+            watch_stdin: true,
+        }
     }
 }
 
 /// Needs root once the tunnel is up (tun device, routes, DNS).
 pub fn run(session: &mut Session, _opts: RunOpts) -> Result<(), String> {
-    let dsid = session.dsid.clone().ok_or("no DSID session cookie — log in first")?;
+    let dsid = session
+        .dsid
+        .clone()
+        .ok_or("no DSID session cookie — log in first")?;
 
     // The first IF-T/TLS message a client sends is a vendor (Juniper) control
     // message on the fresh tunnel connection. Built here to keep the framing

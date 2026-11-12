@@ -44,7 +44,9 @@ static IGNORED_IFINDEX: AtomicU32 = AtomicU32::new(0);
 /// Stop treating `name`'s own netlink events (its routes/address/link) as a network
 /// change. Call once the tunnel device is up; safe to call again (last wins).
 pub fn ignore_iface(name: &str) {
-    let Ok(c) = std::ffi::CString::new(name) else { return };
+    let Ok(c) = std::ffi::CString::new(name) else {
+        return;
+    };
     let idx = unsafe { libc::if_nametoindex(c.as_ptr()) };
     IGNORED_IFINDEX.store(idx, Ordering::SeqCst);
 }
@@ -103,7 +105,10 @@ pub fn took_kick() -> Option<&'static str> {
 }
 
 fn boottime_secs() -> u64 {
-    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
     unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut ts) };
     ts.tv_sec as u64
 }
@@ -149,7 +154,13 @@ fn spawn_resume_watcher() {
 
 fn spawn_netlink_watcher() {
     std::thread::spawn(|| {
-        let fd = unsafe { libc::socket(libc::AF_NETLINK, libc::SOCK_RAW | libc::SOCK_CLOEXEC, libc::NETLINK_ROUTE) };
+        let fd = unsafe {
+            libc::socket(
+                libc::AF_NETLINK,
+                libc::SOCK_RAW | libc::SOCK_CLOEXEC,
+                libc::NETLINK_ROUTE,
+            )
+        };
         if fd < 0 {
             return;
         }
@@ -171,7 +182,9 @@ fn spawn_netlink_watcher() {
         loop {
             let n = unsafe { libc::recv(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), 0) };
             if n <= 0 {
-                if n < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                if n < 0
+                    && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
+                {
                     continue;
                 }
                 break; // socket error/closed — stop watching
@@ -270,7 +283,7 @@ mod tests {
         assert!(cooldown_elapsed(100, 103, 3)); // exactly the window
         assert!(cooldown_elapsed(100, 110, 3));
         assert!(!cooldown_elapsed(100, 102, 3)); // inside the window
-        // A clock that went backwards must not fire a storm (saturating sub = 0).
+                                                 // A clock that went backwards must not fire a storm (saturating sub = 0).
         assert!(!cooldown_elapsed(200, 100, 3));
     }
 
@@ -299,7 +312,7 @@ mod tests {
 
     fn route_msg_oif(ifindex: u32) -> Vec<u8> {
         let mut p = vec![0u8; 12]; // rtmsg
-        // one RTA: len u16, type u16, u32 payload
+                                   // one RTA: len u16, type u16, u32 payload
         p.extend_from_slice(&8u16.to_ne_bytes());
         p.extend_from_slice(&RTA_OIF.to_ne_bytes());
         p.extend_from_slice(&ifindex.to_ne_bytes());

@@ -87,7 +87,9 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
             "--as-gateway" => role = Some(Role::Gateway),
             "--saml" | "--sso" => saml = true,
             "--saml-cookie" => saml_cookie = it.next().cloned(),
-            "--user-agent" => user_agent = it.next().cloned().ok_or("--user-agent needs a value")?,
+            "--user-agent" => {
+                user_agent = it.next().cloned().ok_or("--user-agent needs a value")?
+            }
             "--probe" => action = Action::Probe,
             "--login" => action = Action::Login,
             "--connect" => action = Action::Connect,
@@ -100,27 +102,49 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
     let host = host.ok_or("gp requires --gateway <portal-or-gateway>")?;
     let (_, _, path) = http::split_url(&host)?;
     // Hint in the URL path: /global-protect = portal, /ssl-vpn = gateway.
-    let role = role.unwrap_or(if path.starts_with("/global-protect") || path == "/portal" {
-        Role::Portal
-    } else if path.starts_with("/ssl-vpn") || path == "/gateway" {
-        Role::Gateway
-    } else {
-        Role::Auto
-    });
+    let role = role.unwrap_or(
+        if path.starts_with("/global-protect") || path == "/portal" {
+            Role::Portal
+        } else if path.starts_with("/ssl-vpn") || path == "/gateway" {
+            Role::Gateway
+        } else {
+            Role::Auto
+        },
+    );
     if action != Action::Probe && user.is_empty() && !saml && saml_cookie.is_none() {
         return Err("gp requires --user <user> (or --saml for SAML/SSO)".into());
     }
-    Ok(Args { host, user, password, code, gw, role, saml, saml_cookie, user_agent, action, no_routes, no_esp, no_hip })
+    Ok(Args {
+        host,
+        user,
+        password,
+        code,
+        gw,
+        role,
+        saml,
+        saml_cookie,
+        user_agent,
+        action,
+        no_routes,
+        no_esp,
+        no_hip,
+    })
 }
 
 fn usage() {
     eprintln!("usage:");
     eprintln!("  unvpn gp -g <portal-or-gateway> --probe");
-    eprintln!("  unvpn gp -g <host> -u <user> [--password p] [--code otp] [--gw <gateway>] --login");
+    eprintln!(
+        "  unvpn gp -g <host> -u <user> [--password p] [--code otp] [--gw <gateway>] --login"
+    );
     eprintln!("  unvpn gp -g <host> -u <user> [...] --connect     # brings up the tunnel (sudo)");
-    eprintln!("      [--gw G]          pick the portal's gateway by host or label (default: preferred)");
+    eprintln!(
+        "      [--gw G]          pick the portal's gateway by host or label (default: preferred)"
+    );
     eprintln!("      [--as-portal | --as-gateway]  skip role detection");
-    eprintln!("  unvpn gp -g <host> --saml --connect             # SAML: browser login, paste the result");
+    eprintln!(
+        "  unvpn gp -g <host> --saml --connect             # SAML: browser login, paste the result"
+    );
     eprintln!("      [--saml-cookie C] supply the prelogin-cookie / globalprotectcallback: URL");
     eprintln!("      [--no-esp]        SSL tunnel only (no UDP/ESP)");
     eprintln!("      [--no-hip]        don't answer the HIP posture check");
@@ -130,7 +154,12 @@ fn usage() {
 
 fn make_session(a: &Args) -> Result<Session, String> {
     let (host, port, _) = http::split_url(&a.host)?;
-    let ep = Endpoint { host, port, user_agent: a.user_agent.clone(), timeout: Duration::from_secs(20) };
+    let ep = Endpoint {
+        host,
+        port,
+        user_agent: a.user_agent.clone(),
+        timeout: Duration::from_secs(20),
+    };
     Ok(Session::new(ep, CLIENT_OS, OS_VERSION, &local_hostname()))
 }
 
@@ -157,7 +186,11 @@ fn probe(a: &Args) -> Result<(), String> {
                         println!("#   → unvpn gp -g {} --saml --connect", a.host);
                     }
                     None => {
-                        println!("#   fields: {} / {}", or(&pre.user_label, "Username"), or(&pre.pass_label, "Password"));
+                        println!(
+                            "#   fields: {} / {}",
+                            or(&pre.user_label, "Username"),
+                            or(&pre.pass_label, "Password")
+                        );
                         println!("#   → unvpn gp -g {} -u <user> --connect", a.host);
                     }
                 }
@@ -182,11 +215,23 @@ fn do_login(a: &Args) -> Result<Session, String> {
     let mut s = make_session(a)?;
     let who = if a.user.is_empty() { "<SAML>" } else { &a.user };
     println!("# authenticating {who} @ {} …", s.portal_ep.base_url());
-    let creds = Creds { user: a.user.clone(), password: a.password.clone() };
-    let mut p = CliPrompter { code: a.code.clone(), saml_cookie: a.saml_cookie.clone(), saml_only: a.saml, password_asked: false };
+    let creds = Creds {
+        user: a.user.clone(),
+        password: a.password.clone(),
+    };
+    let mut p = CliPrompter {
+        code: a.code.clone(),
+        saml_cookie: a.saml_cookie.clone(),
+        saml_only: a.saml,
+        password_asked: false,
+    };
     s.login(&creds, a.role, a.gw.as_deref(), &mut p)?;
     let auth = s.auth.as_ref().ok_or("login returned no session")?;
-    println!("# authenticated — GlobalProtect session for {} on {}", auth.user, s.ep.host_header());
+    println!(
+        "# authenticated — GlobalProtect session for {} on {}",
+        auth.user,
+        s.ep.host_header()
+    );
     if !auth.portal.is_empty() {
         println!("# gateway config: {}", auth.portal);
     }
@@ -196,7 +241,15 @@ fn do_login(a: &Args) -> Result<Session, String> {
 /// Needs root.
 fn connect(a: &Args) -> Result<(), String> {
     let mut s = do_login(a)?;
-    tunnel::run(&mut s, tunnel::RunOpts { no_routes: a.no_routes, watch_stdin: true, no_esp: a.no_esp, no_hip: a.no_hip })
+    tunnel::run(
+        &mut s,
+        tunnel::RunOpts {
+            no_routes: a.no_routes,
+            watch_stdin: true,
+            no_esp: a.no_esp,
+            no_hip: a.no_hip,
+        },
+    )
 }
 
 /// Reads secrets from stdin (no echo on a TTY) and emits the `# AUTH-PROMPT:` /
@@ -214,26 +267,41 @@ struct CliPrompter {
 impl Prompter for CliPrompter {
     fn username(&mut self, label: &str) -> Result<String, String> {
         crate::report::prompt("username", label);
-        crate::anyconnect::read_secret(&format!("{label}: ")).ok_or_else(|| "username required".into())
+        crate::anyconnect::read_secret(&format!("{label}: "))
+            .ok_or_else(|| "username required".into())
     }
 
     fn password(&mut self, label: &str, _message: &str) -> Result<String, String> {
         if self.saml_only {
-            return Err("the server asked for a password, not SAML — use password auth (-u <user>)".into());
+            return Err(
+                "the server asked for a password, not SAML — use password auth (-u <user>)".into(),
+            );
         }
         if std::mem::replace(&mut self.password_asked, true) {
-            crate::report::prompt("answer", &format!("{} (the previous one was rejected)", crate::sysnet::one_line(label)));
+            crate::report::prompt(
+                "answer",
+                &format!(
+                    "{} (the previous one was rejected)",
+                    crate::sysnet::one_line(label)
+                ),
+            );
         }
-        crate::anyconnect::read_secret(&format!("{label}: ")).ok_or_else(|| "no password provided".into())
+        crate::anyconnect::read_secret(&format!("{label}: "))
+            .ok_or_else(|| "no password provided".into())
     }
 
     fn challenge(&mut self, message: &str) -> Result<String, String> {
         if let Some(c) = self.code.take() {
             return Ok(c);
         }
-        let msg = if message.trim().is_empty() { "Enter the verification code" } else { message };
+        let msg = if message.trim().is_empty() {
+            "Enter the verification code"
+        } else {
+            message
+        };
         crate::report::prompt("code", msg);
-        crate::anyconnect::read_secret("Code: ").ok_or_else(|| "verification code required but none provided".into())
+        crate::anyconnect::read_secret("Code: ")
+            .ok_or_else(|| "verification code required but none provided".into())
     }
 
     fn saml(&mut self, saml: &Saml) -> Result<SamlResult, String> {
@@ -248,8 +316,10 @@ impl Prompter for CliPrompter {
             "sso",
             "Sign in in the browser, then paste the globalprotectcallback: link it tries to open (or the prelogin-cookie)",
         );
-        let raw = crate::anyconnect::read_secret("SAML result: ").ok_or("SAML result required but none provided")?;
-        auth::parse_saml_result(&raw).ok_or_else(|| "could not read a SAML result from the input".into())
+        let raw = crate::anyconnect::read_secret("SAML result: ")
+            .ok_or("SAML result required but none provided")?;
+        auth::parse_saml_result(&raw)
+            .ok_or_else(|| "could not read a SAML result from the input".into())
     }
 
     fn info(&mut self, line: &str) {
@@ -276,16 +346,44 @@ mod tests {
 
     #[test]
     fn connect_args() {
-        let a = args(&["-g", "vpn.example.com", "-u", "alice", "--gw", "gw-b", "--no-esp", "--connect"]).unwrap();
-        assert_eq!((a.host.as_str(), a.user.as_str(), a.gw.as_deref()), ("vpn.example.com", "alice", Some("gw-b")));
+        let a = args(&[
+            "-g",
+            "vpn.example.com",
+            "-u",
+            "alice",
+            "--gw",
+            "gw-b",
+            "--no-esp",
+            "--connect",
+        ])
+        .unwrap();
+        assert_eq!(
+            (a.host.as_str(), a.user.as_str(), a.gw.as_deref()),
+            ("vpn.example.com", "alice", Some("gw-b"))
+        );
         assert!(a.no_esp && a.action == Action::Connect && a.role == Role::Auto);
     }
 
     #[test]
     fn role_from_path_hint() {
-        assert_eq!(args(&["-g", "https://vpn.example.com/global-protect", "--probe"]).unwrap().role, Role::Portal);
-        assert_eq!(args(&["-g", "vpn.example.com/ssl-vpn", "--probe"]).unwrap().role, Role::Gateway);
-        assert_eq!(args(&["-g", "vpn.example.com", "--as-gateway", "--probe"]).unwrap().role, Role::Gateway);
+        assert_eq!(
+            args(&["-g", "https://vpn.example.com/global-protect", "--probe"])
+                .unwrap()
+                .role,
+            Role::Portal
+        );
+        assert_eq!(
+            args(&["-g", "vpn.example.com/ssl-vpn", "--probe"])
+                .unwrap()
+                .role,
+            Role::Gateway
+        );
+        assert_eq!(
+            args(&["-g", "vpn.example.com", "--as-gateway", "--probe"])
+                .unwrap()
+                .role,
+            Role::Gateway
+        );
     }
 
     #[test]

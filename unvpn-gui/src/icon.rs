@@ -49,7 +49,8 @@ fn in_lock(x: f32, y: f32) -> bool {
         seg_dist(x, y, 8.0, scy, 8.0, 10.5) < half || seg_dist(x, y, 16.0, scy, 16.0, 10.5) < half
     };
     let body = in_rrect(x, y, 4.5, 10.0, 19.5, 21.0, 3.0);
-    let keyhole = in_circle(x, y, 12.0, 15.0, 1.6) || (x > 11.35 && x < 12.65 && y > 15.0 && y < 18.0);
+    let keyhole =
+        in_circle(x, y, 12.0, 15.0, 1.6) || (x > 11.35 && x < 12.65 && y > 15.0 && y < 18.0);
     shackle || (body && !keyhole)
 }
 
@@ -61,7 +62,11 @@ const DOT_GAP: f32 = 1.6;
 fn render_rgba(size: u32, glyph: [u8; 3], dot: [u8; 3], tile: Option<[u8; 3]>) -> Vec<u8> {
     // On a tile the glyph is shrunk to leave a margin. In the tray it is enlarged and
     // centred on its bounding box (x 4.5..22.7, y 2.7..22.7) so it fills the canvas.
-    let (scale, cx, cy) = if tile.is_some() { (0.68, 12.0, 12.0) } else { (1.17, 13.6, 12.7) };
+    let (scale, cx, cy) = if tile.is_some() {
+        (0.68, 12.0, 12.0)
+    } else {
+        (1.17, 13.6, 12.7)
+    };
     let ss = 4u32; // supersampling for anti-aliasing
     let big = (size * ss) as f32;
     let mut out = vec![0u8; (size * size * 4) as usize];
@@ -121,7 +126,12 @@ pub fn tray_pixmaps(color: [u8; 3]) -> Vec<ksni::Icon> {
             let rgba = render_rgba(size, TRAY_GLYPH, color, None);
             let mut data = vec![0u8; rgba.len()];
             for p in 0..(rgba.len() / 4) {
-                let (r, g, b, a) = (rgba[p * 4], rgba[p * 4 + 1], rgba[p * 4 + 2], rgba[p * 4 + 3]);
+                let (r, g, b, a) = (
+                    rgba[p * 4],
+                    rgba[p * 4 + 1],
+                    rgba[p * 4 + 2],
+                    rgba[p * 4 + 3],
+                );
                 data[p * 4] = a;
                 data[p * 4 + 1] = r;
                 data[p * 4 + 2] = g;

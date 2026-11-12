@@ -32,7 +32,13 @@ impl Cookies {
         if self.0.is_empty() {
             return None;
         }
-        Some(self.0.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join("; "))
+        Some(
+            self.0
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
     }
     fn absorb(&mut self, set_cookie: &str) {
         let pair = set_cookie.split(';').next().unwrap_or("").trim();
@@ -97,7 +103,11 @@ pub fn build_request(
     }
     req.push_str(&format!("Content-Length: {}\r\n", body.len()));
     if !has_connection {
-        req.push_str(if keep_alive { "Connection: keep-alive\r\n" } else { "Connection: close\r\n" });
+        req.push_str(if keep_alive {
+            "Connection: keep-alive\r\n"
+        } else {
+            "Connection: close\r\n"
+        });
     }
     req.push_str("\r\n");
     let mut out = req.into_bytes();
@@ -186,7 +196,8 @@ fn exchange(
     body: &[u8],
 ) -> Result<Response, String> {
     let req = build_request(method, host, path, cookies, extra, body, false);
-    tls.write_all(&req).map_err(|e| format!("write request: {e}"))?;
+    tls.write_all(&req)
+        .map_err(|e| format!("write request: {e}"))?;
     tls.flush().ok();
 
     let mut tmp = [0u8; 4096];
@@ -207,9 +218,9 @@ fn exchange(
     let (status, headers) = parse_status_and_headers(&raw[..header_end])?;
     let mut body = raw[header_end..].to_vec();
 
-    let chunked = headers
-        .iter()
-        .any(|(k, v)| k.eq_ignore_ascii_case("transfer-encoding") && v.to_ascii_lowercase().contains("chunked"));
+    let chunked = headers.iter().any(|(k, v)| {
+        k.eq_ignore_ascii_case("transfer-encoding") && v.to_ascii_lowercase().contains("chunked")
+    });
     let clen = headers
         .iter()
         .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
@@ -254,7 +265,11 @@ fn exchange(
             cookies.absorb(v);
         }
     }
-    Ok(Response { status, headers, body })
+    Ok(Response {
+        status,
+        headers,
+        body,
+    })
 }
 
 fn find_header_end(buf: &[u8]) -> Option<usize> {
@@ -292,7 +307,8 @@ fn try_dechunk_complete(raw: &[u8]) -> Option<Vec<u8>> {
         let rest = raw.get(i..)?;
         let line_end = rest.windows(2).position(|w| w == b"\r\n")? + i;
         let size_str = std::str::from_utf8(&raw[i..line_end]).ok()?;
-        let size = usize::from_str_radix(size_str.split(';').next().unwrap_or("").trim(), 16).ok()?;
+        let size =
+            usize::from_str_radix(size_str.split(';').next().unwrap_or("").trim(), 16).ok()?;
         i = line_end + 2;
         if size == 0 {
             return Some(out);
@@ -335,7 +351,9 @@ pub fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
             b' ' => out.push_str("%20"),
             _ => out.push_str(&format!("%{b:02X}")),
         }
@@ -350,7 +368,10 @@ mod tests {
     #[test]
     fn dechunk_complete_and_partial() {
         let full = b"5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n";
-        assert_eq!(try_dechunk_complete(full).as_deref(), Some(&b"hello world"[..]));
+        assert_eq!(
+            try_dechunk_complete(full).as_deref(),
+            Some(&b"hello world"[..])
+        );
         // Every prefix is "not complete yet" — never a panic (a TLS record may end
         // right after a chunk's data, before its CRLF).
         for cut in 0..full.len() - 4 {
@@ -362,7 +383,10 @@ mod tests {
 
     #[test]
     fn percent_decode_keeps_plus_and_bad_escapes() {
-        assert_eq!(percent_decode("ana%2Bvpn%40example.com"), "ana+vpn@example.com");
+        assert_eq!(
+            percent_decode("ana%2Bvpn%40example.com"),
+            "ana+vpn@example.com"
+        );
         assert_eq!(percent_decode("a+b%zz%4"), "a+b%zz%4");
         assert_eq!(percent_decode("%C3%A9%"), "é%");
     }
@@ -375,8 +399,20 @@ mod tests {
         let cancel = Cancel::default();
         cancel.cancel();
         let mut jar = Cookies::new();
-        let r = request_cancellable("127.0.0.1", port, "POST", "/x", &mut jar, b"", Duration::from_secs(2), &cancel);
+        let r = request_cancellable(
+            "127.0.0.1",
+            port,
+            "POST",
+            "/x",
+            &mut jar,
+            b"",
+            Duration::from_secs(2),
+            &cancel,
+        );
         assert_eq!(r.err().as_deref(), Some("cancelled"));
-        assert!(listener.accept().is_err(), "a cancelled request must not even connect");
+        assert!(
+            listener.accept().is_err(),
+            "a cancelled request must not even connect"
+        );
     }
 }

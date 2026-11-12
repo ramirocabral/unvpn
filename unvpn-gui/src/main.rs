@@ -42,7 +42,11 @@ row.dragging { opacity: 0.5; }
 /// Read a tunnel interface's byte counter from the kernel (world-readable). `iface`
 /// is validated to a safe device-name charset so it can't escape the /sys path.
 fn iface_bytes(iface: &str, which: &str) -> Option<u64> {
-    if iface.is_empty() || !iface.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.')) {
+    if iface.is_empty()
+        || !iface
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
+    {
         return None;
     }
     std::fs::read_to_string(format!("/sys/class/net/{iface}/statistics/{which}"))
@@ -171,7 +175,9 @@ struct App {
 
 impl App {
     fn new(app: &adw::Application, tx: Tx) -> Rc<Self> {
-        let status_pill = gtk::Label::builder().css_classes(["statuspill", "st-off"]).build();
+        let status_pill = gtk::Label::builder()
+            .css_classes(["statuspill", "st-off"])
+            .build();
         let header = adw::HeaderBar::new();
         header.set_title_widget(Some(&adw::WindowTitle::new("unvpn", "")));
         header.pack_start(&status_pill);
@@ -198,8 +204,19 @@ impl App {
 
         let name_row = adw::EntryRow::builder().title("Profile name").build();
 
-        let backend_model = gtk::StringList::new(&["Check Point", "FortiClient", "F5", "AnyConnect (Cisco)", "GlobalProtect", "OpenVPN", "WireGuard"]);
-        let backend_row = adw::ComboRow::builder().title("VPN client").model(&backend_model).build();
+        let backend_model = gtk::StringList::new(&[
+            "Check Point",
+            "FortiClient",
+            "F5",
+            "AnyConnect (Cisco)",
+            "GlobalProtect",
+            "OpenVPN",
+            "WireGuard",
+        ]);
+        let backend_row = adw::ComboRow::builder()
+            .title("VPN client")
+            .model(&backend_model)
+            .build();
         // FortiClient speaks two unrelated protocols; one dropdown entry, this
         // selector picks SSL-VPN vs IPsec (shown only for FortiClient).
         let forti_proto_model = gtk::StringList::new(&["SSL-VPN", "IPsec"]);
@@ -216,7 +233,9 @@ impl App {
         gateway_row.add_suffix(&browse_btn);
         let user_row = adw::EntryRow::builder().title("User").build();
         let password_row = adw::PasswordEntryRow::builder().title("Password").build();
-        let key_pass_row = adw::PasswordEntryRow::builder().title("Key passphrase (optional)").build();
+        let key_pass_row = adw::PasswordEntryRow::builder()
+            .title("Key passphrase (optional)")
+            .build();
         let remember_key_pass_row = adw::SwitchRow::builder()
             .title("Remember passphrase")
             .subtitle("Store in the system keyring")
@@ -226,8 +245,13 @@ impl App {
         let token_row = adw::EntryRow::builder().title("Token (email)").build();
 
         let cp_auth_model = gtk::StringList::new(&["SecurID token", "Certificate"]);
-        let cp_auth_row = adw::ComboRow::builder().title("Authentication").model(&cp_auth_model).build();
-        let cert_row = adw::EntryRow::builder().title("Certificate file (.p12)").build();
+        let cp_auth_row = adw::ComboRow::builder()
+            .title("Authentication")
+            .model(&cp_auth_model)
+            .build();
+        let cert_row = adw::EntryRow::builder()
+            .title("Certificate file (.p12)")
+            .build();
         let cert_browse_btn = gtk::Button::builder()
             .icon_name("document-open-symbolic")
             .tooltip_text("Choose the certificate file")
@@ -235,7 +259,10 @@ impl App {
             .css_classes(["flat"])
             .build();
         cert_row.add_suffix(&cert_browse_btn);
-        let enroll_btn = gtk::Button::builder().label("Enroll…").valign(gtk::Align::Center).build();
+        let enroll_btn = gtk::Button::builder()
+            .label("Enroll…")
+            .valign(gtk::Align::Center)
+            .build();
         let enroll_row = adw::ActionRow::builder()
             .title("No certificate yet?")
             .subtitle("Get one with the registration key from your administrator")
@@ -244,19 +271,28 @@ impl App {
         enroll_row.add_suffix(&enroll_btn);
 
         let auth_model = gtk::StringList::new(&["Password", "SSO / SAML"]);
-        let sso_row = adw::ComboRow::builder().title("Authentication").model(&auth_model).build();
+        let sso_row = adw::ComboRow::builder()
+            .title("Authentication")
+            .model(&auth_model)
+            .build();
         let realm_row = adw::EntryRow::builder().title("Realm (optional)").build();
         // FortiClient IPsec pre-shared key. Mirrors the official client, where the
         // pre-shared key is a required credential (the user auth — EAP + OTP — rides
         // on top). We also use it to verify the gateway's AUTH.
         let psk_row = adw::PasswordEntryRow::new();
         psk_row.set_title("Pre-shared key");
-        let ua_row = adw::EntryRow::builder().title("SSO User-Agent (optional)").build();
+        let ua_row = adw::EntryRow::builder()
+            .title("SSO User-Agent (optional)")
+            .build();
 
         // FortiClient IPsec advanced settings, collapsed by default so the form isn't
         // cluttered. Deployment-specific values that most profiles leave blank.
-        let emssn_row = adw::EntryRow::builder().title("EMS serial (optional)").build();
-        let fctver_row = adw::EntryRow::builder().title("FortiClient version (optional)").build();
+        let emssn_row = adw::EntryRow::builder()
+            .title("EMS serial (optional)")
+            .build();
+        let fctver_row = adw::EntryRow::builder()
+            .title("FortiClient version (optional)")
+            .build();
         let advanced_row = adw::ExpanderRow::builder()
             .title("Advanced")
             .subtitle("EMS serial, FortiClient version")
@@ -273,7 +309,9 @@ impl App {
 
         let killswitch_row = adw::SwitchRow::builder()
             .title("Kill switch")
-            .subtitle("Block all traffic outside the tunnel if it drops (LAN and DHCP stay reachable)")
+            .subtitle(
+                "Block all traffic outside the tunnel if it drops (LAN and DHCP stay reachable)",
+            )
             .subtitle_lines(0)
             .build();
 
@@ -283,7 +321,10 @@ impl App {
             .subtitle_lines(0)
             .build();
 
-        let forget_pins_btn = gtk::Button::builder().label("Forget").valign(gtk::Align::Center).build();
+        let forget_pins_btn = gtk::Button::builder()
+            .label("Forget")
+            .valign(gtk::Align::Center)
+            .build();
         let pins_row = adw::ActionRow::builder()
             .title("Trusted certificates")
             .subtitle_lines(0)
@@ -291,7 +332,10 @@ impl App {
             .build();
         pins_row.add_suffix(&forget_pins_btn);
 
-        let save_btn = gtk::Button::builder().label("Save").css_classes(["flat"]).build();
+        let save_btn = gtk::Button::builder()
+            .label("Save")
+            .css_classes(["flat"])
+            .build();
         let form_group = adw::PreferencesGroup::builder().title("Connection").build();
         form_group.set_header_suffix(Some(&save_btn));
         form_group.add(&name_row);
@@ -324,11 +368,26 @@ impl App {
             .build();
         connect_btn.set_height_request(40);
 
-        let ip_row = adw::ActionRow::builder().title("Internal IP").css_classes(["property"]).build();
-        let dns_row = adw::ActionRow::builder().title("DNS").css_classes(["property"]).build();
-        let transfer_row = adw::ActionRow::builder().title("Transfer").css_classes(["property"]).build();
-        let uptime_row = adw::ActionRow::builder().title("Connected for").css_classes(["property"]).build();
-        let status_group = adw::PreferencesGroup::builder().title("Active connection").visible(false).build();
+        let ip_row = adw::ActionRow::builder()
+            .title("Internal IP")
+            .css_classes(["property"])
+            .build();
+        let dns_row = adw::ActionRow::builder()
+            .title("DNS")
+            .css_classes(["property"])
+            .build();
+        let transfer_row = adw::ActionRow::builder()
+            .title("Transfer")
+            .css_classes(["property"])
+            .build();
+        let uptime_row = adw::ActionRow::builder()
+            .title("Connected for")
+            .css_classes(["property"])
+            .build();
+        let status_group = adw::PreferencesGroup::builder()
+            .title("Active connection")
+            .visible(false)
+            .build();
         status_group.add(&ip_row);
         status_group.add(&dns_row);
         status_group.add(&transfer_row);
@@ -373,7 +432,10 @@ impl App {
         content.append(&connect_btn);
         content.append(&diag_group);
 
-        let clamp = adw::Clamp::builder().maximum_size(560).child(&content).build();
+        let clamp = adw::Clamp::builder()
+            .maximum_size(560)
+            .child(&content)
+            .build();
         let scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vexpand(true)
@@ -386,12 +448,22 @@ impl App {
         toolbar.add_top_bar(&header);
         // A profiles file that doesn't load is moved aside rather than replaced
         // by the next save; say so, and where it went.
-        let loaded = profiles::load().map_err(|e| match profiles::set_aside(&profiles::profiles_path()) {
-            Ok(bad) => format!("Saved profiles couldn't be read and were moved to {} ({e})", bad.display()),
-            Err(e2) => format!("Saved profiles couldn't be read ({e}); saving is disabled ({e2})"),
-        });
+        let loaded =
+            profiles::load().map_err(|e| match profiles::set_aside(&profiles::profiles_path()) {
+                Ok(bad) => format!(
+                    "Saved profiles couldn't be read and were moved to {} ({e})",
+                    bad.display()
+                ),
+                Err(e2) => {
+                    format!("Saved profiles couldn't be read ({e}); saving is disabled ({e2})")
+                }
+            });
         if let Err(msg) = &loaded {
-            let banner = adw::Banner::builder().title(msg.as_str()).button_label("Dismiss").revealed(true).build();
+            let banner = adw::Banner::builder()
+                .title(msg.as_str())
+                .button_label("Dismiss")
+                .revealed(true)
+                .build();
             banner.connect_button_clicked(|b| b.set_revealed(false));
             toolbar.add_top_bar(&banner);
         }
@@ -480,59 +552,135 @@ impl App {
     }
 
     fn wire(app: &Rc<Self>, add_btn: &gtk::Button, forget_pins: &gtk::Button) {
-        app.backend_row.connect_selected_notify(glib::clone!(#[strong] app, move |_| {
-            app.update_form_visibility();
-            app.sync_ui();
-        }));
-        app.sso_row.connect_selected_notify(glib::clone!(#[strong] app, move |_| {
-            app.update_form_visibility();
-            app.sync_ui();
-        }));
-        app.forti_proto_row.connect_selected_notify(glib::clone!(#[strong] app, move |_| {
-            app.update_form_visibility();
-            app.sync_ui();
-        }));
-        app.cp_auth_row.connect_selected_notify(glib::clone!(#[strong] app, move |_| {
-            app.update_form_visibility();
-            app.sync_ui();
-        }));
-        app.cert_row.connect_changed(glib::clone!(#[strong] app, move |_| app.sync_ui()));
-        app.cert_browse_btn.connect_clicked(glib::clone!(#[strong] app, move |_| app.pick_cert_file()));
-        app.enroll_btn.connect_clicked(glib::clone!(#[strong] app, move |_| app.open_enroll_dialog()));
-
-        app.gateway_row.connect_changed(glib::clone!(#[strong] app, move |_| {
-            if app.backend() == Backend::OpenVpn {
-                app.update_form_visibility(); // auth-user-pass decides the credential rows
+        app.backend_row.connect_selected_notify(glib::clone!(
+            #[strong]
+            app,
+            move |_| {
+                app.update_form_visibility();
+                app.sync_ui();
             }
-            app.sync_ui();
-        }));
-        app.browse_btn.connect_clicked(glib::clone!(#[strong] app, move |_| app.pick_profile_file()));
-        app.user_row.connect_changed(glib::clone!(#[strong] app, move |_| app.sync_ui()));
-        app.token_row.connect_changed(glib::clone!(#[strong] app, move |_| app.sync_ui()));
-        app.password_row.connect_changed(glib::clone!(#[strong] app, move |_| app.sync_ui()));
-        app.psk_row.connect_changed(glib::clone!(#[strong] app, move |_| app.sync_ui()));
+        ));
+        app.sso_row.connect_selected_notify(glib::clone!(
+            #[strong]
+            app,
+            move |_| {
+                app.update_form_visibility();
+                app.sync_ui();
+            }
+        ));
+        app.forti_proto_row.connect_selected_notify(glib::clone!(
+            #[strong]
+            app,
+            move |_| {
+                app.update_form_visibility();
+                app.sync_ui();
+            }
+        ));
+        app.cp_auth_row.connect_selected_notify(glib::clone!(
+            #[strong]
+            app,
+            move |_| {
+                app.update_form_visibility();
+                app.sync_ui();
+            }
+        ));
+        app.cert_row.connect_changed(glib::clone!(
+            #[strong]
+            app,
+            move |_| app.sync_ui()
+        ));
+        app.cert_browse_btn.connect_clicked(glib::clone!(
+            #[strong]
+            app,
+            move |_| app.pick_cert_file()
+        ));
+        app.enroll_btn.connect_clicked(glib::clone!(
+            #[strong]
+            app,
+            move |_| app.open_enroll_dialog()
+        ));
 
-        app.name_row.connect_changed(glib::clone!(#[strong] app, move |_| app.update_pins_row()));
-        forget_pins.connect_clicked(glib::clone!(#[strong] app, move |_| app.forget_pins()));
+        app.gateway_row.connect_changed(glib::clone!(
+            #[strong]
+            app,
+            move |_| {
+                if app.backend() == Backend::OpenVpn {
+                    app.update_form_visibility(); // auth-user-pass decides the credential rows
+                }
+                app.sync_ui();
+            }
+        ));
+        app.browse_btn.connect_clicked(glib::clone!(
+            #[strong]
+            app,
+            move |_| app.pick_profile_file()
+        ));
+        app.user_row.connect_changed(glib::clone!(
+            #[strong]
+            app,
+            move |_| app.sync_ui()
+        ));
+        app.token_row.connect_changed(glib::clone!(
+            #[strong]
+            app,
+            move |_| app.sync_ui()
+        ));
+        app.password_row.connect_changed(glib::clone!(
+            #[strong]
+            app,
+            move |_| app.sync_ui()
+        ));
+        app.psk_row.connect_changed(glib::clone!(
+            #[strong]
+            app,
+            move |_| app.sync_ui()
+        ));
 
-        app.connect_btn.connect_clicked(glib::clone!(#[strong] app, move |_| app.on_connect_clicked()));
-        app.save_btn.connect_clicked(glib::clone!(#[strong] app, move |_| app.save_profile()));
-        add_btn.connect_clicked(glib::clone!(#[strong] app, move |_| app.on_new_profile()));
+        app.name_row.connect_changed(glib::clone!(
+            #[strong]
+            app,
+            move |_| app.update_pins_row()
+        ));
+        forget_pins.connect_clicked(glib::clone!(
+            #[strong]
+            app,
+            move |_| app.forget_pins()
+        ));
+
+        app.connect_btn.connect_clicked(glib::clone!(
+            #[strong]
+            app,
+            move |_| app.on_connect_clicked()
+        ));
+        app.save_btn.connect_clicked(glib::clone!(
+            #[strong]
+            app,
+            move |_| app.save_profile()
+        ));
+        add_btn.connect_clicked(glib::clone!(
+            #[strong]
+            app,
+            move |_| app.on_new_profile()
+        ));
 
         // Closing the window keeps the app (and the tunnel) running in the tray; only
         // "Quit" exits. Without a tray, closing quits (the window would be unreachable).
-        app.window.connect_close_request(glib::clone!(#[strong] app, move |_| {
-            if app.quitting.get() {
+        app.window.connect_close_request(glib::clone!(
+            #[strong]
+            app,
+            move |_| {
+                if app.quitting.get() {
+                    app.vpn.borrow_mut().shutdown();
+                    return glib::Propagation::Proceed;
+                }
+                if app.tray.borrow().is_some() {
+                    app.window.set_visible(false);
+                    return glib::Propagation::Stop;
+                }
                 app.vpn.borrow_mut().shutdown();
-                return glib::Propagation::Proceed;
+                glib::Propagation::Proceed
             }
-            if app.tray.borrow().is_some() {
-                app.window.set_visible(false);
-                return glib::Propagation::Stop;
-            }
-            app.vpn.borrow_mut().shutdown();
-            glib::Propagation::Proceed
-        }));
+        ));
     }
 
     fn backend(&self) -> Backend {
@@ -587,7 +735,8 @@ impl App {
         self.sso_row.set_visible(b.has_sso());
         // The realm row doubles as AnyConnect's tunnel group / GlobalProtect's
         // gateway / FortiClient IPsec's dialup group (localid).
-        self.realm_row.set_visible(forti || fortiipsec || b.uses_group() || cp_cert);
+        self.realm_row
+            .set_visible(forti || fortiipsec || b.uses_group() || cp_cert);
         self.realm_row.set_title(if cp_cert {
             "Login option (optional)"
         } else if anyconnect {
@@ -646,7 +795,8 @@ impl App {
                     && !self.password_row.text().is_empty()
             }
             Backend::CheckPoint if self.cp_cert() => {
-                gw && !self.cert_row.text().trim().is_empty() && !self.password_row.text().is_empty()
+                gw && !self.cert_row.text().trim().is_empty()
+                    && !self.password_row.text().is_empty()
             }
             Backend::CheckPoint => {
                 gw && !self.user_row.text().trim().is_empty()
@@ -655,7 +805,8 @@ impl App {
             Backend::OpenVpn => {
                 let file = std::path::Path::new(self.gateway_row.text().trim()).is_file();
                 file && (!self.ovpn_needs_userpass()
-                    || (!self.user_row.text().trim().is_empty() && !self.password_row.text().is_empty()))
+                    || (!self.user_row.text().trim().is_empty()
+                        && !self.password_row.text().is_empty()))
             }
             // Only the path: a /etc/wireguard profile isn't even stat-able as the
             // user — the engine reads it as root and reports a bad path itself.
@@ -697,9 +848,16 @@ impl App {
             return;
         }
         let key_row = adw::EntryRow::builder().title("Registration key").build();
-        let pass_row = adw::PasswordEntryRow::builder().title("New certificate password").build();
-        let again_row = adw::PasswordEntryRow::builder().title("Repeat the password").build();
-        let list = gtk::ListBox::builder().css_classes(["boxed-list"]).selection_mode(gtk::SelectionMode::None).build();
+        let pass_row = adw::PasswordEntryRow::builder()
+            .title("New certificate password")
+            .build();
+        let again_row = adw::PasswordEntryRow::builder()
+            .title("Repeat the password")
+            .build();
+        let list = gtk::ListBox::builder()
+            .css_classes(["boxed-list"])
+            .selection_mode(gtk::SelectionMode::None)
+            .build();
         list.append(&key_row);
         list.append(&pass_row);
         list.append(&again_row);
@@ -716,21 +874,40 @@ impl App {
         dialog.set_response_appearance("enroll", adw::ResponseAppearance::Suggested);
         dialog.set_response_enabled("enroll", false);
         dialog.set_close_response("cancel");
-        let validate = glib::clone!(#[weak] dialog, #[weak] key_row, #[weak] pass_row, #[weak] again_row, move || {
-            let k = key_row.text();
-            let k = k.trim();
-            let ok = k.find('-').is_some_and(|i| i > 0 && i + 1 < k.len())
-                && pass_row.text().chars().count() >= 6
-                && pass_row.text() == again_row.text();
-            dialog.set_response_enabled("enroll", ok);
-        });
-        for r in [key_row.upcast_ref::<gtk::Editable>(), pass_row.upcast_ref(), again_row.upcast_ref()] {
+        let validate = glib::clone!(
+            #[weak]
+            dialog,
+            #[weak]
+            key_row,
+            #[weak]
+            pass_row,
+            #[weak]
+            again_row,
+            move || {
+                let k = key_row.text();
+                let k = k.trim();
+                let ok = k.find('-').is_some_and(|i| i > 0 && i + 1 < k.len())
+                    && pass_row.text().chars().count() >= 6
+                    && pass_row.text() == again_row.text();
+                dialog.set_response_enabled("enroll", ok);
+            }
+        );
+        for r in [
+            key_row.upcast_ref::<gtk::Editable>(),
+            pass_row.upcast_ref(),
+            again_row.upcast_ref(),
+        ] {
             let v = validate.clone();
             r.connect_changed(move |_| v());
         }
         let app = self.rc();
         dialog.connect_response(Some("enroll"), move |_, _| {
-            app.run_enroll(gw.clone(), key_row.text().trim().to_string(), pass_row.text().to_string(), false);
+            app.run_enroll(
+                gw.clone(),
+                key_row.text().trim().to_string(),
+                pass_row.text().to_string(),
+                false,
+            );
         });
         dialog.present(Some(&self.window));
     }
@@ -758,14 +935,22 @@ impl App {
                 self.toast(&format!("Couldn't create {}: {e}", dir.display()));
                 return;
             }
-            let _ = std::fs::set_permissions(dir, std::os::unix::fs::PermissionsExt::from_mode(0o700));
+            let _ =
+                std::fs::set_permissions(dir, std::os::unix::fs::PermissionsExt::from_mode(0o700));
         }
         let out_s = out.to_string_lossy().into_owned();
         let bin = engine::unvpn_bin();
-        let mut argv: Vec<&std::ffi::OsStr> = [bin.as_str(), "cp-enroll", "-g", gw.as_str(), "-o", out_s.as_str()]
-            .into_iter()
-            .map(std::ffi::OsStr::new)
-            .collect();
+        let mut argv: Vec<&std::ffi::OsStr> = [
+            bin.as_str(),
+            "cp-enroll",
+            "-g",
+            gw.as_str(),
+            "-o",
+            out_s.as_str(),
+        ]
+        .into_iter()
+        .map(std::ffi::OsStr::new)
+        .collect();
         // Continue an interrupted attempt: a stored answer is re-read on its own;
         // a request that was sent but never answered is sent again (same bytes).
         if staging.join("sent").exists() && !staging.join("response.http").exists() {
@@ -776,7 +961,9 @@ impl App {
         }
         let proc = match gio::Subprocess::newv(
             &argv,
-            gio::SubprocessFlags::STDIN_PIPE | gio::SubprocessFlags::STDOUT_PIPE | gio::SubprocessFlags::STDERR_MERGE,
+            gio::SubprocessFlags::STDIN_PIPE
+                | gio::SubprocessFlags::STDOUT_PIPE
+                | gio::SubprocessFlags::STDERR_MERGE,
         ) {
             Ok(p) => p,
             Err(e) => {
@@ -784,7 +971,9 @@ impl App {
                 return;
             }
         };
-        self.append_log(&format!("→ enrolling a certificate with {gw} (saving to {out_s})"));
+        self.append_log(&format!(
+            "→ enrolling a certificate with {gw} (saving to {out_s})"
+        ));
         self.toast("Enrolling the certificate…");
         self.enroll_btn.set_sensitive(false);
         let input = format!("{regkey}\n{password}\n");
@@ -826,7 +1015,9 @@ impl App {
                 d.set_response_appearance("trust", adw::ResponseAppearance::Destructive);
                 d.set_close_response("cancel");
                 let a = app.clone();
-                d.connect_response(Some("trust"), move |_, _| a.run_enroll(gw.clone(), regkey.clone(), password.clone(), true));
+                d.connect_response(Some("trust"), move |_, _| {
+                    a.run_enroll(gw.clone(), regkey.clone(), password.clone(), true)
+                });
                 d.present(Some(&app.window));
                 return;
             }
@@ -855,7 +1046,11 @@ impl App {
         };
         let filters = gio::ListStore::new::<gtk::FileFilter>();
         filters.append(&filter);
-        let dialog = gtk::FileDialog::builder().title(title).modal(true).filters(&filters).build();
+        let dialog = gtk::FileDialog::builder()
+            .title(title)
+            .modal(true)
+            .filters(&filters)
+            .build();
         let app = self.rc();
         dialog.open(Some(&self.window), gio::Cancellable::NONE, move |res| {
             if let Some(path) = res.ok().and_then(|f| f.path()) {
@@ -914,7 +1109,11 @@ impl App {
 
             let app_rc = self.rc();
             let p1 = p.clone();
-            row.connect_activated(glib::clone!(#[strong] app_rc, move |_| app_rc.load_profile(&p1)));
+            row.connect_activated(glib::clone!(
+                #[strong]
+                app_rc,
+                move |_| app_rc.load_profile(&p1)
+            ));
             let app2 = app_rc.clone();
             let p2 = p.clone();
             conn.connect_clicked(move |_| {
@@ -936,16 +1135,32 @@ impl App {
         src.set_actions(gdk::DragAction::MOVE);
         let hot = Rc::new(Cell::new((0.0, 0.0)));
         let n = name.to_string();
-        src.connect_prepare(glib::clone!(#[strong] hot, move |_, x, y| {
-            hot.set((x, y));
-            Some(gdk::ContentProvider::for_value(&n.to_value()))
-        }));
-        src.connect_drag_begin(glib::clone!(#[weak] row, move |src, _| {
-            let (x, y) = hot.get();
-            src.set_icon(Some(&gtk::WidgetPaintable::new(Some(&row))), x as i32, y as i32);
-            row.add_css_class("dragging");
-        }));
-        src.connect_drag_end(glib::clone!(#[weak] row, move |_, _, _| row.remove_css_class("dragging")));
+        src.connect_prepare(glib::clone!(
+            #[strong]
+            hot,
+            move |_, x, y| {
+                hot.set((x, y));
+                Some(gdk::ContentProvider::for_value(&n.to_value()))
+            }
+        ));
+        src.connect_drag_begin(glib::clone!(
+            #[weak]
+            row,
+            move |src, _| {
+                let (x, y) = hot.get();
+                src.set_icon(
+                    Some(&gtk::WidgetPaintable::new(Some(&row))),
+                    x as i32,
+                    y as i32,
+                );
+                row.add_css_class("dragging");
+            }
+        ));
+        src.connect_drag_end(glib::clone!(
+            #[weak]
+            row,
+            move |_, _, _| row.remove_css_class("dragging")
+        ));
         row.add_controller(src);
 
         let target = gtk::DropTarget::new(String::static_type(), gdk::DragAction::MOVE);
@@ -959,30 +1174,54 @@ impl App {
                 row.add_css_class("drop-below");
             }
         };
-        target.connect_enter(glib::clone!(#[weak] row, #[upgrade_or] gdk::DragAction::empty(), move |_, _, y| {
-            set_marker(&row, y);
-            gdk::DragAction::MOVE
-        }));
-        target.connect_motion(glib::clone!(#[weak] row, #[upgrade_or] gdk::DragAction::empty(), move |_, _, y| {
-            set_marker(&row, y);
-            gdk::DragAction::MOVE
-        }));
-        target.connect_leave(glib::clone!(#[weak] row, move |_| {
-            row.remove_css_class("drop-above");
-            row.remove_css_class("drop-below");
-        }));
+        target.connect_enter(glib::clone!(
+            #[weak]
+            row,
+            #[upgrade_or]
+            gdk::DragAction::empty(),
+            move |_, _, y| {
+                set_marker(&row, y);
+                gdk::DragAction::MOVE
+            }
+        ));
+        target.connect_motion(glib::clone!(
+            #[weak]
+            row,
+            #[upgrade_or]
+            gdk::DragAction::empty(),
+            move |_, _, y| {
+                set_marker(&row, y);
+                gdk::DragAction::MOVE
+            }
+        ));
+        target.connect_leave(glib::clone!(
+            #[weak]
+            row,
+            move |_| {
+                row.remove_css_class("drop-above");
+                row.remove_css_class("drop-below");
+            }
+        ));
         let app = self.rc();
         let dest = name.to_string();
-        target.connect_drop(glib::clone!(#[weak] row, #[upgrade_or] false, move |_, value, _, y| {
-            row.remove_css_class("drop-above");
-            row.remove_css_class("drop-below");
-            let Ok(moved) = value.get::<String>() else { return false };
-            let below = y >= row.height() as f64 / 2.0;
-            let (app, dest) = (app.clone(), dest.clone());
-            // Rebuilding the list destroys this row; do it outside its signal.
-            glib::idle_add_local_once(move || app.move_profile(&moved, &dest, below));
-            true
-        }));
+        target.connect_drop(glib::clone!(
+            #[weak]
+            row,
+            #[upgrade_or]
+            false,
+            move |_, value, _, y| {
+                row.remove_css_class("drop-above");
+                row.remove_css_class("drop-below");
+                let Ok(moved) = value.get::<String>() else {
+                    return false;
+                };
+                let below = y >= row.height() as f64 / 2.0;
+                let (app, dest) = (app.clone(), dest.clone());
+                // Rebuilding the list destroys this row; do it outside its signal.
+                glib::idle_add_local_once(move || app.move_profile(&moved, &dest, below));
+                true
+            }
+        ));
         row.add_controller(target);
     }
 
@@ -992,7 +1231,9 @@ impl App {
         }
         {
             let mut profs = self.profiles.borrow_mut();
-            let Some(from) = profs.iter().position(|p| p.name == moved) else { return };
+            let Some(from) = profs.iter().position(|p| p.name == moved) else {
+                return;
+            };
             let p = profs.remove(from);
             let Some(to) = profs.iter().position(|p| p.name == dest) else {
                 profs.insert(from, p);
@@ -1009,7 +1250,12 @@ impl App {
 
     fn load_profile(&self, p: &Profile) {
         self.backend_row.set_selected(p.backend.index());
-        self.forti_proto_row.set_selected(if p.backend == Backend::FortiIpsec { 1 } else { 0 });
+        self.forti_proto_row
+            .set_selected(if p.backend == Backend::FortiIpsec {
+                1
+            } else {
+                0
+            });
         self.sso_row.set_selected(if p.sso { 1 } else { 0 });
         self.cp_auth_row.set_selected(if p.cp_cert { 1 } else { 0 });
         self.cert_row.set_text(&p.cert_path);
@@ -1017,9 +1263,14 @@ impl App {
         self.gateway_row.set_text(&p.gateway);
         self.user_row.set_text(&p.user);
         // realm_row doubles as AnyConnect's group / GlobalProtect's gateway field.
-        self.realm_row.set_text(if p.backend.uses_group() { &p.group } else { &p.realm });
+        self.realm_row.set_text(if p.backend.uses_group() {
+            &p.group
+        } else {
+            &p.realm
+        });
         // Group PSK lives in the keyring (like the password), keyed per profile.
-        self.psk_row.set_text(&profiles::secret_get(&profiles::psk_account(&p.name)).unwrap_or_default());
+        self.psk_row
+            .set_text(&profiles::secret_get(&profiles::psk_account(&p.name)).unwrap_or_default());
         self.ua_row.set_text(&p.sso_user_agent);
         self.emssn_row.set_text(&p.emssn);
         self.fctver_row.set_text(&p.fctver);
@@ -1027,7 +1278,11 @@ impl App {
         self.killswitch_row.set_active(p.killswitch);
         self.no_dtls_row.set_active(p.no_dtls);
         self.token_row.set_text("");
-        let secret = if p.remember_password { profiles::secret_get(&p.name).unwrap_or_default() } else { String::new() };
+        let secret = if p.remember_password {
+            profiles::secret_get(&p.name).unwrap_or_default()
+        } else {
+            String::new()
+        };
         self.password_row.set_text(&secret);
         let key_pass = if p.remember_key_pass {
             profiles::secret_get(&profiles::keypass_account(&p.name)).unwrap_or_default()
@@ -1047,14 +1302,28 @@ impl App {
         let realm_field = self.realm_row.text().trim().to_string();
         let name = self.name_row.text().trim().to_string();
         Profile {
-            pins: self.profiles.borrow().iter().find(|p| p.name == name).map(|p| p.pins.clone()).unwrap_or_default(),
+            pins: self
+                .profiles
+                .borrow()
+                .iter()
+                .find(|p| p.name == name)
+                .map(|p| p.pins.clone())
+                .unwrap_or_default(),
             name,
             backend,
             gateway: self.gateway_row.text().trim().to_string(),
             user: self.user_row.text().trim().to_string(),
             // realm_row doubles as AnyConnect's group / GlobalProtect's gateway field.
-            realm: if backend.uses_group() { String::new() } else { realm_field.clone() },
-            group: if backend.uses_group() { realm_field } else { String::new() },
+            realm: if backend.uses_group() {
+                String::new()
+            } else {
+                realm_field.clone()
+            },
+            group: if backend.uses_group() {
+                realm_field
+            } else {
+                String::new()
+            },
             sso: self.sso(),
             remember_password: false,
             remember_key_pass: false,
@@ -1064,7 +1333,11 @@ impl App {
             killswitch: backend != Backend::WireGuard && self.killswitch_row.is_active(),
             no_dtls: backend.uses_dtls() && self.no_dtls_row.is_active(),
             cp_cert: self.cp_cert(),
-            cert_path: if self.cp_cert() { self.cert_row.text().trim().to_string() } else { String::new() },
+            cert_path: if self.cp_cert() {
+                self.cert_row.text().trim().to_string()
+            } else {
+                String::new()
+            },
         }
     }
 
@@ -1084,14 +1357,19 @@ impl App {
             String::new()
         };
         let key_account = profiles::keypass_account(&name);
-        let remember_key_pass = !key_pass.is_empty() && profiles::secret_set(&key_account, &key_pass);
+        let remember_key_pass =
+            !key_pass.is_empty() && profiles::secret_set(&key_account, &key_pass);
         if !remember_key_pass {
             if !key_pass.is_empty() {
                 self.toast("Couldn't save the key passphrase to the keyring");
             }
             profiles::secret_delete(&key_account);
         }
-        let p = Profile { remember_password: remember, remember_key_pass, ..self.form_profile() };
+        let p = Profile {
+            remember_password: remember,
+            remember_key_pass,
+            ..self.form_profile()
+        };
 
         let pw = self.password_row.text().to_string();
         if remember && !pw.is_empty() {
@@ -1118,7 +1396,7 @@ impl App {
         {
             let mut profs = self.profiles.borrow_mut();
             if let Some(slot) = profs.iter_mut().find(|e| e.name == name) {
-            *slot = p;
+                *slot = p;
             } else {
                 profs.push(p);
             }
@@ -1152,7 +1430,9 @@ impl App {
         let name = self.name_row.text().trim().to_string();
         {
             let mut profs = self.profiles.borrow_mut();
-            let Some(p) = profs.iter_mut().find(|p| p.name == name) else { return };
+            let Some(p) = profs.iter_mut().find(|p| p.name == name) else {
+                return;
+            };
             p.pins.clear();
             if let Err(e) = profiles::save(&profs) {
                 drop(profs);
@@ -1161,7 +1441,9 @@ impl App {
             }
         }
         self.update_pins_row();
-        self.toast(&format!("“{name}” will ask again about the gateway's certificate"));
+        self.toast(&format!(
+            "“{name}” will ask again about the gateway's certificate"
+        ));
     }
 
     /// Keep a certificate the user trusted with the profile being connected.
@@ -1171,7 +1453,9 @@ impl App {
             let mut profs = self.profiles.borrow_mut();
             let Some(p) = profs.iter_mut().find(|p| p.name == name) else {
                 drop(profs);
-                self.session_pins.borrow_mut().insert(q.endpoint.clone(), q.fingerprint.clone());
+                self.session_pins
+                    .borrow_mut()
+                    .insert(q.endpoint.clone(), q.fingerprint.clone());
                 self.append_log("→ certificate trusted until unvpn quits (a saved profile for this gateway keeps it)");
                 return;
             };
@@ -1182,12 +1466,23 @@ impl App {
                 return;
             }
         }
-        self.append_log(&format!("→ certificate of {} trusted and saved with “{name}”", q.endpoint));
+        self.append_log(&format!(
+            "→ certificate of {} trusted and saved with “{name}”",
+            q.endpoint
+        ));
         self.update_pins_row();
     }
 
     fn confirm_delete_profile(&self, name: &str) {
-        let Some(p) = self.profiles.borrow().iter().find(|p| p.name == name).cloned() else { return };
+        let Some(p) = self
+            .profiles
+            .borrow()
+            .iter()
+            .find(|p| p.name == name)
+            .cloned()
+        else {
+            return;
+        };
         let mut body = "Its saved passwords and keys are removed too.".to_string();
         if profiles::owned_files(&p).is_some() {
             if p.uses_cp_cert() {
@@ -1199,7 +1494,10 @@ impl App {
                 body.push_str(" So is its imported VPN file.");
             }
         }
-        let dialog = adw::AlertDialog::builder().heading(format!("Delete “{name}”?")).body(body).build();
+        let dialog = adw::AlertDialog::builder()
+            .heading(format!("Delete “{name}”?"))
+            .body(body)
+            .build();
         dialog.add_responses(&[("cancel", "Cancel"), ("delete", "Delete")]);
         dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
         dialog.set_default_response(Some("cancel"));
@@ -1233,7 +1531,10 @@ impl App {
             return;
         }
         let pass = adw::PasswordEntryRow::builder().title("Passphrase").build();
-        let confirm = adw::PasswordEntryRow::builder().title("Repeat passphrase").activates_default(true).build();
+        let confirm = adw::PasswordEntryRow::builder()
+            .title("Repeat passphrase")
+            .activates_default(true)
+            .build();
         let dialog = passphrase_dialog(
             "Export Profiles",
             &format!(
@@ -1244,16 +1545,34 @@ impl App {
             ("export", "Export…"),
             &[&pass, &confirm],
         );
-        let check = glib::clone!(#[weak] dialog, #[weak] pass, #[weak] confirm, move |_: &adw::PasswordEntryRow| {
-            let p = pass.text();
-            dialog.set_response_enabled("export", p.chars().count() >= bundle::MIN_PASSPHRASE && p == confirm.text());
-        });
+        let check = glib::clone!(
+            #[weak]
+            dialog,
+            #[weak]
+            pass,
+            #[weak]
+            confirm,
+            move |_: &adw::PasswordEntryRow| {
+                let p = pass.text();
+                dialog.set_response_enabled(
+                    "export",
+                    p.chars().count() >= bundle::MIN_PASSPHRASE && p == confirm.text(),
+                );
+            }
+        );
         pass.connect_changed(check.clone());
         confirm.connect_changed(check);
         let app = self.rc();
-        dialog.connect_response(Some("export"), glib::clone!(#[weak] pass, move |_, _| {
-            app.pick_export_file(pass.text().to_string());
-        }));
+        dialog.connect_response(
+            Some("export"),
+            glib::clone!(
+                #[weak]
+                pass,
+                move |_, _| {
+                    app.pick_export_file(pass.text().to_string());
+                }
+            ),
+        );
         dialog.present(Some(&self.window));
     }
 
@@ -1265,7 +1584,9 @@ impl App {
             .build();
         let app = self.rc();
         dialog.save(Some(&self.window), gio::Cancellable::NONE, move |res| {
-            let Some(mut path) = res.ok().and_then(|f| f.path()) else { return };
+            let Some(mut path) = res.ok().and_then(|f| f.path()) else {
+                return;
+            };
             if path.extension().is_none() {
                 path.set_extension(bundle::FILE_EXT);
             }
@@ -1280,7 +1601,8 @@ impl App {
         glib::spawn_future_local(async move {
             let res = gio::spawn_blocking(move || {
                 let data = bundle::seal(&b, &pass)?;
-                bundle::write_private(&path, &data).map_err(|e| format!("write {}: {e}", path.display()))
+                bundle::write_private(&path, &data)
+                    .map_err(|e| format!("write {}: {e}", path.display()))
             })
             .await;
             for s in &skipped {
@@ -1288,7 +1610,10 @@ impl App {
             }
             match res {
                 Ok(Ok(())) if skipped.is_empty() => app.toast(&format!("Exported {n} profile(s)")),
-                Ok(Ok(())) => app.toast(&format!("Exported {n} profile(s); skipped {} (see log)", skipped.len())),
+                Ok(Ok(())) => app.toast(&format!(
+                    "Exported {n} profile(s); skipped {} (see log)",
+                    skipped.len()
+                )),
                 Ok(Err(e)) => app.toast(&format!("Export failed: {e}")),
                 Err(_) => app.toast("Export failed"),
             }
@@ -1301,12 +1626,20 @@ impl App {
         filter.add_pattern(&format!("*.{}", bundle::FILE_EXT));
         let filters = gio::ListStore::new::<gtk::FileFilter>();
         filters.append(&filter);
-        let dialog = gtk::FileDialog::builder().title("Import Profiles").modal(true).filters(&filters).build();
+        let dialog = gtk::FileDialog::builder()
+            .title("Import Profiles")
+            .modal(true)
+            .filters(&filters)
+            .build();
         let app = self.rc();
         dialog.open(Some(&self.window), gio::Cancellable::NONE, move |res| {
-            let Some(path) = res.ok().and_then(|f| f.path()) else { return };
+            let Some(path) = res.ok().and_then(|f| f.path()) else {
+                return;
+            };
             match std::fs::read(&path) {
-                Ok(data) if bundle::is_bundle(&data) => app.ask_import_passphrase(Rc::new(data), None),
+                Ok(data) if bundle::is_bundle(&data) => {
+                    app.ask_import_passphrase(Rc::new(data), None)
+                }
                 Ok(_) => app.toast("That file isn't an unvpn profile export"),
                 Err(e) => app.toast(&format!("Couldn't read {}: {e}", path.display())),
             }
@@ -1314,29 +1647,45 @@ impl App {
     }
 
     fn ask_import_passphrase(&self, data: Rc<Vec<u8>>, error: Option<&str>) {
-        let pass = adw::PasswordEntryRow::builder().title("Passphrase").activates_default(true).build();
+        let pass = adw::PasswordEntryRow::builder()
+            .title("Passphrase")
+            .activates_default(true)
+            .build();
         let body = match error {
             Some(e) => format!("{e}. Try again."),
             None => "Enter the passphrase the profiles were exported with.".to_string(),
         };
         let dialog = passphrase_dialog("Import Profiles", &body, ("import", "Import"), &[&pass]);
-        pass.connect_changed(glib::clone!(#[weak] dialog, move |p| {
-            dialog.set_response_enabled("import", !p.text().is_empty());
-        }));
+        pass.connect_changed(glib::clone!(
+            #[weak]
+            dialog,
+            move |p| {
+                dialog.set_response_enabled("import", !p.text().is_empty());
+            }
+        ));
         let app = self.rc();
-        dialog.connect_response(Some("import"), glib::clone!(#[weak] pass, move |_, _| {
-            let pass = pass.text().to_string();
-            let bytes = (*data).clone();
-            let (app, data) = (app.clone(), data.clone());
-            glib::spawn_future_local(async move {
-                match gio::spawn_blocking(move || bundle::open(&bytes, &pass)).await {
-                    Ok(Ok(b)) => app.confirm_import(b),
-                    Ok(Err(bundle::OpenError::WrongPassphrase)) => app.ask_import_passphrase(data, Some("Wrong passphrase")),
-                    Ok(Err(e)) => app.toast(&format!("Can't import: {e}")),
-                    Err(_) => app.toast("Import failed"),
+        dialog.connect_response(
+            Some("import"),
+            glib::clone!(
+                #[weak]
+                pass,
+                move |_, _| {
+                    let pass = pass.text().to_string();
+                    let bytes = (*data).clone();
+                    let (app, data) = (app.clone(), data.clone());
+                    glib::spawn_future_local(async move {
+                        match gio::spawn_blocking(move || bundle::open(&bytes, &pass)).await {
+                            Ok(Ok(b)) => app.confirm_import(b),
+                            Ok(Err(bundle::OpenError::WrongPassphrase)) => {
+                                app.ask_import_passphrase(data, Some("Wrong passphrase"))
+                            }
+                            Ok(Err(e)) => app.toast(&format!("Can't import: {e}")),
+                            Err(_) => app.toast("Import failed"),
+                        }
+                    });
                 }
-            });
-        }));
+            ),
+        );
         dialog.present(Some(&self.window));
     }
 
@@ -1360,9 +1709,16 @@ impl App {
         let list: Vec<String> = existing.iter().map(|n| format!("• {n}")).collect();
         let dialog = adw::AlertDialog::builder()
             .heading("Profiles Already Exist")
-            .body(format!("These profiles are already saved here:\n{}", list.join("\n")))
+            .body(format!(
+                "These profiles are already saved here:\n{}",
+                list.join("\n")
+            ))
             .build();
-        dialog.add_responses(&[("cancel", "Cancel"), ("keep", "Keep Both"), ("replace", "Replace")]);
+        dialog.add_responses(&[
+            ("cancel", "Cancel"),
+            ("keep", "Keep Both"),
+            ("replace", "Replace"),
+        ]);
         dialog.set_response_appearance("replace", adw::ResponseAppearance::Destructive);
         dialog.set_default_response(Some("keep"));
         dialog.set_close_response("cancel");
@@ -1393,7 +1749,11 @@ impl App {
             for e in &b.entries {
                 let base = e.profile.name.as_str();
                 let clash = profs.iter().any(|p| p.name == base);
-                let name = if clash && !replace { free_name(&profs, base) } else { base.to_string() };
+                let name = if clash && !replace {
+                    free_name(&profs, base)
+                } else {
+                    base.to_string()
+                };
                 let mut p = match bundle::install_files(e, &name, &root) {
                     Ok(p) => p,
                     Err(err) => {
@@ -1479,10 +1839,16 @@ impl App {
         self.key_pass_to_store.replace(None);
 
         let profs = self.profiles.borrow();
-        let saved = profs.iter().find(|p| p.backend == Backend::F5 && profiles::gateway_endpoint(&p.gateway) == endpoint);
-        let name = saved.map(|p| p.name.clone()).unwrap_or_else(|| endpoint.clone());
+        let saved = profs.iter().find(|p| {
+            p.backend == Backend::F5 && profiles::gateway_endpoint(&p.gateway) == endpoint
+        });
+        let name = saved
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| endpoint.clone());
         *self.active_profile.lock().unwrap() = name.clone();
-        let mut args: Vec<String> = ["f5", "--launch", url, "--watch-stdin", "--label", &name].map(String::from).to_vec();
+        let mut args: Vec<String> = ["f5", "--launch", url, "--watch-stdin", "--label", &name]
+            .map(String::from)
+            .to_vec();
         if saved.is_some_and(|p| p.killswitch) {
             args.push("--killswitch".into());
         }
@@ -1499,7 +1865,13 @@ impl App {
         }
         // Like a tray connect: the window opens for a question or a failure.
         self.from_tray.set(true);
-        self.vpn.borrow_mut().connect(args, Vec::new(), format!("F5 from the browser: {endpoint}"), None, None);
+        self.vpn.borrow_mut().connect(
+            args,
+            Vec::new(),
+            format!("F5 from the browser: {endpoint}"),
+            None,
+            None,
+        );
         self.sync_ui();
     }
 
@@ -1545,7 +1917,11 @@ impl App {
 
         let name = {
             let n = self.name_row.text().trim().to_string();
-            if n.is_empty() { gw.clone() } else { n }
+            if n.is_empty() {
+                gw.clone()
+            } else {
+                n
+            }
         };
         *self.active_profile.lock().unwrap() = name.clone();
 
@@ -1553,13 +1929,19 @@ impl App {
         for (endpoint, fp) in self.session_pins.borrow().iter() {
             p.pins.entry(endpoint.clone()).or_insert_with(|| fp.clone());
         }
-        let psk = (p.backend == Backend::FortiIpsec).then(|| self.psk_row.text().to_string()).filter(|k| !k.is_empty());
+        let psk = (p.backend == Backend::FortiIpsec)
+            .then(|| self.psk_row.text().to_string())
+            .filter(|k| !k.is_empty());
         let mut args = profiles::engine_args(&p, psk.is_some());
         args.extend(["--label".to_string(), name]);
         // Secrets go on stdin. The Check Point token code follows the PIN; a
         // second factor asked later comes as `# AUTH-PROMPT: code:`.
         let mut stdin_lines = if p.backend == Backend::CheckPoint && !p.cp_cert {
-            let passcode = format!("{}{}", self.password_row.text(), self.token_row.text().trim());
+            let passcode = format!(
+                "{}{}",
+                self.password_row.text(),
+                self.token_row.text().trim()
+            );
             self.token_row.set_text(""); // one-time code
             vec![passcode]
         } else if profiles::takes_password(&p) {
@@ -1578,7 +1960,9 @@ impl App {
             _ => Some(gw.clone()),
         };
 
-        self.vpn.borrow_mut().connect(args, stdin_lines, label, saml, sso_ua);
+        self.vpn
+            .borrow_mut()
+            .connect(args, stdin_lines, label, saml, sso_ua);
         self.sync_ui();
     }
 
@@ -1594,13 +1978,19 @@ impl App {
                     self.close_sso_window();
                 }
                 EngineEvent::Dns(dns) => {
-                    let text = if dns.is_empty() { "System resolver (unchanged)" } else { dns.as_str() };
+                    let text = if dns.is_empty() {
+                        "System resolver (unchanged)"
+                    } else {
+                        dns.as_str()
+                    };
                     self.dns_row.set_subtitle(text);
                 }
                 EngineEvent::Prompt(p) => self.show_prompt(p),
-                EngineEvent::SsoBrowser { login, watch, user_agent } => {
-                    self.open_sso_window(&login, &watch, user_agent.as_deref())
-                }
+                EngineEvent::SsoBrowser {
+                    login,
+                    watch,
+                    user_agent,
+                } => self.open_sso_window(&login, &watch, user_agent.as_deref()),
                 EngineEvent::Iface(name) => {
                     self.iface.replace(Some(name));
                     if self.conn_since.borrow().is_none() {
@@ -1617,7 +2007,8 @@ impl App {
                         .map(|d| d.as_secs())
                         .unwrap_or(0);
                     let up_for = Duration::from_secs(now.saturating_sub(since));
-                    self.conn_since.replace((since > 0).then(|| std::time::Instant::now() - up_for));
+                    self.conn_since
+                        .replace((since > 0).then(|| std::time::Instant::now() - up_for));
                 }
                 EngineEvent::StateChanged => self.sync_ui(),
             },
@@ -1662,7 +2053,13 @@ impl App {
                 return;
             }
         }
-        let Some(p) = self.profiles.borrow().iter().find(|p| p.name == name).cloned() else {
+        let Some(p) = self
+            .profiles
+            .borrow()
+            .iter()
+            .find(|p| p.name == name)
+            .cloned()
+        else {
             return;
         };
         self.load_profile(&p);
@@ -1683,7 +2080,10 @@ impl App {
             self.password_row.upcast_ref(),
             self.token_row.upcast_ref(),
         ];
-        if let Some(w) = rows.into_iter().find(|w| w.is_visible() && self.editable_text(w).trim().is_empty()) {
+        if let Some(w) = rows
+            .into_iter()
+            .find(|w| w.is_visible() && self.editable_text(w).trim().is_empty())
+        {
             w.grab_focus();
         }
     }
@@ -1692,7 +2092,8 @@ impl App {
     fn reveal_log(&self) {
         self.show_window();
         self.log_expander.set_expanded(true);
-        self.log_view.scroll_to_iter(&mut self.log_buffer.end_iter(), 0.0, false, 0.0, 0.0);
+        self.log_view
+            .scroll_to_iter(&mut self.log_buffer.end_iter(), 0.0, false, 0.0, 0.0);
     }
 
     fn update_tray(&self) {
@@ -1720,7 +2121,8 @@ impl App {
                 b.delete(&mut start, &mut cut);
             }
         }
-        self.log_view.scroll_to_iter(&mut b.end_iter(), 0.0, false, 0.0, 0.0);
+        self.log_view
+            .scroll_to_iter(&mut b.end_iter(), 0.0, false, 0.0, 0.0);
     }
 
     fn tick(&self) {
@@ -1733,16 +2135,27 @@ impl App {
     /// Refresh the live-connection stats (transfer counters from the tunnel device,
     /// and how long it has been up). A no-op unless a tunnel is up.
     fn update_stats(&self) {
-        if !matches!(self.vpn.borrow().state(), State::Connected | State::Reconnecting) {
+        if !matches!(
+            self.vpn.borrow().state(),
+            State::Connected | State::Reconnecting
+        ) {
             return;
         }
         if let Some(iface) = self.iface.borrow().as_ref() {
-            if let (Some(rx), Some(tx)) = (iface_bytes(iface, "rx_bytes"), iface_bytes(iface, "tx_bytes")) {
-                self.transfer_row.set_subtitle(&format!("↓ {}    ↑ {}", human_bytes(rx), human_bytes(tx)));
+            if let (Some(rx), Some(tx)) = (
+                iface_bytes(iface, "rx_bytes"),
+                iface_bytes(iface, "tx_bytes"),
+            ) {
+                self.transfer_row.set_subtitle(&format!(
+                    "↓ {}    ↑ {}",
+                    human_bytes(rx),
+                    human_bytes(tx)
+                ));
             }
         }
         if let Some(since) = *self.conn_since.borrow() {
-            self.uptime_row.set_subtitle(&human_duration(since.elapsed()));
+            self.uptime_row
+                .set_subtitle(&human_duration(since.elapsed()));
         }
     }
 
@@ -1827,7 +2240,10 @@ impl App {
             "newpass" => ("Password expired", "New password"),
             "renew" => ("Change your password?", "New password"),
             "answer" => ("Additional verification", "Answer"),
-            "sso" if self.backend() == Backend::GlobalProtect => ("Finish the browser sign-in", "Callback link or prelogin-cookie"),
+            "sso" if self.backend() == Backend::GlobalProtect => (
+                "Finish the browser sign-in",
+                "Callback link or prelogin-cookie",
+            ),
             "sso" => ("Finish the browser sign-in", "SSO token"),
             "username" => ("Sign-in name", "Username"),
             "code2" => ("Second code", "Next code"),
@@ -1847,17 +2263,25 @@ impl App {
         } else {
             p.message.clone()
         };
-        self.prompt_group.set_description((!message.is_empty()).then_some(message.as_str()));
+        self.prompt_group
+            .set_description((!message.is_empty()).then_some(message.as_str()));
 
         let new_password = p.kind == "newpass" || p.kind == "renew";
         let masked = new_password || matches!(p.kind.as_str(), "answer" | "sso" | "keypass");
 
         let entry: gtk::Widget = if masked {
-            adw::PasswordEntryRow::builder().title(hint).build().upcast()
+            adw::PasswordEntryRow::builder()
+                .title(hint)
+                .build()
+                .upcast()
         } else {
             adw::EntryRow::builder().title(hint).build().upcast()
         };
-        let confirm = new_password.then(|| adw::PasswordEntryRow::builder().title("Confirm password").build());
+        let confirm = new_password.then(|| {
+            adw::PasswordEntryRow::builder()
+                .title("Confirm password")
+                .build()
+        });
 
         self.prompt_group.add(&entry);
         self.prompt_rows.borrow_mut().push(entry.clone());
@@ -1868,7 +2292,12 @@ impl App {
         // Key passphrase of a saved profile: offer to remember it (stored once the
         // tunnel is up, so a mistyped one isn't kept).
         let profile = self.name_row.text().trim().to_string();
-        let saved = self.profiles.borrow().iter().find(|e| e.name == profile).map(|e| e.remember_key_pass);
+        let saved = self
+            .profiles
+            .borrow()
+            .iter()
+            .find(|e| e.name == profile)
+            .map(|e| e.remember_key_pass);
         let remember = (p.kind == "keypass" && saved.is_some()).then(|| {
             adw::SwitchRow::builder()
                 .title("Remember passphrase")
@@ -1887,7 +2316,10 @@ impl App {
             .halign(gtk::Align::End)
             .margin_top(8)
             .build();
-        let send = gtk::Button::builder().label("Send").css_classes(["suggested-action"]).build();
+        let send = gtk::Button::builder()
+            .label("Send")
+            .css_classes(["suggested-action"])
+            .build();
         let skip = (p.kind == "renew").then(|| gtk::Button::with_label("Skip"));
         if let Some(s) = &skip {
             btns.append(s);
@@ -1905,9 +2337,16 @@ impl App {
         let kind = p.kind.clone();
         let do_send: Rc<dyn Fn()> = Rc::new(move || {
             let text = app.editable_text(&entry_for_send);
-            let answer = if masked { text } else { text.trim().to_string() };
+            let answer = if masked {
+                text
+            } else {
+                text.trim().to_string()
+            };
             if new_password {
-                let c = confirm_for_send.as_ref().map(|c| c.text().to_string()).unwrap_or_default();
+                let c = confirm_for_send
+                    .as_ref()
+                    .map(|c| c.text().to_string())
+                    .unwrap_or_default();
                 if answer != c {
                     app.toast("Passwords don't match");
                     return;
@@ -1918,7 +2357,8 @@ impl App {
             }
             app.vpn.borrow_mut().answer_prompt(&answer);
             if remember.as_ref().is_some_and(|r| r.is_active()) {
-                app.key_pass_to_store.replace(Some((profile.clone(), answer.clone())));
+                app.key_pass_to_store
+                    .replace(Some((profile.clone(), answer.clone())));
             }
             app.append_log(match kind.as_str() {
                 "sso" => "→ SSO token sent",
@@ -1965,7 +2405,10 @@ impl App {
             .margin_top(8)
             .build();
         let cancel = gtk::Button::with_label("Cancel");
-        let trust = gtk::Button::builder().label("Trust").css_classes(["suggested-action"]).build();
+        let trust = gtk::Button::builder()
+            .label("Trust")
+            .css_classes(["suggested-action"])
+            .build();
         btns.append(&cancel);
         btns.append(&trust);
         self.prompt_group.add(&btns);
@@ -1990,14 +2433,18 @@ impl App {
     /// Persist a key passphrase the user asked to remember in the prompt card — only
     /// once the tunnel came up, so it was right.
     fn store_key_pass(&self) {
-        let Some((name, pass)) = self.key_pass_to_store.take() else { return };
+        let Some((name, pass)) = self.key_pass_to_store.take() else {
+            return;
+        };
         if !profiles::secret_set(&profiles::keypass_account(&name), &pass) {
             self.toast("Couldn't save the key passphrase to the keyring");
             return;
         }
         {
             let mut profs = self.profiles.borrow_mut();
-            let Some(slot) = profs.iter_mut().find(|e| e.name == name) else { return };
+            let Some(slot) = profs.iter_mut().find(|e| e.name == name) else {
+                return;
+            };
             slot.remember_key_pass = true;
             if let Err(e) = profiles::save(&profs) {
                 drop(profs);
@@ -2046,7 +2493,8 @@ impl App {
 
         if matches!(state, State::Connected | State::Reconnecting) {
             let name = self.active_profile.lock().unwrap().clone();
-            self.status_pill.set_tooltip_text((!name.is_empty()).then_some(name.as_str()));
+            self.status_pill
+                .set_tooltip_text((!name.is_empty()).then_some(name.as_str()));
         } else {
             self.status_pill.set_tooltip_text(None);
         }
@@ -2067,7 +2515,8 @@ impl App {
                     "Connect"
                 };
                 self.connect_btn.set_label(label);
-                self.connect_btn.set_css_classes(&["suggested-action", "pill"]);
+                self.connect_btn
+                    .set_css_classes(&["suggested-action", "pill"]);
                 self.connect_btn.set_sensitive(self.form_ready());
                 self.clear_prompt();
                 self.status_group.set_visible(false);
@@ -2080,7 +2529,8 @@ impl App {
             }
             State::Connecting | State::Connected | State::Reconnecting => {
                 self.connect_btn.set_label("Disconnect");
-                self.connect_btn.set_css_classes(&["destructive-action", "pill"]);
+                self.connect_btn
+                    .set_css_classes(&["destructive-action", "pill"]);
                 self.connect_btn.set_sensitive(true);
             }
             State::Disconnecting => {
@@ -2093,7 +2543,11 @@ impl App {
         let changed = self.last_state.borrow().as_ref() != Some(&state);
         if changed {
             let down = matches!(state, State::Disconnected | State::Error(_));
-            let switch = if down { self.pending_switch.take() } else { None };
+            let switch = if down {
+                self.pending_switch.take()
+            } else {
+                None
+            };
             // A push approved on the phone leaves its card up; the tunnel answers it.
             if state == State::Connected {
                 self.clear_prompt();
@@ -2120,7 +2574,10 @@ impl App {
     }
 
     fn rc(&self) -> Rc<App> {
-        self.me.borrow().upgrade().expect("App dropped while a handler ran")
+        self.me
+            .borrow()
+            .upgrade()
+            .expect("App dropped while a handler ran")
     }
 
     fn init_tray(self: &Rc<Self>) {
@@ -2142,12 +2599,24 @@ impl App {
     }
 }
 
-fn passphrase_dialog(heading: &str, body: &str, ok: (&str, &str), rows: &[&adw::PasswordEntryRow]) -> adw::AlertDialog {
-    let list = gtk::ListBox::builder().css_classes(["boxed-list"]).selection_mode(gtk::SelectionMode::None).build();
+fn passphrase_dialog(
+    heading: &str,
+    body: &str,
+    ok: (&str, &str),
+    rows: &[&adw::PasswordEntryRow],
+) -> adw::AlertDialog {
+    let list = gtk::ListBox::builder()
+        .css_classes(["boxed-list"])
+        .selection_mode(gtk::SelectionMode::None)
+        .build();
     for r in rows {
         list.append(*r);
     }
-    let dialog = adw::AlertDialog::builder().heading(heading).body(body).extra_child(&list).build();
+    let dialog = adw::AlertDialog::builder()
+        .heading(heading)
+        .body(body)
+        .extra_child(&list)
+        .build();
     dialog.add_responses(&[("cancel", "Cancel"), ok]);
     dialog.set_response_appearance(ok.0, adw::ResponseAppearance::Suggested);
     dialog.set_response_enabled(ok.0, false);
@@ -2157,7 +2626,10 @@ fn passphrase_dialog(heading: &str, body: &str, ok: (&str, &str), rows: &[&adw::
 }
 
 fn free_name(profs: &[Profile], base: &str) -> String {
-    (2..).map(|i| format!("{base} ({i})")).find(|n| !profs.iter().any(|p| &p.name == n)).unwrap()
+    (2..)
+        .map(|i| format!("{base} ({i})"))
+        .find(|n| !profs.iter().any(|p| &p.name == n))
+        .unwrap()
 }
 
 thread_local! {
@@ -2189,26 +2661,49 @@ fn build_ui(app: &adw::Application, start_hidden: bool) -> Rc<App> {
         dialog.present(Some(&state_app.window));
     }));
     let quit = gio::SimpleAction::new("quit", None);
-    quit.connect_activate(glib::clone!(#[strong] state_app, move |_, _| state_app.request_quit()));
+    quit.connect_activate(glib::clone!(
+        #[strong]
+        state_app,
+        move |_, _| state_app.request_quit()
+    ));
     let export = gio::SimpleAction::new("export", None);
-    export.connect_activate(glib::clone!(#[strong] state_app, move |_, _| state_app.export_profiles()));
+    export.connect_activate(glib::clone!(
+        #[strong]
+        state_app,
+        move |_, _| state_app.export_profiles()
+    ));
     let import = gio::SimpleAction::new("import", None);
-    import.connect_activate(glib::clone!(#[strong] state_app, move |_, _| state_app.import_profiles()));
+    import.connect_activate(glib::clone!(
+        #[strong]
+        state_app,
+        move |_, _| state_app.import_profiles()
+    ));
     app.add_action(&about);
     app.add_action(&quit);
     app.add_action(&export);
     app.add_action(&import);
 
-    glib::spawn_future_local(glib::clone!(#[strong] state_app, async move {
-        while let Ok(msg) = rx.recv().await {
-            state_app.handle_msg(msg);
+    glib::spawn_future_local(glib::clone!(
+        #[strong]
+        state_app,
+        async move {
+            while let Ok(msg) = rx.recv().await {
+                state_app.handle_msg(msg);
+            }
         }
-    }));
+    ));
 
-    glib::timeout_add_local(Duration::from_millis(800), glib::clone!(#[strong] state_app, move || {
-        state_app.tick();
-        glib::ControlFlow::Continue
-    }));
+    glib::timeout_add_local(
+        Duration::from_millis(800),
+        glib::clone!(
+            #[strong]
+            state_app,
+            move || {
+                state_app.tick();
+                glib::ControlFlow::Continue
+            }
+        ),
+    );
 
     if !start_hidden {
         state_app.init_tray();
@@ -2218,16 +2713,20 @@ fn build_ui(app: &adw::Application, start_hidden: bool) -> Rc<App> {
     // `--tray` (autostart): stay in the tray until picked. At login the bar hosting
     // the tray may come up after us, so wait for it before falling back to a window.
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
-    let wait_tray = glib::clone!(#[strong] state_app, move || {
-        if !tray::tray_available() && std::time::Instant::now() < deadline {
-            return glib::ControlFlow::Continue;
+    let wait_tray = glib::clone!(
+        #[strong]
+        state_app,
+        move || {
+            if !tray::tray_available() && std::time::Instant::now() < deadline {
+                return glib::ControlFlow::Continue;
+            }
+            state_app.init_tray();
+            if state_app.tray.borrow().is_none() {
+                state_app.window.present();
+            }
+            glib::ControlFlow::Break
         }
-        state_app.init_tray();
-        if state_app.tray.borrow().is_none() {
-            state_app.window.present();
-        }
-        glib::ControlFlow::Break
-    });
+    );
     if tray::tray_available() {
         wait_tray();
     } else {
@@ -2277,8 +2776,16 @@ fn main() -> glib::ExitCode {
         build_ui(app, false);
     });
     app.connect_command_line(|app, cmd| {
-        let args: Vec<String> = cmd.arguments().iter().map(|a| a.to_string_lossy().into_owned()).collect();
-        let launch = args.iter().position(|a| a == "--f5-launch").and_then(|i| args.get(i + 1)).cloned();
+        let args: Vec<String> = cmd
+            .arguments()
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let launch = args
+            .iter()
+            .position(|a| a == "--f5-launch")
+            .and_then(|i| args.get(i + 1))
+            .cloned();
         let hidden = launch.is_some() || args.iter().any(|a| a == "--tray");
         let ui = build_ui(app, hidden);
         if let Some(url) = launch {

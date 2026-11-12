@@ -53,12 +53,22 @@ impl Eap {
         }
         let body = &buf[4..len];
         if code == EAP_SUCCESS || code == EAP_FAILURE {
-            return Ok(Eap { code, id, method: None, data: Vec::new() });
+            return Ok(Eap {
+                code,
+                id,
+                method: None,
+                data: Vec::new(),
+            });
         }
         if body.is_empty() {
             return Err("EAP request/response without a type".into());
         }
-        Ok(Eap { code, id, method: Some(body[0]), data: body[1..].to_vec() })
+        Ok(Eap {
+            code,
+            id,
+            method: Some(body[0]),
+            data: body[1..].to_vec(),
+        })
     }
 
     /// Serialise an EAP Response for `method` with `data` as its type-data.
@@ -113,7 +123,11 @@ pub fn parse_mschap_challenge(type_data: &[u8]) -> Result<MschapChallenge, Strin
     }
     let mut challenge = [0u8; 16];
     challenge.copy_from_slice(&type_data[5..21]);
-    Ok(MschapChallenge { mschap_id: type_data[1], challenge, name: type_data[21..].to_vec() })
+    Ok(MschapChallenge {
+        mschap_id: type_data[1],
+        challenge,
+        name: type_data[21..].to_vec(),
+    })
 }
 
 /// Build the MS-CHAP-v2 Response type-data (RFC 2759 §2.2) given the parsed
@@ -132,7 +146,7 @@ pub fn mschap_response(
     value.extend_from_slice(&[0u8; 8]);
     value.extend_from_slice(&nt);
     value.push(0); // Flags
-    // Type-data: OpCode | MS-CHAPv2-ID | MS-Length | Value-Size(49) | Value | Name
+                   // Type-data: OpCode | MS-CHAPv2-ID | MS-Length | Value-Size(49) | Value | Name
     let name = username.as_bytes();
     let ms_len = (4 + 1 + 49 + name.len()) as u16;
     let mut out = Vec::new();
@@ -189,7 +203,12 @@ pub fn authenticator_response(
     let digest = h.finish().unwrap();
     let mut h = Hasher::new(MessageDigest::sha1()).expect("sha1");
     h.update(&digest).unwrap();
-    h.update(&challenge_hash(peer_challenge, authenticator_challenge, username)).unwrap();
+    h.update(&challenge_hash(
+        peer_challenge,
+        authenticator_challenge,
+        username,
+    ))
+    .unwrap();
     h.update(MAGIC2).unwrap();
     let mut out = [0u8; 20];
     out.copy_from_slice(&h.finish().unwrap());
@@ -263,27 +282,27 @@ fn des_ecb_encrypt(key: &[u8; 8], block: &[u8; 8]) -> [u8; 8] {
 mod des {
     // All tables are 1-based bit positions counted from the MSB of the input word.
     const IP: [u8; 64] = [
-        58, 50, 42, 34, 26, 18, 10, 2, 60, 52, 44, 36, 28, 20, 12, 4, 62, 54, 46, 38, 30, 22, 14, 6,
-        64, 56, 48, 40, 32, 24, 16, 8, 57, 49, 41, 33, 25, 17, 9, 1, 59, 51, 43, 35, 27, 19, 11, 3,
-        61, 53, 45, 37, 29, 21, 13, 5, 63, 55, 47, 39, 31, 23, 15, 7,
+        58, 50, 42, 34, 26, 18, 10, 2, 60, 52, 44, 36, 28, 20, 12, 4, 62, 54, 46, 38, 30, 22, 14,
+        6, 64, 56, 48, 40, 32, 24, 16, 8, 57, 49, 41, 33, 25, 17, 9, 1, 59, 51, 43, 35, 27, 19, 11,
+        3, 61, 53, 45, 37, 29, 21, 13, 5, 63, 55, 47, 39, 31, 23, 15, 7,
     ];
     const FP: [u8; 64] = [
-        40, 8, 48, 16, 56, 24, 64, 32, 39, 7, 47, 15, 55, 23, 63, 31, 38, 6, 46, 14, 54, 22, 62, 30,
-        37, 5, 45, 13, 53, 21, 61, 29, 36, 4, 44, 12, 52, 20, 60, 28, 35, 3, 43, 11, 51, 19, 59, 27,
-        34, 2, 42, 10, 50, 18, 58, 26, 33, 1, 41, 9, 49, 17, 57, 25,
+        40, 8, 48, 16, 56, 24, 64, 32, 39, 7, 47, 15, 55, 23, 63, 31, 38, 6, 46, 14, 54, 22, 62,
+        30, 37, 5, 45, 13, 53, 21, 61, 29, 36, 4, 44, 12, 52, 20, 60, 28, 35, 3, 43, 11, 51, 19,
+        59, 27, 34, 2, 42, 10, 50, 18, 58, 26, 33, 1, 41, 9, 49, 17, 57, 25,
     ];
     const E: [u8; 48] = [
         32, 1, 2, 3, 4, 5, 4, 5, 6, 7, 8, 9, 8, 9, 10, 11, 12, 13, 12, 13, 14, 15, 16, 17, 16, 17,
         18, 19, 20, 21, 20, 21, 22, 23, 24, 25, 24, 25, 26, 27, 28, 29, 28, 29, 30, 31, 32, 1,
     ];
     const P: [u8; 32] = [
-        16, 7, 20, 21, 29, 12, 28, 17, 1, 15, 23, 26, 5, 18, 31, 10, 2, 8, 24, 14, 32, 27, 3, 9, 19,
-        13, 30, 6, 22, 11, 4, 25,
+        16, 7, 20, 21, 29, 12, 28, 17, 1, 15, 23, 26, 5, 18, 31, 10, 2, 8, 24, 14, 32, 27, 3, 9,
+        19, 13, 30, 6, 22, 11, 4, 25,
     ];
     const PC1: [u8; 56] = [
         57, 49, 41, 33, 25, 17, 9, 1, 58, 50, 42, 34, 26, 18, 10, 2, 59, 51, 43, 35, 27, 19, 11, 3,
-        60, 52, 44, 36, 63, 55, 47, 39, 31, 23, 15, 7, 62, 54, 46, 38, 30, 22, 14, 6, 61, 53, 45, 37,
-        29, 21, 13, 5, 28, 20, 12, 4,
+        60, 52, 44, 36, 63, 55, 47, 39, 31, 23, 15, 7, 62, 54, 46, 38, 30, 22, 14, 6, 61, 53, 45,
+        37, 29, 21, 13, 5, 28, 20, 12, 4,
     ];
     const PC2: [u8; 48] = [
         14, 17, 11, 24, 1, 5, 3, 28, 15, 6, 21, 10, 23, 19, 12, 4, 26, 8, 16, 7, 27, 20, 13, 2, 41,
@@ -302,14 +321,14 @@ mod des {
             3, 15, 4, 2, 11, 6, 7, 12, 0, 5, 14, 9,
         ],
         [
-            10, 0, 9, 14, 6, 3, 15, 5, 1, 13, 12, 7, 11, 4, 2, 8, 13, 7, 0, 9, 3, 4, 6, 10, 2, 8, 5,
-            14, 12, 11, 15, 1, 13, 6, 4, 9, 8, 15, 3, 0, 11, 1, 2, 12, 5, 10, 14, 7, 1, 10, 13, 0,
-            6, 9, 8, 7, 4, 15, 14, 3, 11, 5, 2, 12,
+            10, 0, 9, 14, 6, 3, 15, 5, 1, 13, 12, 7, 11, 4, 2, 8, 13, 7, 0, 9, 3, 4, 6, 10, 2, 8,
+            5, 14, 12, 11, 15, 1, 13, 6, 4, 9, 8, 15, 3, 0, 11, 1, 2, 12, 5, 10, 14, 7, 1, 10, 13,
+            0, 6, 9, 8, 7, 4, 15, 14, 3, 11, 5, 2, 12,
         ],
         [
-            7, 13, 14, 3, 0, 6, 9, 10, 1, 2, 8, 5, 11, 12, 4, 15, 13, 8, 11, 5, 6, 15, 0, 3, 4, 7, 2,
-            12, 1, 10, 14, 9, 10, 6, 9, 0, 12, 11, 7, 13, 15, 1, 3, 14, 5, 2, 8, 4, 3, 15, 0, 6, 10,
-            1, 13, 8, 9, 4, 5, 11, 12, 7, 2, 14,
+            7, 13, 14, 3, 0, 6, 9, 10, 1, 2, 8, 5, 11, 12, 4, 15, 13, 8, 11, 5, 6, 15, 0, 3, 4, 7,
+            2, 12, 1, 10, 14, 9, 10, 6, 9, 0, 12, 11, 7, 13, 15, 1, 3, 14, 5, 2, 8, 4, 3, 15, 0, 6,
+            10, 1, 13, 8, 9, 4, 5, 11, 12, 7, 2, 14,
         ],
         [
             2, 12, 4, 1, 7, 10, 11, 6, 8, 5, 3, 15, 13, 0, 14, 9, 14, 11, 2, 12, 4, 7, 13, 1, 5, 0,
@@ -328,8 +347,8 @@ mod des {
         ],
         [
             13, 2, 8, 4, 6, 15, 11, 1, 10, 9, 3, 14, 5, 0, 12, 7, 1, 15, 13, 8, 10, 3, 7, 4, 12, 5,
-            6, 11, 0, 14, 9, 2, 7, 11, 4, 1, 9, 12, 14, 2, 0, 6, 10, 13, 15, 3, 5, 8, 2, 1, 14, 7, 4,
-            10, 8, 13, 15, 12, 9, 0, 3, 5, 6, 11,
+            6, 11, 0, 14, 9, 2, 7, 11, 4, 1, 9, 12, 14, 2, 0, 6, 10, 13, 15, 3, 5, 8, 2, 1, 14, 7,
+            4, 10, 8, 13, 15, 12, 9, 0, 3, 5, 6, 11,
         ],
     ];
 
@@ -362,7 +381,7 @@ mod des {
             let s = SHIFTS[i];
             c = ((c << s) | (c >> (28 - s))) & 0x0fff_ffff;
             d = ((d << s) | (d >> (28 - s))) & 0x0fff_ffff;
-        *sk = permute((c << 28) | d, &PC2, 56);
+            *sk = permute((c << 28) | d, &PC2, 56);
         }
         let ip = permute(block, &IP, 64);
         let mut l = (ip >> 32) as u32;
@@ -382,7 +401,10 @@ mod des {
         #[test]
         fn des_fips_known_answer() {
             // FIPS 46-3 test vector.
-            assert_eq!(encrypt_block(0x133457799BBCDFF1, 0x0123456789ABCDEF), 0x85E813540F0AB405);
+            assert_eq!(
+                encrypt_block(0x133457799BBCDFF1, 0x0123456789ABCDEF),
+                0x85E813540F0AB405
+            );
         }
     }
 }
@@ -401,8 +423,10 @@ fn unicode_le(s: &str) -> Vec<u8> {
 // ---------------------------------------------------------------------------
 
 const MAGIC1: &[u8] = b"This is the MPPE Master Key";
-const MAGIC2: &[u8] = b"On the client side, this is the send key; on the server side, it is the receive key.";
-const MAGIC3: &[u8] = b"On the client side, this is the receive key; on the server side, it is the send key.";
+const MAGIC2: &[u8] =
+    b"On the client side, this is the send key; on the server side, it is the receive key.";
+const MAGIC3: &[u8] =
+    b"On the client side, this is the receive key; on the server side, it is the send key.";
 const SHA_PAD1: [u8; 40] = [0x00; 40];
 const SHA_PAD2: [u8; 40] = [0xf2; 40];
 
@@ -481,10 +505,26 @@ fn md4(input: &[u8]) -> [u8; 16] {
 
         // Round 1
         let r1 = |a: &mut u32, b: u32, c: u32, d: u32, k: usize, s: u32| {
-        *a = a.wrapping_add(f(b, c, d)).wrapping_add(x[k]).rotate_left(s);
+            *a = a.wrapping_add(f(b, c, d)).wrapping_add(x[k]).rotate_left(s);
         };
-        for &(k, s) in &[(0, 3), (1, 7), (2, 11), (3, 19), (4, 3), (5, 7), (6, 11), (7, 19),
-                         (8, 3), (9, 7), (10, 11), (11, 19), (12, 3), (13, 7), (14, 11), (15, 19)] {
+        for &(k, s) in &[
+            (0, 3),
+            (1, 7),
+            (2, 11),
+            (3, 19),
+            (4, 3),
+            (5, 7),
+            (6, 11),
+            (7, 19),
+            (8, 3),
+            (9, 7),
+            (10, 11),
+            (11, 19),
+            (12, 3),
+            (13, 7),
+            (14, 11),
+            (15, 19),
+        ] {
             // a,b,c,d rotate each step: use explicit ordering
             match k % 4 {
                 0 => r1(&mut a, b, c, d, k, s),
@@ -496,12 +536,32 @@ fn md4(input: &[u8]) -> [u8; 16] {
 
         // Round 2
         let r2 = |a: &mut u32, b: u32, c: u32, d: u32, k: usize, s: u32| {
-        *a = a.wrapping_add(g(b, c, d)).wrapping_add(x[k]).wrapping_add(0x5a82_7999).rotate_left(s);
+            *a = a
+                .wrapping_add(g(b, c, d))
+                .wrapping_add(x[k])
+                .wrapping_add(0x5a82_7999)
+                .rotate_left(s);
         };
-        for (i, &(k, s)) in [(0, 3), (4, 5), (8, 9), (12, 13), (1, 3), (5, 5), (9, 9), (13, 13),
-                             (2, 3), (6, 5), (10, 9), (14, 13), (3, 3), (7, 5), (11, 9), (15, 13)]
-            .iter()
-            .enumerate()
+        for (i, &(k, s)) in [
+            (0, 3),
+            (4, 5),
+            (8, 9),
+            (12, 13),
+            (1, 3),
+            (5, 5),
+            (9, 9),
+            (13, 13),
+            (2, 3),
+            (6, 5),
+            (10, 9),
+            (14, 13),
+            (3, 3),
+            (7, 5),
+            (11, 9),
+            (15, 13),
+        ]
+        .iter()
+        .enumerate()
         {
             match i % 4 {
                 0 => r2(&mut a, b, c, d, k, s),
@@ -513,12 +573,32 @@ fn md4(input: &[u8]) -> [u8; 16] {
 
         // Round 3
         let r3 = |a: &mut u32, b: u32, c: u32, d: u32, k: usize, s: u32| {
-        *a = a.wrapping_add(h(b, c, d)).wrapping_add(x[k]).wrapping_add(0x6ed9_eba1).rotate_left(s);
+            *a = a
+                .wrapping_add(h(b, c, d))
+                .wrapping_add(x[k])
+                .wrapping_add(0x6ed9_eba1)
+                .rotate_left(s);
         };
-        for (i, &(k, s)) in [(0, 3), (8, 9), (4, 11), (12, 15), (2, 3), (10, 9), (6, 11), (14, 15),
-                             (1, 3), (9, 9), (5, 11), (13, 15), (3, 3), (11, 9), (7, 11), (15, 15)]
-            .iter()
-            .enumerate()
+        for (i, &(k, s)) in [
+            (0, 3),
+            (8, 9),
+            (4, 11),
+            (12, 15),
+            (2, 3),
+            (10, 9),
+            (6, 11),
+            (14, 15),
+            (1, 3),
+            (9, 9),
+            (5, 11),
+            (13, 15),
+            (3, 3),
+            (11, 9),
+            (7, 11),
+            (15, 15),
+        ]
+        .iter()
+        .enumerate()
         {
             match i % 4 {
                 0 => r3(&mut a, b, c, d, k, s),
@@ -555,7 +635,10 @@ mod tests {
         assert_eq!(hex(&md4(b"")), "31d6cfe0d16ae931b73c59d7e0c089c0");
         assert_eq!(hex(&md4(b"a")), "bde52cb31de33e46245e05fbdbd6fb24");
         assert_eq!(hex(&md4(b"abc")), "a448017aaf21d8525fc10ae87aa6729d");
-        assert_eq!(hex(&md4(b"message digest")), "d9130a8164549fe818874806e1c7014b");
+        assert_eq!(
+            hex(&md4(b"message digest")),
+            "d9130a8164549fe818874806e1c7014b"
+        );
     }
 
     #[test]
@@ -585,10 +668,12 @@ mod tests {
     const USER: &str = "User";
     const PASS: &str = "clientPass";
     const AUTH_CH: [u8; 16] = [
-        0x5B, 0x5D, 0x7C, 0x7D, 0x7B, 0x3F, 0x2F, 0x3E, 0x3C, 0x2C, 0x60, 0x21, 0x32, 0x26, 0x26, 0x28,
+        0x5B, 0x5D, 0x7C, 0x7D, 0x7B, 0x3F, 0x2F, 0x3E, 0x3C, 0x2C, 0x60, 0x21, 0x32, 0x26, 0x26,
+        0x28,
     ];
     const PEER_CH: [u8; 16] = [
-        0x21, 0x40, 0x23, 0x24, 0x25, 0x5E, 0x26, 0x2A, 0x28, 0x29, 0x5F, 0x2B, 0x3A, 0x33, 0x7C, 0x7E,
+        0x21, 0x40, 0x23, 0x24, 0x25, 0x5E, 0x26, 0x2A, 0x28, 0x29, 0x5F, 0x2B, 0x3A, 0x33, 0x7C,
+        0x7E,
     ];
 
     #[test]
@@ -615,10 +700,17 @@ mod tests {
         let mut success = vec![MSCHAP_SUCCESS, 1, 0, 0];
         success.extend_from_slice(b"S=407A5589115FD0D6209F510FE9C04566932CDA56 M=Access granted");
         assert_eq!(parse_mschap_success(&success), Some(proof));
-        let bare = [&[MSCHAP_SUCCESS, 1, 0, 0][..], b"S=407a5589115fd0d6209f510fe9c04566932cda56"].concat();
+        let bare = [
+            &[MSCHAP_SUCCESS, 1, 0, 0][..],
+            b"S=407a5589115fd0d6209f510fe9c04566932cda56",
+        ]
+        .concat();
         assert_eq!(parse_mschap_success(&bare), Some(proof));
         assert_eq!(parse_mschap_success(&[MSCHAP_SUCCESS]), None);
-        assert_eq!(parse_mschap_success(&[MSCHAP_SUCCESS, 1, 0, 0, b'M', b'=']), None);
+        assert_eq!(
+            parse_mschap_success(&[MSCHAP_SUCCESS, 1, 0, 0, b'M', b'=']),
+            None
+        );
         let short = [&[MSCHAP_SUCCESS, 1, 0, 0][..], b"S=407A55"].concat();
         assert_eq!(parse_mschap_success(&short), None);
     }
@@ -634,7 +726,7 @@ mod tests {
         let msk = derive_msk(PASS, &nt);
         assert_eq!(msk.len(), 64);
         assert_ne!(&msk[..16], &msk[16..32]); // send != recv
-        // MSK = MasterSendKey | MasterReceiveKey | 32 zero octets (RFC 3079).
+                                              // MSK = MasterSendKey | MasterReceiveKey | 32 zero octets (RFC 3079).
         assert_eq!(
             hex(&msk),
             "d5f0e9521e3ea9589645e86051c822268b7cdc149b993a1ba118cb153f56dccb\

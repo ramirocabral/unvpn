@@ -30,7 +30,11 @@ struct Log {
     partial: [Vec<u8>; 2],
 }
 
-static LOG: Mutex<Log> = Mutex::new(Log { next: 1, lines: VecDeque::new(), partial: [Vec::new(), Vec::new()] });
+static LOG: Mutex<Log> = Mutex::new(Log {
+    next: 1,
+    lines: VecDeque::new(),
+    partial: [Vec::new(), Vec::new()],
+});
 
 /// The original stdout/stderr and the read ends of the pipes now standing in for them.
 struct Relay {
@@ -117,7 +121,9 @@ fn serve(listener: UnixListener, allowed: Option<u32>) {
         }
         let _ = c.set_read_timeout(Some(Duration::from_secs(2)));
         let _ = c.set_write_timeout(Some(Duration::from_secs(2)));
-        let Some(req) = read_request(&mut c) else { continue };
+        let Some(req) = read_request(&mut c) else {
+            continue;
+        };
         let reply = answer(&req);
         let _ = c.write_all(reply.as_bytes());
     }
@@ -126,9 +132,12 @@ fn serve(listener: UnixListener, allowed: Option<u32>) {
 fn answer(req: &str) -> String {
     let mut w = req.split_whitespace();
     match (w.next(), w.next()) {
-        (Some("status"), None) => {
-            STATUS.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(Status::encode).unwrap_or_default()
-        }
+        (Some("status"), None) => STATUS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(Status::encode)
+            .unwrap_or_default(),
         (Some("disconnect"), None) => {
             out!("# disconnect requested over the control socket");
             crate::sysnet::request_stop();
@@ -186,16 +195,26 @@ extern "C" fn at_exit() {
 fn start_relay() {
     let mut orig = [-1; 2];
     let mut pipes = [[-1; 2]; 2];
-    for (i, fd) in [libc::STDOUT_FILENO, libc::STDERR_FILENO].into_iter().enumerate() {
+    for (i, fd) in [libc::STDOUT_FILENO, libc::STDERR_FILENO]
+        .into_iter()
+        .enumerate()
+    {
         orig[i] = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
         if orig[i] < 0 || unsafe { libc::pipe2(pipes[i].as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
-            for f in orig.iter().chain(pipes.iter().flatten()).filter(|f| **f >= 0) {
+            for f in orig
+                .iter()
+                .chain(pipes.iter().flatten())
+                .filter(|f| **f >= 0)
+            {
                 unsafe { libc::close(*f) };
             }
             return;
         }
     }
-    for (i, fd) in [libc::STDOUT_FILENO, libc::STDERR_FILENO].into_iter().enumerate() {
+    for (i, fd) in [libc::STDOUT_FILENO, libc::STDERR_FILENO]
+        .into_iter()
+        .enumerate()
+    {
         unsafe {
             let fl = libc::fcntl(pipes[i][0], libc::F_GETFL);
             libc::fcntl(pipes[i][0], libc::F_SETFL, fl | libc::O_NONBLOCK);
@@ -203,7 +222,13 @@ fn start_relay() {
             libc::close(pipes[i][1]);
         }
     }
-    if RELAY.set(Relay { orig, read: [pipes[0][0], pipes[1][0]] }).is_err() {
+    if RELAY
+        .set(Relay {
+            orig,
+            read: [pipes[0][0], pipes[1][0]],
+        })
+        .is_err()
+    {
         return;
     }
     std::thread::spawn(relay_loop);
@@ -212,8 +237,16 @@ fn start_relay() {
 fn relay_loop() {
     let Some(r) = RELAY.get() else { return };
     let mut fds = [
-        libc::pollfd { fd: r.read[0], events: libc::POLLIN, revents: 0 },
-        libc::pollfd { fd: r.read[1], events: libc::POLLIN, revents: 0 },
+        libc::pollfd {
+            fd: r.read[0],
+            events: libc::POLLIN,
+            revents: 0,
+        },
+        libc::pollfd {
+            fd: r.read[1],
+            events: libc::POLLIN,
+            revents: 0,
+        },
     ];
     loop {
         let n = unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) };
@@ -264,7 +297,8 @@ fn write_fd(fd: i32, mut data: &[u8]) {
         let n = unsafe { libc::write(fd, data.as_ptr().cast(), data.len()) };
         if n > 0 {
             data = &data[n as usize..];
-        } else if n < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+        } else if n < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
+        {
             continue;
         } else {
             return;
@@ -307,7 +341,9 @@ fn flush_relay() {
         match RELAY_IO.try_lock() {
             Ok(g) => break g,
             Err(TryLockError::Poisoned(p)) => break p.into_inner(),
-            Err(TryLockError::WouldBlock) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+            Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10))
+            }
             Err(TryLockError::WouldBlock) => return,
         }
     };
@@ -351,7 +387,11 @@ struct Undo {
 }
 
 fn parse_undo(text: &str) -> Undo {
-    let mut u = Undo { iface: String::new(), nft: None, routes: Vec::new() };
+    let mut u = Undo {
+        iface: String::new(),
+        nft: None,
+        routes: Vec::new(),
+    };
     for line in text.lines() {
         match line.split_once('=') {
             Some(("iface", v)) => u.iface = v.to_string(),
@@ -387,7 +427,9 @@ pub fn cmd_status(args: &[String]) {
         match ctl::status(&path) {
             Ok(s) => live.push(s),
             Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {}
-            Err(_) => notes.push(format!("# pid {pid}: not running, left state behind (`sudo unvpn recover` cleans it up)")),
+            Err(_) => notes.push(format!(
+                "# pid {pid}: not running, left state behind (`sudo unvpn recover` cleans it up)"
+            )),
         }
     }
     let mut out = std::io::stdout().lock();
@@ -407,7 +449,11 @@ pub fn cmd_status(args: &[String]) {
 }
 
 fn describe(s: &Status) -> String {
-    let mut parts = vec![format!("“{}”", s.name()), s.state.as_str().to_string(), s.backend.clone()];
+    let mut parts = vec![
+        format!("“{}”", s.name()),
+        s.state.as_str().to_string(),
+        s.backend.clone(),
+    ];
     if !s.gateway.is_empty() && s.gateway != s.name() {
         parts.push(s.gateway.clone());
     }
@@ -421,7 +467,10 @@ fn describe(s: &Status) -> String {
         parts.push(format!("DNS {}", s.dns.join(", ")));
     }
     if s.since > 0 && matches!(s.state, State::Up | State::Reconnecting) {
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
         parts.push(format!("up {}", duration(now.saturating_sub(s.since))));
     }
     parts.push(format!("pid {}", s.pid));
@@ -505,24 +554,36 @@ pub fn cmd_disconnect(args: &[String]) {
 /// The session `q` names: its pid or interface, else its label or gateway (exact,
 /// case-insensitive, then a unique start).
 fn pick<'a>(running: &'a [(PathBuf, Status)], q: &str) -> Result<&'a (PathBuf, Status), String> {
-    if let Some(t) = running.iter().find(|(_, s)| s.pid.to_string() == q || s.iface == q) {
+    if let Some(t) = running
+        .iter()
+        .find(|(_, s)| s.pid.to_string() == q || s.iface == q)
+    {
         return Ok(t);
     }
     let ql = q.to_lowercase();
-    let tests: [&dyn Fn(&str) -> bool; 3] =
-        [&|n| n == q, &|n| n.to_lowercase() == ql, &|n| !n.is_empty() && n.to_lowercase().starts_with(&ql)];
+    let tests: [&dyn Fn(&str) -> bool; 3] = [&|n| n == q, &|n| n.to_lowercase() == ql, &|n| {
+        !n.is_empty() && n.to_lowercase().starts_with(&ql)
+    }];
     for test in tests {
-        let hits: Vec<_> = running.iter().filter(|(_, s)| test(&s.label) || test(&s.gateway)).collect();
+        let hits: Vec<_> = running
+            .iter()
+            .filter(|(_, s)| test(&s.label) || test(&s.gateway))
+            .collect();
         match hits[..] {
             [t] => return Ok(t),
             [] => continue,
             _ => {
-                let names: Vec<String> = hits.iter().map(|(_, s)| format!("“{}”", s.name())).collect();
+                let names: Vec<String> = hits
+                    .iter()
+                    .map(|(_, s)| format!("“{}”", s.name()))
+                    .collect();
                 return Err(format!("“{q}” matches {} — which one?", names.join(", ")));
             }
         }
     }
-    Err(format!("no running tunnel “{q}” — `unvpn status` lists them"))
+    Err(format!(
+        "no running tunnel “{q}” — `unvpn status` lists them"
+    ))
 }
 
 /// `unvpn recover`: undo what engines that were killed (or crashed) left behind —
@@ -542,9 +603,17 @@ pub fn cmd_recover(args: &[String]) {
     }
     let live = ctl::running();
     let live_pids: Vec<u32> = live.iter().map(|(_, s)| s.pid).collect();
-    let live_ifaces: Vec<&str> = live.iter().map(|(_, s)| s.iface.as_str()).filter(|i| !i.is_empty()).collect();
+    let live_ifaces: Vec<&str> = live
+        .iter()
+        .map(|(_, s)| s.iface.as_str())
+        .filter(|i| !i.is_empty())
+        .collect();
     for (_, s) in &live {
-        println!("# “{}” (pid {}) is running — left alone (`unvpn disconnect` stops it)", s.name(), s.pid);
+        println!(
+            "# “{}” (pid {}) is running — left alone (`unvpn disconnect` stops it)",
+            s.name(),
+            s.pid
+        );
     }
     let mut did = 0;
 
@@ -552,7 +621,12 @@ pub fn cmd_recover(args: &[String]) {
         .map(|d| {
             d.filter_map(|e| {
                 let e = e.ok()?;
-                let pid = e.file_name().to_str()?.strip_suffix(".undo")?.parse().ok()?;
+                let pid = e
+                    .file_name()
+                    .to_str()?
+                    .strip_suffix(".undo")?
+                    .parse()
+                    .ok()?;
                 Some((pid, e.path()))
             })
             .collect()
@@ -584,7 +658,10 @@ pub fn cmd_recover(args: &[String]) {
         did += 1;
     }
 
-    let live_tables: Vec<String> = live_ifaces.iter().map(|i| crate::leakguard::table_name(i)).collect();
+    let live_tables: Vec<String> = live_ifaces
+        .iter()
+        .map(|i| crate::leakguard::table_name(i))
+        .collect();
     for t in crate::leakguard::tables() {
         if !live_tables.contains(&t) && crate::leakguard::delete_table(&t) {
             println!("# lifted a leftover kill switch / IPv6 block (nft table {t})");
@@ -618,7 +695,13 @@ mod tests {
         keep(0, b"o\n");
         let text = answer("log 0");
         let mut lines = text.lines();
-        let next: u64 = lines.next().unwrap().strip_prefix("next=").unwrap().parse().unwrap();
+        let next: u64 = lines
+            .next()
+            .unwrap()
+            .strip_prefix("next=")
+            .unwrap()
+            .parse()
+            .unwrap();
         let rest: Vec<&str> = lines.collect();
         assert_eq!(rest, ["# one", "err", "# two"]);
         assert_eq!(answer(&format!("log {next}")), format!("next={next}\n"));
@@ -636,9 +719,21 @@ mod tests {
     #[test]
     fn sessions_are_named_by_label_gateway_iface_or_pid() {
         let s = |pid: u32, label: &str, gw: &str, iface: &str| {
-            (PathBuf::new(), Status { pid, label: label.into(), gateway: gw.into(), iface: iface.into(), ..Default::default() })
+            (
+                PathBuf::new(),
+                Status {
+                    pid,
+                    label: label.into(),
+                    gateway: gw.into(),
+                    iface: iface.into(),
+                    ..Default::default()
+                },
+            )
         };
-        let run = [s(10, "Office", "vpn.example.com", "unvpn0"), s(11, "office eu", "eu.example.com", "unvpn1")];
+        let run = [
+            s(10, "Office", "vpn.example.com", "unvpn0"),
+            s(11, "office eu", "eu.example.com", "unvpn1"),
+        ];
         assert_eq!(pick(&run, "Office").unwrap().1.pid, 10);
         assert_eq!(pick(&run, "office").unwrap().1.pid, 10);
         assert_eq!(pick(&run, "office e").unwrap().1.pid, 11);
@@ -652,9 +747,16 @@ mod tests {
     #[test]
     fn the_gateway_comes_from_the_command_line() {
         let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(gateway_in(&a(&["-g", "vpn.example.com", "-u", "x"])).as_deref(), Some("vpn.example.com"));
         assert_eq!(
-            gateway_in(&a(&["--launch", "f5-vpn://x/?server=gw.example.com&port=443&otc=C"])).as_deref(),
+            gateway_in(&a(&["-g", "vpn.example.com", "-u", "x"])).as_deref(),
+            Some("vpn.example.com")
+        );
+        assert_eq!(
+            gateway_in(&a(&[
+                "--launch",
+                "f5-vpn://x/?server=gw.example.com&port=443&otc=C"
+            ]))
+            .as_deref(),
             Some("gw.example.com")
         );
         assert_eq!(gateway_in(&a(&["-c", "/x/wg0.conf"])), None);

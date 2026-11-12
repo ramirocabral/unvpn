@@ -40,15 +40,19 @@ impl RegKey {
     /// whitespace from a copy/paste is dropped; the parts are taken verbatim.
     pub fn parse(s: &str) -> Result<RegKey, String> {
         let s = s.trim();
-        let (reference, authcode) =
-            s.split_once('-').ok_or("not a valid registration key (expected <reference>-<code>)")?;
+        let (reference, authcode) = s
+            .split_once('-')
+            .ok_or("not a valid registration key (expected <reference>-<code>)")?;
         if reference.is_empty() || authcode.is_empty() {
             return Err("not a valid registration key (expected <reference>-<code>)".into());
         }
         if c_atoi(reference) < 1 {
             return Err("wrong reference number in the registration key".into());
         }
-        Ok(RegKey { reference: reference.to_string(), authcode: authcode.to_string() })
+        Ok(RegKey {
+            reference: reference.to_string(),
+            authcode: authcode.to_string(),
+        })
     }
 
     /// The certificate serial requested in the template.
@@ -75,7 +79,8 @@ fn c_atoi(s: &str) -> i64 {
 
 fn sign_sha1(key: &PKeyRef<Private>, data: &[u8]) -> Result<Vec<u8>, String> {
     let mut s = Signer::new(MessageDigest::sha1(), key).map_err(|e| e.to_string())?;
-    s.set_rsa_padding(Padding::PKCS1).map_err(|e| e.to_string())?;
+    s.set_rsa_padding(Padding::PKCS1)
+        .map_err(|e| e.to_string())?;
     s.update(data).map_err(|e| e.to_string())?;
     s.sign_to_vec().map_err(|e| e.to_string())
 }
@@ -88,7 +93,9 @@ fn hmac_sha1(key: &[u8], data: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 fn sha1(data: &[u8]) -> Result<Vec<u8>, String> {
-    hash(MessageDigest::sha1(), data).map(|d| d.to_vec()).map_err(|e| e.to_string())
+    hash(MessageDigest::sha1(), data)
+        .map(|d| d.to_vec())
+        .map_err(|e| e.to_string())
 }
 
 /// SHA-1 over the whole subjectPublicKey BIT STRING element (tag and length
@@ -96,7 +103,10 @@ fn sha1(data: &[u8]) -> Result<Vec<u8>, String> {
 pub fn key_identifier(spki_der: &[u8]) -> Result<Vec<u8>, String> {
     let spki = der::parse_single(spki_der)?.expect(der::SEQUENCE)?;
     let parts = spki.children()?;
-    let bits = parts.get(1).ok_or("SubjectPublicKeyInfo without a key")?.expect(der::BIT_STRING)?;
+    let bits = parts
+        .get(1)
+        .ok_or("SubjectPublicKeyInfo without a key")?
+        .expect(der::BIT_STRING)?;
     sha1(bits.raw)
 }
 
@@ -112,15 +122,26 @@ pub fn build_request(key: &PKeyRef<Private>, rk: &RegKey) -> Result<Vec<u8>, Str
     ]);
     let cert_req = der::seq(&[&der::uint(CERT_REQ_ID), &template]);
     let pop_sig = sign_sha1(key, &cert_req)?;
-    let popo = der::cons(0xa1, &[&der::alg_null(OID_SHA1_RSA), &der::bit_string(&pop_sig)]);
+    let popo = der::cons(
+        0xa1,
+        &[&der::alg_null(OID_SHA1_RSA), &der::bit_string(&pop_sig)],
+    );
     let crm = der::cons(0xa1, &[&cert_req, &popo]);
     let req_seq = der::seq(&[&crm]);
 
     let proof_key = sha1(format!("{}{}", rk.authcode, rk.reference).as_bytes())?;
     let proof = hmac_sha1(&proof_key, &req_seq)?;
     let controls = der::seq(&[
-        &der::seq(&[&der::uint(1), &der::oid(OID_CMC_IDENTITY_PROOF), &der::set(&[&der::octets(&proof)])]),
-        &der::seq(&[&der::uint(2), &der::oid(OID_CMC_IDENTIFICATION), &der::set(&[&der::utf8(&rk.reference)])]),
+        &der::seq(&[
+            &der::uint(1),
+            &der::oid(OID_CMC_IDENTITY_PROOF),
+            &der::set(&[&der::octets(&proof)]),
+        ]),
+        &der::seq(&[
+            &der::uint(2),
+            &der::oid(OID_CMC_IDENTIFICATION),
+            &der::set(&[&der::utf8(&rk.reference)]),
+        ]),
     ]);
     let pki_data = der::seq(&[&controls, &req_seq, &der::seq(&[]), &der::seq(&[])]);
 
@@ -135,10 +156,16 @@ pub fn build_request(key: &PKeyRef<Private>, rk: &RegKey) -> Result<Vec<u8>, Str
     let signed_data = der::seq(&[
         &der::uint(3),
         &der::set(&[&der::alg_null(OID_SHA1)]),
-        &der::seq(&[&der::oid(OID_DATA), &der::cons(0xa0, &[&der::octets(&pki_data)])]),
+        &der::seq(&[
+            &der::oid(OID_DATA),
+            &der::cons(0xa0, &[&der::octets(&pki_data)]),
+        ]),
         &der::set(&[&signer_info]),
     ]);
-    Ok(der::seq(&[&der::oid(OID_SIGNED_DATA), &der::cons(0xa0, &[&signed_data])]))
+    Ok(der::seq(&[
+        &der::oid(OID_SIGNED_DATA),
+        &der::cons(0xa0, &[&signed_data]),
+    ]))
 }
 
 /// Outcome of a successful enrollment response.
@@ -215,7 +242,9 @@ fn parse_status(info: &Tlv) -> Result<(u64, Option<String>, Option<u64>), String
 }
 
 fn spki_of(cert: &X509) -> Result<Vec<u8>, String> {
-    cert.public_key().and_then(|k| k.public_key_to_der()).map_err(|e| e.to_string())
+    cert.public_key()
+        .and_then(|k| k.public_key_to_der())
+        .map_err(|e| e.to_string())
 }
 
 /// Certificates in the SignedData whose key could have produced `sid`.
@@ -223,20 +252,32 @@ fn signer_matches(sid: &Tlv, cert: &X509) -> bool {
     match sid.tag {
         der::SEQUENCE => {
             let Ok(p) = sid.children() else { return false };
-            let (Some(issuer), Some(serial)) = (p.first(), p.get(1)) else { return false };
+            let (Some(issuer), Some(serial)) = (p.first(), p.get(1)) else {
+                return false;
+            };
             let ours_issuer = cert.issuer_name().to_der().unwrap_or_default();
-            let ours_serial = cert.serial_number().to_bn().map(|b| b.to_vec()).unwrap_or_default();
-            issuer.raw == ours_issuer.as_slice() && der::uint_content(serial.content) == der::uint_content(&ours_serial)
+            let ours_serial = cert
+                .serial_number()
+                .to_bn()
+                .map(|b| b.to_vec())
+                .unwrap_or_default();
+            issuer.raw == ours_issuer.as_slice()
+                && der::uint_content(serial.content) == der::uint_content(&ours_serial)
         }
         0x80 => {
-            let Ok(spki) = spki_of(cert) else { return false };
+            let Ok(spki) = spki_of(cert) else {
+                return false;
+            };
             let ext = cert.subject_key_id().map(|k| k.as_slice().to_vec());
             let std = der::parse_single(&spki)
                 .ok()
                 .and_then(|s| s.children().ok())
                 .and_then(|p| p.get(1).map(|b| sha1(&b.content[1..]).unwrap_or_default()));
             let cp = key_identifier(&spki).ok();
-            [ext, std, cp].iter().flatten().any(|k| k.as_slice() == sid.content)
+            [ext, std, cp]
+                .iter()
+                .flatten()
+                .any(|k| k.as_slice() == sid.content)
         }
         _ => false,
     }
@@ -244,7 +285,11 @@ fn signer_matches(sid: &Tlv, cert: &X509) -> bool {
 
 fn verify_signer_info(si: &Tlv, econtent: &[u8], key: &PKey<Public>) -> Result<(), String> {
     let f = si.children()?;
-    let dig_oid = f.get(2).ok_or("SignerInfo without digestAlgorithm")?.children()?[0].as_oid()?;
+    let dig_oid = f
+        .get(2)
+        .ok_or("SignerInfo without digestAlgorithm")?
+        .children()?[0]
+        .as_oid()?;
     let md = md_for_oid(&dig_oid).ok_or(format!("unsupported digest algorithm {dig_oid}"))?;
     let mut i = 3;
     let mut signed_attrs = None;
@@ -252,9 +297,16 @@ fn verify_signer_info(si: &Tlv, econtent: &[u8], key: &PKey<Public>) -> Result<(
         signed_attrs = Some(f[i]);
         i += 1;
     }
-    let sig_alg = f.get(i).ok_or("SignerInfo without signatureAlgorithm")?.children()?[0].as_oid()?;
+    let sig_alg = f
+        .get(i)
+        .ok_or("SignerInfo without signatureAlgorithm")?
+        .children()?[0]
+        .as_oid()?;
     let md = md_for_oid(&sig_alg).unwrap_or(md);
-    let sig = f.get(i + 1).ok_or("SignerInfo without signature")?.octet_value()?;
+    let sig = f
+        .get(i + 1)
+        .ok_or("SignerInfo without signature")?
+        .octet_value()?;
 
     let to_verify: Vec<u8> = match signed_attrs {
         None => econtent.to_vec(),
@@ -265,7 +317,10 @@ fn verify_signer_info(si: &Tlv, econtent: &[u8], key: &PKey<Public>) -> Result<(
                 let p = a.children()?;
                 if p.first().and_then(|o| o.as_oid().ok()).as_deref() == Some(OID_MESSAGE_DIGEST) {
                     let vals = p.get(1).ok_or("messageDigest without value")?.children()?;
-                    let v = vals.first().ok_or("messageDigest without value")?.octet_value()?;
+                    let v = vals
+                        .first()
+                        .ok_or("messageDigest without value")?
+                        .octet_value()?;
                     if v != digest.as_ref() {
                         return Err("messageDigest does not match the content".into());
                     }
@@ -279,7 +334,8 @@ fn verify_signer_info(si: &Tlv, econtent: &[u8], key: &PKey<Public>) -> Result<(
         }
     };
     let mut v = Verifier::new(md, key).map_err(|e| e.to_string())?;
-    v.set_rsa_padding(Padding::PKCS1).map_err(|e| e.to_string())?;
+    v.set_rsa_padding(Padding::PKCS1)
+        .map_err(|e| e.to_string())?;
     v.update(&to_verify).map_err(|e| e.to_string())?;
     match v.verify(&sig) {
         Ok(true) => Ok(()),
@@ -293,13 +349,22 @@ pub fn parse_response(body: &[u8], our_spki: &[u8], rk: &RegKey) -> Result<Issue
     let ci = der::parse(body)?.0.expect(der::SEQUENCE)?.children()?;
     let ct = ci.first().ok_or("empty ContentInfo")?.as_oid()?;
     if ct != OID_SIGNED_DATA {
-        return Err(format!("response is not CMS SignedData (content type {ct})"));
+        return Err(format!(
+            "response is not CMS SignedData (content type {ct})"
+        ));
     }
     let sd = ci.get(1).ok_or("ContentInfo without content")?.children()?;
     let sd = sd.first().ok_or("empty SignedData")?.children()?;
-    let encap = sd.get(2).ok_or("SignedData without encapsulated content")?.children()?;
+    let encap = sd
+        .get(2)
+        .ok_or("SignedData without encapsulated content")?
+        .children()?;
     let econtent = match encap.get(1) {
-        Some(e) => e.children()?.first().ok_or("empty eContent")?.octet_value()?,
+        Some(e) => e
+            .children()?
+            .first()
+            .ok_or("empty eContent")?
+            .octet_value()?,
         None => Vec::new(),
     };
 
@@ -329,14 +394,22 @@ pub fn parse_response(body: &[u8], our_spki: &[u8], rk: &RegKey) -> Result<Issue
         if let Some(controls) = resp.first() {
             for c in controls.children()? {
                 let p = c.children()?;
-                let Some(oid) = p.get(1).and_then(|o| o.as_oid().ok()) else { continue };
-                let Some(vals) = p.get(2).and_then(|v| v.children().ok()) else { continue };
+                let Some(oid) = p.get(1).and_then(|o| o.as_oid().ok()) else {
+                    continue;
+                };
+                let Some(vals) = p.get(2).and_then(|v| v.children().ok()) else {
+                    continue;
+                };
                 let Some(val) = vals.first() else { continue };
                 match oid.as_str() {
                     OID_CMC_STATUS_INFO | OID_CMC_STATUS_INFO_V2 => {
                         let (s, text, fail) = parse_status(val)?;
                         if s != 0 {
-                            let mut m = format!("the CA refused the request: status {} ({})", s, status_name(s));
+                            let mut m = format!(
+                                "the CA refused the request: status {} ({})",
+                                s,
+                                status_name(s)
+                            );
                             if let Some(f) = fail {
                                 m.push_str(&format!(", failInfo {} ({})", f, fail_name(f)));
                             }
@@ -363,17 +436,31 @@ pub fn parse_response(body: &[u8], our_spki: &[u8], rk: &RegKey) -> Result<Issue
         .ok_or("the response does not contain a certificate for our key")?;
     let (cert, _) = certs[leaf_idx].clone();
     let ca = certs.iter().enumerate().find_map(|(i, (c, d))| {
-        let issued = c.public_key().ok().map(|k| cert.verify(&k).unwrap_or(false)).unwrap_or(false);
+        let issued = c
+            .public_key()
+            .ok()
+            .map(|k| cert.verify(&k).unwrap_or(false))
+            .unwrap_or(false);
         (i != leaf_idx && issued).then(|| (c.clone(), d.clone()))
     });
     if ca.is_none() {
         notes.push("the issuing CA certificate is not in the response".into());
     }
 
-    let infos = signer_infos.ok_or("SignedData without SignerInfos")?.children()?;
+    let infos = signer_infos
+        .ok_or("SignedData without SignerInfos")?
+        .children()?;
     let si = infos.first().ok_or("SignedData without a signer")?;
-    let sid = si.children()?.get(1).copied().ok_or("SignerInfo without sid")?;
-    let mut order: Vec<&X509> = certs.iter().filter(|(c, _)| signer_matches(&sid, c)).map(|(c, _)| c).collect();
+    let sid = si
+        .children()?
+        .get(1)
+        .copied()
+        .ok_or("SignerInfo without sid")?;
+    let mut order: Vec<&X509> = certs
+        .iter()
+        .filter(|(c, _)| signer_matches(&sid, c))
+        .map(|(c, _)| c)
+        .collect();
     for (c, _) in &certs {
         if !order.iter().any(|o| std::ptr::eq(*o, c)) {
             order.push(c);
@@ -392,7 +479,9 @@ pub fn parse_response(body: &[u8], our_spki: &[u8], rk: &RegKey) -> Result<Issue
         }
     }
     if !verified {
-        return Err(format!("the response signature does not verify: {last_err}"));
+        return Err(format!(
+            "the response signature does not verify: {last_err}"
+        ));
     }
 
     let ca_proof = match proof {
@@ -411,7 +500,12 @@ pub fn parse_response(body: &[u8], our_spki: &[u8], rk: &RegKey) -> Result<Issue
         }
     };
 
-    Ok(Issued { cert, ca: ca.map(|(c, _)| c), ca_proof, notes })
+    Ok(Issued {
+        cert,
+        ca: ca.map(|(c, _)| c),
+        ca_proof,
+        notes,
+    })
 }
 
 #[cfg(test)]
@@ -421,10 +515,19 @@ mod tests {
     #[test]
     fn regkey_parsing() {
         let k = RegKey::parse(" 12345-abcdefgh\n").unwrap();
-        assert_eq!(k, RegKey { reference: "12345".into(), authcode: "abcdefgh".into() });
+        assert_eq!(
+            k,
+            RegKey {
+                reference: "12345".into(),
+                authcode: "abcdefgh".into()
+            }
+        );
         assert_eq!(k.serial(), 12345);
         let k = RegKey::parse("0042-Ab-c9z").unwrap();
-        assert_eq!((k.reference.as_str(), k.authcode.as_str(), k.serial()), ("0042", "Ab-c9z", 42));
+        assert_eq!(
+            (k.reference.as_str(), k.authcode.as_str(), k.serial()),
+            ("0042", "Ab-c9z", 42)
+        );
         assert!(RegKey::parse("12345abcdef").is_err());
         assert!(RegKey::parse("-abc").is_err());
         assert!(RegKey::parse("12-").is_err());
@@ -440,7 +543,9 @@ mod tests {
     fn spki_from_request(req: &[u8]) -> Vec<u8> {
         let ci = der::parse_single(req).unwrap().children().unwrap();
         let sd = ci[1].children().unwrap()[0].children().unwrap();
-        let pki = sd[2].children().unwrap()[1].children().unwrap()[0].octet_value().unwrap();
+        let pki = sd[2].children().unwrap()[1].children().unwrap()[0]
+            .octet_value()
+            .unwrap();
         let p = der::parse_single(&pki).unwrap().children().unwrap();
         let crm = p[1].children().unwrap()[0];
         let cert_req = crm.children().unwrap()[0];
@@ -466,45 +571,72 @@ mod tests {
         let key = PKey::private_key_from_pem(&key).unwrap();
         let reference = std::fs::read(std::env::var("REF_REQ").unwrap()).unwrap();
         let rk = RegKey::parse(&std::env::var("REF_REGKEY").unwrap()).unwrap();
-        assert!(build_request(&key, &rk).unwrap() == reference, "request differs from the reference");
+        assert!(
+            build_request(&key, &rk).unwrap() == reference,
+            "request differs from the reference"
+        );
     }
 
     #[test]
     fn key_identifier_is_sha1_of_the_bit_string_element() {
         let key = PKey::private_key_from_pem(include_bytes!("testdata/reference_key.pem")).unwrap();
         let spki = key.public_key_to_der().unwrap();
-        assert_eq!(spki_from_request(include_bytes!("testdata/reference_request.der")), spki);
+        assert_eq!(
+            spki_from_request(include_bytes!("testdata/reference_request.der")),
+            spki
+        );
         let ski = key_identifier(&spki).unwrap();
         assert_eq!(ski.len(), 20);
-        assert!(include_bytes!("testdata/reference_request.der").windows(20).any(|w| w == ski.as_slice()));
+        assert!(include_bytes!("testdata/reference_request.der")
+            .windows(20)
+            .any(|w| w == ski.as_slice()));
     }
 
     #[test]
     fn accepts_a_valid_response() {
         let spki = spki_from_request(include_bytes!("testdata/reference_request.der"));
-        let r = parse_response(include_bytes!("testdata/response_noproof.der"), &spki, &rk()).unwrap();
+        let r = parse_response(
+            include_bytes!("testdata/response_noproof.der"),
+            &spki,
+            &rk(),
+        )
+        .unwrap();
         assert_eq!(r.ca_proof, None);
         assert!(r.ca.is_some());
-        assert_eq!(r.cert.public_key().unwrap().public_key_to_der().unwrap(), spki);
+        assert_eq!(
+            r.cert.public_key().unwrap().public_key_to_der().unwrap(),
+            spki
+        );
     }
 
     #[test]
     fn verifies_the_ca_identity_proof() {
         let spki = spki_from_request(include_bytes!("testdata/request_for_proof.der"));
-        let r = parse_response(include_bytes!("testdata/response_proof.der"), &spki, &rk()).unwrap();
+        let r =
+            parse_response(include_bytes!("testdata/response_proof.der"), &spki, &rk()).unwrap();
         assert_eq!(r.ca_proof, Some(true));
     }
 
     #[test]
     fn flags_a_wrong_ca_identity_proof() {
         let spki = spki_from_request(include_bytes!("testdata/request_for_badproof.der"));
-        let r = parse_response(include_bytes!("testdata/response_badproof.der"), &spki, &rk()).unwrap();
+        let r = parse_response(
+            include_bytes!("testdata/response_badproof.der"),
+            &spki,
+            &rk(),
+        )
+        .unwrap();
         assert_eq!(r.ca_proof, Some(false));
     }
 
     #[test]
     fn rejects_a_response_for_another_key() {
         let spki = spki_from_request(include_bytes!("testdata/request_for_proof.der"));
-        assert!(parse_response(include_bytes!("testdata/response_noproof.der"), &spki, &rk()).is_err());
+        assert!(parse_response(
+            include_bytes!("testdata/response_noproof.der"),
+            &spki,
+            &rk()
+        )
+        .is_err());
     }
 }

@@ -50,7 +50,16 @@ pub struct SamlOpts {
 
 pub fn remote_info(host: &str, port: u16) -> Result<RemoteInfo, String> {
     let mut cookies = http::Cookies::new();
-    let resp = http::request(host, port, "GET", INFO_PATH, &mut cookies, &[], b"", Duration::from_secs(20))?;
+    let resp = http::request(
+        host,
+        port,
+        "GET",
+        INFO_PATH,
+        &mut cookies,
+        &[],
+        b"",
+        Duration::from_secs(20),
+    )?;
     if resp.status != 200 {
         return Err(format!("GET {INFO_PATH} → HTTP {}", resp.status));
     }
@@ -60,8 +69,12 @@ pub fn remote_info(host: &str, port: u16) -> Result<RemoteInfo, String> {
 /// `<info><api encmethod='0' salt='…' remoteauthtimeout='240' sso_port='8020' f='3cdf' /></info>`
 pub fn parse_remote_info(xml: &str) -> RemoteInfo {
     RemoteInfo {
-        sso_port: xml_attr(xml, "sso_port").and_then(|v| v.parse().ok()).filter(|p| *p != 0),
-        auth_timeout: xml_attr(xml, "remoteauthtimeout").and_then(|v| v.parse().ok()).filter(|t| *t != 0),
+        sso_port: xml_attr(xml, "sso_port")
+            .and_then(|v| v.parse().ok())
+            .filter(|p| *p != 0),
+        auth_timeout: xml_attr(xml, "remoteauthtimeout")
+            .and_then(|v| v.parse().ok())
+            .filter(|t| *t != 0),
     }
 }
 
@@ -76,7 +89,9 @@ fn xml_attr<'a>(s: &'a str, name: &str) -> Option<&'a str> {
             continue;
         }
         let rest = s[from..].trim_start();
-        let Some(rest) = rest.strip_prefix('=') else { continue };
+        let Some(rest) = rest.strip_prefix('=') else {
+            continue;
+        };
         let rest = rest.trim_start();
         let q = rest.chars().next()?;
         if q != '\'' && q != '"' {
@@ -92,7 +107,10 @@ pub fn start_url(host: &str, port: u16, realm: &str) -> String {
     if realm.is_empty() {
         format!("https://{host}:{port}/remote/saml/start?redirect=1")
     } else {
-        format!("https://{host}:{port}/remote/saml/start?realm={}&redirect=1", http::urlencode(realm))
+        format!(
+            "https://{host}:{port}/remote/saml/start?realm={}&redirect=1",
+            http::urlencode(realm)
+        )
     }
 }
 
@@ -111,7 +129,10 @@ pub fn idp_redirect(resp: &http::Response) -> Option<String> {
 fn js_redirect(body: &str) -> Option<String> {
     for key in ["window.location.href", "window.location", "location.href"] {
         let Some(i) = body.find(key) else { continue };
-        let rest = body[i + key.len()..].trim_start().strip_prefix('=')?.trim_start();
+        let rest = body[i + key.len()..]
+            .trim_start()
+            .strip_prefix('=')?
+            .trim_start();
         let q = rest.chars().next()?;
         if q != '\'' && q != '"' {
             continue;
@@ -150,15 +171,39 @@ pub fn login(host: &str, port: u16, realm: &str, opts: &SamlOpts) -> Result<Sess
 
     let id = wait_for_auth_id(&listeners, wait)?;
     drop(listeners);
-    println!("# SAML redirect received (auth id {} chars) — exchanging for SVPNCOOKIE …", id.len());
+    println!(
+        "# SAML redirect received (auth id {} chars) — exchanging for SVPNCOOKIE …",
+        id.len()
+    );
 
-    let mut s = Session::new(host.to_string(), port, realm.to_string(), String::new(), Duration::from_secs(20));
+    let mut s = Session::new(
+        host.to_string(),
+        port,
+        realm.to_string(),
+        String::new(),
+        Duration::from_secs(20),
+    );
     let path = format!("{AUTH_ID_PATH}{}", http::urlencode(&id));
-    let resp = http::request(host, port, "GET", &path, &mut s.cookies, &[], b"", Duration::from_secs(20))?;
+    let resp = http::request(
+        host,
+        port,
+        "GET",
+        &path,
+        &mut s.cookies,
+        &[],
+        b"",
+        Duration::from_secs(20),
+    )?;
     if s.svpncookie().is_none() {
         // One sanitized line: this is gateway text and ends up in the GUI's parser.
-        let snippet: String = sysnet::one_line(&resp.body_str()).chars().take(200).collect();
-        return Err(format!("SAML auth_id did not yield SVPNCOOKIE (HTTP {}): {snippet}", resp.status));
+        let snippet: String = sysnet::one_line(&resp.body_str())
+            .chars()
+            .take(200)
+            .collect();
+        return Err(format!(
+            "SAML auth_id did not yield SVPNCOOKIE (HTTP {}): {snippet}",
+            resp.status
+        ));
     }
     Ok(s)
 }
@@ -174,7 +219,8 @@ fn bind_listeners(port: u16) -> Result<Vec<TcpListener>, String> {
         all.push(v6);
     }
     for l in &all {
-        l.set_nonblocking(true).map_err(|e| format!("listener nonblocking: {e}"))?;
+        l.set_nonblocking(true)
+            .map_err(|e| format!("listener nonblocking: {e}"))?;
     }
     Ok(all)
 }
@@ -200,11 +246,15 @@ fn wait_for_auth_id(listeners: &[TcpListener], timeout: Duration) -> Result<Stri
             }
         }
         match sysnet::stdin_next(Some(Duration::from_millis(150))) {
-            StdinEvent::Line(l) if sysnet::is_disconnect(&l) => return Err("SAML login cancelled".into()),
+            StdinEvent::Line(l) if sysnet::is_disconnect(&l) => {
+                return Err("SAML login cancelled".into())
+            }
             StdinEvent::Line(l) => match id_from_pasted(&l) {
                 Some(id) => return Ok(id),
                 None if l.trim().is_empty() => {}
-                None => println!("# that doesn't look like the redirect URL or an auth id — still waiting"),
+                None => println!(
+                    "# that doesn't look like the redirect URL or an auth id — still waiting"
+                ),
             },
             StdinEvent::Eof => return Err("SAML login cancelled (stdin closed)".into()),
             StdinEvent::Timeout => {}
@@ -220,7 +270,11 @@ fn serve_redirect(mut stream: std::net::TcpStream) -> Option<String> {
     let mut buf = [0u8; 8192];
     let n = stream.read(&mut buf).unwrap_or(0);
     let req = String::from_utf8_lossy(&buf[..n]);
-    let path = req.lines().next().and_then(|l| l.split_whitespace().nth(1)).unwrap_or("");
+    let path = req
+        .lines()
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .unwrap_or("");
     match query_param(path, "id") {
         Some(id) => {
             let body = "<!doctype html><html><head><meta charset='utf-8'><title>unvpn</title></head>\
@@ -247,10 +301,16 @@ fn serve_redirect(mut stream: std::net::TcpStream) -> Option<String> {
 fn id_from_pasted(line: &str) -> Option<String> {
     let l = line.trim();
     if l.contains("id=") {
-        let q = if l.contains('?') { l.to_string() } else { format!("?{l}") };
+        let q = if l.contains('?') {
+            l.to_string()
+        } else {
+            format!("?{l}")
+        };
         return query_param(&q, "id");
     }
-    let token_like = l.len() >= 8 && l.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.%".contains(&b));
+    let token_like = l.len() >= 8
+        && l.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_.%".contains(&b));
     token_like.then(|| url_decode(l))
 }
 
@@ -272,13 +332,17 @@ pub fn open_browser(url: &str) {
             format!("XDG_RUNTIME_DIR={rt}"),
             format!("DBUS_SESSION_BUS_ADDRESS=unix:path={rt}/bus"),
         ];
-        let wayland = std::env::var("WAYLAND_DISPLAY").ok().or_else(|| wayland_socket(&rt));
+        let wayland = std::env::var("WAYLAND_DISPLAY")
+            .ok()
+            .or_else(|| wayland_socket(&rt));
         if let Some(w) = wayland {
             env.push(format!("WAYLAND_DISPLAY={w}"));
         }
-        let display = std::env::var("DISPLAY")
-            .ok()
-            .or_else(|| std::path::Path::new("/tmp/.X11-unix/X0").exists().then(|| ":0".to_string()));
+        let display = std::env::var("DISPLAY").ok().or_else(|| {
+            std::path::Path::new("/tmp/.X11-unix/X0")
+                .exists()
+                .then(|| ":0".to_string())
+        });
         if let Some(d) = display {
             env.push(format!("DISPLAY={d}"));
         }
@@ -288,14 +352,19 @@ pub fn open_browser(url: &str) {
             }
         }
         let mut c = Command::new("runuser");
-        c.args(["-u", &u.name, "--", "env", "-i"]).args(env).arg("xdg-open").arg(url);
+        c.args(["-u", &u.name, "--", "env", "-i"])
+            .args(env)
+            .arg("xdg-open")
+            .arg(url);
         c
     } else {
         let mut c = Command::new("xdg-open");
         c.arg(url);
         c
     };
-    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
     match cmd.spawn() {
         Ok(mut child) => {
             std::thread::spawn(move || child.wait()); // reap it
@@ -328,8 +397,16 @@ fn invoking_user() -> Option<DesktopUser> {
     if rc != 0 || out.is_null() {
         return None;
     }
-    let cstr = |p: *const libc::c_char| unsafe { std::ffi::CStr::from_ptr(p) }.to_string_lossy().into_owned();
-    Some(DesktopUser { name: cstr(pw.pw_name), uid, home: cstr(pw.pw_dir) })
+    let cstr = |p: *const libc::c_char| {
+        unsafe { std::ffi::CStr::from_ptr(p) }
+            .to_string_lossy()
+            .into_owned()
+    };
+    Some(DesktopUser {
+        name: cstr(pw.pw_name),
+        uid,
+        home: cstr(pw.pw_dir),
+    })
 }
 
 fn wayland_socket(runtime_dir: &str) -> Option<String> {
@@ -394,8 +471,14 @@ mod tests {
 
     #[test]
     fn extract_id_from_redirect() {
-        assert_eq!(query_param("/?id=abc123&x=1", "id").as_deref(), Some("abc123"));
-        assert_eq!(query_param("/callback?foo=1&id=XYZ", "id").as_deref(), Some("XYZ"));
+        assert_eq!(
+            query_param("/?id=abc123&x=1", "id").as_deref(),
+            Some("abc123")
+        );
+        assert_eq!(
+            query_param("/callback?foo=1&id=XYZ", "id").as_deref(),
+            Some("XYZ")
+        );
         assert_eq!(query_param("/?id=abc#frag", "id").as_deref(), Some("abc"));
         assert_eq!(query_param("/?x=1", "id"), None);
         assert_eq!(query_param("/nothing", "id"), None);
@@ -415,13 +498,25 @@ mod tests {
         // Verbatim from a FortiGate with external-browser SAML (203.0.113.30:10443).
         let xml = "<?xml version='1.0' encoding='utf-8'?><info><api encmethod='0' salt='00612a8b' \
                    remoteauthtimeout='240' sso_port='8020' f='3cdf' /></info>";
-        assert_eq!(parse_remote_info(xml), RemoteInfo { sso_port: Some(8020), auth_timeout: Some(240) });
-        assert_eq!(parse_remote_info("<info><api encmethod='0' /></info>"), RemoteInfo::default());
+        assert_eq!(
+            parse_remote_info(xml),
+            RemoteInfo {
+                sso_port: Some(8020),
+                auth_timeout: Some(240)
+            }
+        );
+        assert_eq!(
+            parse_remote_info("<info><api encmethod='0' /></info>"),
+            RemoteInfo::default()
+        );
     }
 
     #[test]
     fn xml_attr_whole_name_only() {
-        assert_eq!(xml_attr("<api xsso_port='1' sso_port=\"2\"/>", "sso_port"), Some("2"));
+        assert_eq!(
+            xml_attr("<api xsso_port='1' sso_port=\"2\"/>", "sso_port"),
+            Some("2")
+        );
     }
 
     #[test]
@@ -436,16 +531,28 @@ mod tests {
 
     #[test]
     fn start_url_with_realm() {
-        assert_eq!(start_url("gw", 10443, ""), "https://gw:10443/remote/saml/start?redirect=1");
-        assert_eq!(start_url("gw", 443, "corp vpn"), "https://gw:443/remote/saml/start?realm=corp%20vpn&redirect=1");
+        assert_eq!(
+            start_url("gw", 10443, ""),
+            "https://gw:10443/remote/saml/start?redirect=1"
+        );
+        assert_eq!(
+            start_url("gw", 443, "corp vpn"),
+            "https://gw:443/remote/saml/start?realm=corp%20vpn&redirect=1"
+        );
     }
 
     #[test]
     fn pasted_redirects() {
-        assert_eq!(id_from_pasted("http://127.0.0.1:8020/?id=AbC123xyz").as_deref(), Some("AbC123xyz"));
+        assert_eq!(
+            id_from_pasted("http://127.0.0.1:8020/?id=AbC123xyz").as_deref(),
+            Some("AbC123xyz")
+        );
         assert_eq!(id_from_pasted("  ?id=Zz9_8-7 ").as_deref(), Some("Zz9_8-7"));
         assert_eq!(id_from_pasted("id=QWERTYUI").as_deref(), Some("QWERTYUI"));
-        assert_eq!(id_from_pasted("0123456789abcdef").as_deref(), Some("0123456789abcdef"));
+        assert_eq!(
+            id_from_pasted("0123456789abcdef").as_deref(),
+            Some("0123456789abcdef")
+        );
         assert_eq!(id_from_pasted("hello"), None);
         assert_eq!(id_from_pasted("not an id at all"), None);
     }

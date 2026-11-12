@@ -50,7 +50,11 @@ pub fn cmd_wireguard(args: &[String]) {
 }
 
 fn parse_args(args: &[String]) -> Result<Args, String> {
-    let mut a = Args { config: None, action: None, no_routes: false };
+    let mut a = Args {
+        config: None,
+        action: None,
+        no_routes: false,
+    };
     let mut it = args.iter();
     while let Some(x) = it.next() {
         let act = match x.as_str() {
@@ -84,8 +88,12 @@ fn usage() {
     eprintln!("usage:");
     eprintln!("  unvpn wireguard -c <profile.conf> --connect [--no-routes]   # bring up the tunnel (sudo)");
     eprintln!("  unvpn wireguard -c <profile.conf> --probe                   # handshake check, then remove (sudo)");
-    eprintln!("  unvpn wireguard -c <profile.conf> --pubkey                  # this profile's public key");
-    eprintln!("  unvpn wireguard --genkey                                    # new private + public key");
+    eprintln!(
+        "  unvpn wireguard -c <profile.conf> --pubkey                  # this profile's public key"
+    );
+    eprintln!(
+        "  unvpn wireguard --genkey                                    # new private + public key"
+    );
     eprintln!("      [--no-routes]   tunnel up but install no routes/DNS (safe data-plane test)");
 }
 
@@ -100,11 +108,28 @@ fn run(a: Args) -> Result<(), String> {
     let cfg = config::load(&path)?;
     match a.action {
         Some(Action::Pubkey) => {
-            println!("{}", keys::to_b64(&keys::public(&cfg.interface.private_key)?));
+            println!(
+                "{}",
+                keys::to_b64(&keys::public(&cfg.interface.private_key)?)
+            );
             Ok(())
         }
-        Some(Action::Probe) => tunnel::run(cfg, tunnel::RunOpts { no_routes: true, watch_stdin: false, probe: true }),
-        _ => tunnel::run(cfg, tunnel::RunOpts { no_routes: a.no_routes, watch_stdin: true, probe: false }),
+        Some(Action::Probe) => tunnel::run(
+            cfg,
+            tunnel::RunOpts {
+                no_routes: true,
+                watch_stdin: false,
+                probe: true,
+            },
+        ),
+        _ => tunnel::run(
+            cfg,
+            tunnel::RunOpts {
+                no_routes: a.no_routes,
+                watch_stdin: true,
+                probe: false,
+            },
+        ),
     }
 }
 

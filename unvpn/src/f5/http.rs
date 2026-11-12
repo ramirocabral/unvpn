@@ -31,7 +31,13 @@ impl Cookies {
         if self.0.is_empty() {
             return None;
         }
-        Some(self.0.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join("; "))
+        Some(
+            self.0
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
     }
     fn absorb(&mut self, set_cookie: &str) {
         let pair = set_cookie.split(';').next().unwrap_or("").trim();
@@ -100,7 +106,11 @@ pub fn build_request(
     }
     req.push_str(&format!("Content-Length: {}\r\n", body.len()));
     if !has_connection {
-        req.push_str(if keep_alive { "Connection: keep-alive\r\n" } else { "Connection: close\r\n" });
+        req.push_str(if keep_alive {
+            "Connection: keep-alive\r\n"
+        } else {
+            "Connection: close\r\n"
+        });
     }
     req.push_str("\r\n");
     let mut out = req.into_bytes();
@@ -121,7 +131,8 @@ pub fn request(
 ) -> Result<Response, String> {
     let mut tls = connect_tls(host, port, timeout)?;
     let req = build_request(method, host, path, cookies, extra, body, false);
-    tls.write_all(&req).map_err(|e| format!("write request: {e}"))?;
+    tls.write_all(&req)
+        .map_err(|e| format!("write request: {e}"))?;
     tls.flush().ok();
 
     let mut tmp = [0u8; 4096];
@@ -142,9 +153,9 @@ pub fn request(
     let (status, headers) = parse_status_and_headers(&raw[..header_end])?;
     let mut body = raw[header_end..].to_vec();
 
-    let chunked = headers
-        .iter()
-        .any(|(k, v)| k.eq_ignore_ascii_case("transfer-encoding") && v.to_ascii_lowercase().contains("chunked"));
+    let chunked = headers.iter().any(|(k, v)| {
+        k.eq_ignore_ascii_case("transfer-encoding") && v.to_ascii_lowercase().contains("chunked")
+    });
     let clen = headers
         .iter()
         .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
@@ -189,7 +200,11 @@ pub fn request(
             cookies.absorb(v);
         }
     }
-    Ok(Response { status, headers, body })
+    Ok(Response {
+        status,
+        headers,
+        body,
+    })
 }
 
 /// Like [`request`], but follow same-host 3xx redirects, switching to GET after the
@@ -210,7 +225,16 @@ pub fn request_follow(
     let mut cur_path = path.to_string();
     let mut cur_body = body.to_vec();
     for _ in 0..=max_redirects {
-        let resp = request(host, port, &cur_method, &cur_path, cookies, extra, &cur_body, timeout)?;
+        let resp = request(
+            host,
+            port,
+            &cur_method,
+            &cur_path,
+            cookies,
+            extra,
+            &cur_body,
+            timeout,
+        )?;
         if !(300..400).contains(&resp.status) {
             return Ok(resp);
         }
@@ -230,7 +254,10 @@ pub fn request_follow(
 /// `None` if the `Location` points to another host.
 fn same_host_path(host: &str, port: u16, loc: &str) -> Option<String> {
     let loc = loc.trim();
-    if let Some(rest) = loc.strip_prefix("https://").or_else(|| loc.strip_prefix("http://")) {
+    if let Some(rest) = loc
+        .strip_prefix("https://")
+        .or_else(|| loc.strip_prefix("http://"))
+    {
         let (authority, path) = match rest.find('/') {
             Some(i) => (&rest[..i], &rest[i..]),
             None => (rest, "/"),
@@ -284,7 +311,8 @@ fn try_dechunk_complete(raw: &[u8]) -> Option<Vec<u8>> {
         let rest = raw.get(i..)?;
         let line_end = rest.windows(2).position(|w| w == b"\r\n")? + i;
         let size_str = std::str::from_utf8(&raw[i..line_end]).ok()?;
-        let size = usize::from_str_radix(size_str.split(';').next().unwrap_or("").trim(), 16).ok()?;
+        let size =
+            usize::from_str_radix(size_str.split(';').next().unwrap_or("").trim(), 16).ok()?;
         i = line_end + 2;
         if size == 0 {
             return Some(out);
@@ -306,7 +334,9 @@ pub fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
             b' ' => out.push_str("%20"),
             _ => out.push_str(&format!("%{b:02X}")),
         }
@@ -332,7 +362,10 @@ mod tests {
 
     #[test]
     fn same_host_variants() {
-        assert_eq!(same_host_path("gw.example.com", 443, "/my.policy").as_deref(), Some("/my.policy"));
+        assert_eq!(
+            same_host_path("gw.example.com", 443, "/my.policy").as_deref(),
+            Some("/my.policy")
+        );
         assert_eq!(
             same_host_path("gw.example.com", 443, "https://gw.example.com/vdesk/").as_deref(),
             Some("/vdesk/")
@@ -341,6 +374,9 @@ mod tests {
             same_host_path("gw.example.com", 443, "https://gw.example.com:443/x?y=1").as_deref(),
             Some("/x?y=1")
         );
-        assert_eq!(same_host_path("gw.example.com", 443, "https://idp.okta.com/sso"), None);
+        assert_eq!(
+            same_host_path("gw.example.com", 443, "https://idp.okta.com/sso"),
+            None
+        );
     }
 }

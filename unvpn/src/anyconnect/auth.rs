@@ -66,9 +66,9 @@ impl Select {
         self.choices.iter().position(|c| c.selected).unwrap_or(0)
     }
     pub fn find(&self, want: &str) -> Option<usize> {
-        self.choices
-            .iter()
-            .position(|c| c.value.eq_ignore_ascii_case(want) || c.label.trim().eq_ignore_ascii_case(want))
+        self.choices.iter().position(|c| {
+            c.value.eq_ignore_ascii_case(want) || c.label.trim().eq_ignore_ascii_case(want)
+        })
     }
 }
 
@@ -132,17 +132,27 @@ pub struct Reply {
 pub fn parse_reply(doc: &str) -> Result<Reply, String> {
     let root = xml::parse(doc).map_err(|e| format!("bad XML from gateway: {e}"))?;
     if root.name != "config-auth" {
-        return Err(format!("unexpected XML root <{}> (not an AnyConnect gateway?)", root.name));
+        return Err(format!(
+            "unexpected XML root <{}> (not an AnyConnect gateway?)",
+            root.name
+        ));
     }
-    let mut r = Reply { kind: root.attr("type").unwrap_or("").to_string(), outline: root.outline(), ..Default::default() };
+    let mut r = Reply {
+        kind: root.attr("type").unwrap_or("").to_string(),
+        outline: root.outline(),
+        ..Default::default()
+    };
     for c in &root.children {
         match c.name.as_str() {
             "opaque" => r.opaque = Some(doc[c.span.0..c.span.1].to_string()),
             "auth" => r.form = Some(parse_auth(c)),
-            "session-token" => r.session_token = Some(c.text.trim().to_string()).filter(|s| !s.is_empty()),
+            "session-token" => {
+                r.session_token = Some(c.text.trim().to_string()).filter(|s| !s.is_empty())
+            }
             "client-cert-request" | "multiple-client-cert-request" => r.cert_requested = true,
             "host-scan" => {
-                r.host_scan = c.child("host-scan-ticket").is_some() || c.child("host-scan-token").is_some()
+                r.host_scan =
+                    c.child("host-scan-ticket").is_some() || c.child("host-scan-token").is_some()
             }
             "error" => r.error = msg_text(c),
             _ => {}
@@ -171,7 +181,10 @@ fn msg_text(e: &Element) -> Option<String> {
 }
 
 fn parse_auth(a: &Element) -> Form {
-    let mut f = Form { auth_id: a.attr("id").unwrap_or("").to_string(), ..Default::default() };
+    let mut f = Form {
+        auth_id: a.attr("id").unwrap_or("").to_string(),
+        ..Default::default()
+    };
     let mut sso = Sso::default();
     for c in &a.children {
         match c.name.as_str() {
@@ -209,13 +222,19 @@ fn parse_form(form: &Element, f: &mut Form) {
                     .map(|o| {
                         let label = o.deep_text().trim().to_string();
                         Choice {
-                            value: o.attr("value").map(str::to_string).unwrap_or_else(|| label.clone()),
+                            value: o
+                                .attr("value")
+                                .map(str::to_string)
+                                .unwrap_or_else(|| label.clone()),
                             label,
-                            selected: o.attr("selected").is_some_and(|v| v.eq_ignore_ascii_case("true")),
+                            selected: o
+                                .attr("selected")
+                                .is_some_and(|v| v.eq_ignore_ascii_case("true")),
                             second_auth: o.attr("second-auth") == Some("1"),
                             noaaa: o.attr("noaaa") == Some("1"),
                             secondary_username: o.attr("secondary_username").map(str::to_string),
-                            secondary_username_editable: o.attr("secondary_username_editable") == Some("true"),
+                            secondary_username_editable: o.attr("secondary_username_editable")
+                                == Some("true"),
                         }
                     })
                     .collect();
@@ -228,7 +247,9 @@ fn parse_form(form: &Element, f: &mut Form) {
                 }
             }
             "input" => {
-                let (Some(ty), Some(name)) = (c.attr("type"), c.attr("name")) else { continue };
+                let (Some(ty), Some(name)) = (c.attr("type"), c.attr("name")) else {
+                    continue;
+                };
                 let kind = match ty {
                     "text" => Kind::Text,
                     "password" => Kind::Password,
@@ -238,8 +259,15 @@ fn parse_form(form: &Element, f: &mut Form) {
                 };
                 f.fields.push(Field {
                     name: name.to_string(),
-                    label: c.attr("label").map(str::to_string).unwrap_or_else(|| format!("{name}:")),
-                    value: if kind == Kind::Hidden { c.attr("value").map(str::to_string) } else { None },
+                    label: c
+                        .attr("label")
+                        .map(str::to_string)
+                        .unwrap_or_else(|| format!("{name}:")),
+                    value: if kind == Kind::Hidden {
+                        c.attr("value").map(str::to_string)
+                    } else {
+                        None
+                    },
                     kind,
                     second_auth: c.attr("second-auth") == Some("1"),
                 });
@@ -252,9 +280,17 @@ fn parse_form(form: &Element, f: &mut Form) {
 /// `<config-auth type="init">`. `group_access` is the URL the user aimed at;
 /// `group` pre-selects a tunnel group; `cert_fail` tells the gateway we have no
 /// client certificate.
-pub fn build_init(version: &str, group_access: &str, group: Option<&str>, cert_fail: bool) -> String {
+pub fn build_init(
+    version: &str,
+    group_access: &str,
+    group: Option<&str>,
+    cert_fail: bool,
+) -> String {
     let mut s = head("init", version);
-    s.push_str(&format!("<group-access>{}</group-access>", xml::escape(group_access)));
+    s.push_str(&format!(
+        "<group-access>{}</group-access>",
+        xml::escape(group_access)
+    ));
     if cert_fail {
         s.push_str("<client-cert-fail></client-cert-fail>");
     }
@@ -267,7 +303,12 @@ pub fn build_init(version: &str, group_access: &str, group: Option<&str>, cert_f
 
 /// `<config-auth type="auth-reply">` with the opaque blob echoed back and the
 /// answers mapped as the real client does.
-pub fn build_reply(version: &str, opaque: Option<&str>, answers: &[(String, String)], group: Option<&str>) -> String {
+pub fn build_reply(
+    version: &str,
+    opaque: Option<&str>,
+    answers: &[(String, String)],
+    group: Option<&str>,
+) -> String {
     let mut s = head("auth-reply", version);
     if let Some(op) = opaque {
         s.push_str(op);
@@ -304,7 +345,8 @@ fn head(kind: &str, version: &str) -> String {
 
 fn is_xml_name(s: &str) -> bool {
     !s.is_empty()
-        && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
         && !s.starts_with(|c: char| c.is_ascii_digit() || c == '-' || c == '.')
 }
 
@@ -339,7 +381,14 @@ pub struct Session {
 
 impl Session {
     pub fn new(ep: Endpoint, path: String, version: String) -> Self {
-        Session { ep, path, version, cookies: Cookies::default(), token: None, group: None }
+        Session {
+            ep,
+            path,
+            version,
+            cookies: Cookies::default(),
+            token: None,
+            group: None,
+        }
     }
 
     /// The `<group-access>` URL.
@@ -354,9 +403,19 @@ impl Session {
     /// ASA); we report it.
     pub fn post_xml(&mut self, path: &mut String, body: &str) -> Result<Reply, String> {
         for _ in 0..5 {
-            let resp = http::request(&self.ep, "POST", path, &mut self.cookies, Some(XML_CT), body.as_bytes())?;
+            let resp = http::request(
+                &self.ep,
+                "POST",
+                path,
+                &mut self.cookies,
+                Some(XML_CT),
+                body.as_bytes(),
+            )?;
             if (300..400).contains(&resp.status) {
-                let loc = resp.header("location").ok_or("redirect without Location")?.to_string();
+                let loc = resp
+                    .header("location")
+                    .ok_or("redirect without Location")?
+                    .to_string();
                 let (h, p, newpath) = if loc.starts_with('/') {
                     (self.ep.host.clone(), self.ep.port, loc.clone())
                 } else {
@@ -391,7 +450,12 @@ impl Session {
     /// On success `self.token` holds the cookie.
     pub fn login(&mut self, creds: &Creds, p: &mut dyn Prompter) -> Result<(), String> {
         let mut path = self.path.clone();
-        let mut body = build_init(&self.version, &self.group_access(&path), creds.group.as_deref(), false);
+        let mut body = build_init(
+            &self.version,
+            &self.group_access(&path),
+            creds.group.as_deref(),
+            false,
+        );
         let mut opaque: Option<String> = None;
         let mut group_chosen = false;
         let mut cert_fail_sent = false;
@@ -405,12 +469,23 @@ impl Session {
                 opaque = reply.opaque.clone();
             }
 
-            let form_id = reply.form.as_ref().map(|f| f.auth_id.as_str()).unwrap_or("");
-            let token = reply.session_token.clone().or_else(|| self.cookies.get("webvpn").map(str::to_string));
+            let form_id = reply
+                .form
+                .as_ref()
+                .map(|f| f.auth_id.as_str())
+                .unwrap_or("");
+            let token = reply
+                .session_token
+                .clone()
+                .or_else(|| self.cookies.get("webvpn").map(str::to_string));
             if reply.kind == "complete" || form_id == "success" {
                 let Some(token) = token else {
                     // `complete` + `<error>` = rejected (e.g. a bad/expired SSO token).
-                    if let Some(e) = reply.error.as_deref().or(reply.form.as_ref().and_then(|f| f.error.as_deref())) {
+                    if let Some(e) = reply
+                        .error
+                        .as_deref()
+                        .or(reply.form.as_ref().and_then(|f| f.error.as_deref()))
+                    {
                         return Err(format!("login failed: {}", crate::sysnet::one_line(e)));
                     }
                     let jar: Vec<&str> = self.cookies.0.keys().map(String::as_str).collect();
@@ -435,14 +510,24 @@ impl Session {
                 }
                 p.info("gateway asked for a client certificate — telling it we have none");
                 cert_fail_sent = true;
-                body = build_init(&self.version, &self.group_access(&path), chosen_group.as_deref(), true);
+                body = build_init(
+                    &self.version,
+                    &self.group_access(&path),
+                    chosen_group.as_deref(),
+                    true,
+                );
                 continue;
             }
             if reply.host_scan {
-                return Err("gateway requires Cisco Secure Desktop / HostScan posture (not supported)".into());
+                return Err(
+                    "gateway requires Cisco Secure Desktop / HostScan posture (not supported)"
+                        .into(),
+                );
             }
             let Some(form) = reply.form else {
-                let e = reply.error.unwrap_or_else(|| "no <auth> form in the gateway reply".into());
+                let e = reply
+                    .error
+                    .unwrap_or_else(|| "no <auth> form in the gateway reply".into());
                 return Err(format!("login failed: {e}"));
             };
 
@@ -458,9 +543,15 @@ impl Session {
                 // A rejected SSO token comes back as a fresh SSO form + error: stop
                 // (a new browser login is a new connection attempt, not a loop).
                 if sso_sent && form.sso.is_some() {
-                    return Err(format!("SSO login rejected: {}", crate::sysnet::one_line(e)));
+                    return Err(format!(
+                        "SSO login rejected: {}",
+                        crate::sysnet::one_line(e)
+                    ));
                 }
-                if password_sent && form.has("password") && !matches!(form.auth_id.as_str(), "challenge") {
+                if password_sent
+                    && form.has("password")
+                    && !matches!(form.auth_id.as_str(), "challenge")
+                {
                     return Err(format!("login rejected: {}", crate::sysnet::one_line(e)));
                 }
                 p.info(&format!("gateway error: {}", crate::sysnet::one_line(e)));
@@ -484,7 +575,10 @@ impl Session {
                 let idx = match chosen_group.as_deref() {
                     Some(want) => sel.find(want).ok_or_else(|| {
                         let avail: Vec<_> = sel.choices.iter().map(|c| c.label.as_str()).collect();
-                        format!("group {want:?} not offered by the gateway (available: {})", avail.join(", "))
+                        format!(
+                            "group {want:?} not offered by the gateway (available: {})",
+                            avail.join(", ")
+                        )
                     })?,
                     None => sel.default_index(),
                 };
@@ -493,7 +587,12 @@ impl Session {
                     group_chosen = true;
                     p.info(&format!("group: {} (of {})", c.label, sel.choices.len()));
                     chosen_group = Some(c.value.clone());
-                    body = build_init(&self.version, &self.group_access(&path), chosen_group.as_deref(), cert_fail_sent);
+                    body = build_init(
+                        &self.version,
+                        &self.group_access(&path),
+                        chosen_group.as_deref(),
+                        cert_fail_sent,
+                    );
                     continue;
                 }
                 group_value = Some(c.value.clone());
@@ -503,10 +602,18 @@ impl Session {
             let answers = fill_form(&form, choice.as_ref(), creds, &mut password_sent, p)?;
             sso_sent |= form.fields.iter().any(|f| f.kind == Kind::Sso);
             if form.fields.is_empty() && !form.complete_marker {
-                let e = form.error.or(form.message).unwrap_or_else(|| "gateway sent an empty form".into());
+                let e = form
+                    .error
+                    .or(form.message)
+                    .unwrap_or_else(|| "gateway sent an empty form".into());
                 return Err(format!("login failed: {}", crate::sysnet::one_line(&e)));
             }
-            body = build_reply(&self.version, opaque.as_deref(), &answers, group_value.as_deref());
+            body = build_reply(
+                &self.version,
+                opaque.as_deref(),
+                &answers,
+                group_value.as_deref(),
+            );
         }
         Err("authentication did not complete after 12 rounds".into())
     }
@@ -538,7 +645,10 @@ fn fill_form(
             match (&f.kind, f.name.as_str()) {
                 (Kind::Hidden, _) => f.value.clone().unwrap_or_default(),
                 (Kind::Sso, _) => {
-                    let sso = form.sso.as_ref().ok_or("SSO token requested but no sso-v2 login URL")?;
+                    let sso = form
+                        .sso
+                        .as_ref()
+                        .ok_or("SSO token requested but no sso-v2 login URL")?;
                     p.sso_token(sso)?
                 }
                 (Kind::Text, "username") => {
@@ -548,11 +658,13 @@ fn fill_form(
                         creds.user.clone()
                     }
                 }
-                (Kind::Text, "secondary_username") => match choice.and_then(|c| c.secondary_username.clone()) {
-                    Some(u) => u,
-                    None if !creds.user.is_empty() => creds.user.clone(),
-                    None => p.ask("answer", &prompt_msg(f))?,
-                },
+                (Kind::Text, "secondary_username") => {
+                    match choice.and_then(|c| c.secondary_username.clone()) {
+                        Some(u) => u,
+                        None if !creds.user.is_empty() => creds.user.clone(),
+                        None => p.ask("answer", &prompt_msg(f))?,
+                    }
+                }
                 (Kind::Text, _) => p.ask("answer", &prompt_msg(f))?,
                 (Kind::Password, "password") if !*password_sent && !challenge => {
                     *password_sent = true;
@@ -636,14 +748,20 @@ mod tests {
         let g = f.group_select().unwrap();
         assert_eq!(g.default_index(), 0);
         assert_eq!(g.find("group_b"), Some(1));
-        assert!(r.opaque.unwrap().contains("<aggauth-handle>4235996973563796626</aggauth-handle>"));
+        assert!(r
+            .opaque
+            .unwrap()
+            .contains("<aggauth-handle>4235996973563796626</aggauth-handle>"));
     }
 
     #[test]
     fn parses_sso_form() {
         let f = parse_reply(SSO).unwrap().form.unwrap();
         let s = f.sso.unwrap();
-        assert_eq!(s.login, "https://gw/+CSCOE+/saml/sp/login?ctx=1&acsamlcap=v2");
+        assert_eq!(
+            s.login,
+            "https://gw/+CSCOE+/saml/sp/login?ctx=1&acsamlcap=v2"
+        );
         assert_eq!(s.token_cookie, "acSamlv2Token");
         assert_eq!(f.fields[0].kind, Kind::Sso);
     }
@@ -652,8 +770,14 @@ mod tests {
     fn parses_complete() {
         let r = parse_reply(COMPLETE).unwrap();
         assert_eq!(r.kind, "complete");
-        assert_eq!(r.session_token.as_deref(), Some("ABCDEF0123@12345@ABCD@0011"));
-        assert_eq!(r.form.unwrap().banner.as_deref(), Some("Authorized use only"));
+        assert_eq!(
+            r.session_token.as_deref(),
+            Some("ABCDEF0123@12345@ABCD@0011")
+        );
+        assert_eq!(
+            r.form.unwrap().banner.as_deref(),
+            Some("Authorized use only")
+        );
     }
 
     #[test]
@@ -662,7 +786,10 @@ mod tests {
             r#"<config-auth type="auth-request"><auth id="main"><error id="88" param1="3" param2="">Login failed (%s attempts left).</error><form></form></auth></config-auth>"#,
         )
         .unwrap();
-        assert_eq!(r.form.unwrap().error.as_deref(), Some("Login failed (3 attempts left)."));
+        assert_eq!(
+            r.form.unwrap().error.as_deref(),
+            Some("Login failed (3 attempts left).")
+        );
     }
 
     #[test]
@@ -692,7 +819,10 @@ mod tests {
         let s = build_init("v9.21", "https://gw/grp", Some("G1"), false);
         let root = xml::parse(&s).unwrap();
         assert_eq!(root.attr("type"), Some("init"));
-        assert_eq!(root.child_text("group-access").as_deref(), Some("https://gw/grp"));
+        assert_eq!(
+            root.child_text("group-access").as_deref(),
+            Some("https://gw/grp")
+        );
         assert_eq!(root.child_text("group-select").as_deref(), Some("G1"));
         assert_eq!(root.child_text("device-id").as_deref(), Some("linux-64"));
     }
@@ -719,11 +849,25 @@ mod tests {
     #[test]
     fn fill_first_form_then_challenge() {
         let f = parse_reply(GW_A).unwrap().form.unwrap();
-        let creds = Creds { user: "alice".into(), password: None, group: None };
-        let mut s = Script { pw: "secret".into(), asked: vec![], answers: vec![] };
+        let creds = Creds {
+            user: "alice".into(),
+            password: None,
+            group: None,
+        };
+        let mut s = Script {
+            pw: "secret".into(),
+            asked: vec![],
+            answers: vec![],
+        };
         let mut sent = false;
         let a = fill_form(&f, None, &creds, &mut sent, &mut s).unwrap();
-        assert_eq!(a, vec![("username".into(), "alice".into()), ("password".into(), "secret".into())]);
+        assert_eq!(
+            a,
+            vec![
+                ("username".into(), "alice".into()),
+                ("password".into(), "secret".into())
+            ]
+        );
         assert!(sent);
 
         let ch = parse_reply(
@@ -732,7 +876,11 @@ mod tests {
         .unwrap()
         .form
         .unwrap();
-        let mut s2 = Script { pw: String::new(), asked: vec![], answers: vec!["987654".into()] };
+        let mut s2 = Script {
+            pw: String::new(),
+            asked: vec![],
+            answers: vec!["987654".into()],
+        };
         let a2 = fill_form(&ch, None, &creds, &mut sent, &mut s2).unwrap();
         assert_eq!(a2, vec![("answer".into(), "987654".into())]);
         assert_eq!(s2.asked[0].0, "code");
@@ -742,9 +890,20 @@ mod tests {
     #[test]
     fn noaaa_group_sends_empty_fields() {
         let f = parse_reply(GW_A).unwrap().form.unwrap();
-        let c = Choice { noaaa: true, ..Default::default() };
-        let creds = Creds { user: "u".into(), password: Some("p".into()), group: None };
-        let mut s = Script { pw: String::new(), asked: vec![], answers: vec![] };
+        let c = Choice {
+            noaaa: true,
+            ..Default::default()
+        };
+        let creds = Creds {
+            user: "u".into(),
+            password: Some("p".into()),
+            group: None,
+        };
+        let mut s = Script {
+            pw: String::new(),
+            asked: vec![],
+            answers: vec![],
+        };
         let mut sent = false;
         let a = fill_form(&f, Some(&c), &creds, &mut sent, &mut s).unwrap();
         assert!(a.iter().all(|(_, v)| v.is_empty()));

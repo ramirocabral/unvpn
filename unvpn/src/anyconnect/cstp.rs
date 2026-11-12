@@ -18,9 +18,9 @@ use super::auth::Session;
 use super::config::{self, TunnelConfig};
 use super::dtls;
 use super::http;
+use crate::net::tls::TlsStream;
 use crate::sysnet;
 use crate::tun;
-use crate::net::tls::TlsStream;
 use std::io::{Read, Write};
 use std::net::Ipv4Addr;
 use std::os::unix::io::AsRawFd;
@@ -105,7 +105,10 @@ fn take_frame(rx: &mut Vec<u8>) -> Result<Option<(u8, Vec<u8>)>, String> {
         return Ok(None);
     }
     if rx[0..4] != [b'S', b'T', b'F', 1] {
-        return Err(format!("bad CSTP framing magic {:02x?} (tunnel desynced)", &rx[0..4]));
+        return Err(format!(
+            "bad CSTP framing magic {:02x?} (tunnel desynced)",
+            &rx[0..4]
+        ));
     }
     let len = u16::from_be_bytes([rx[4], rx[5]]) as usize;
     let ty = rx[6];
@@ -126,7 +129,9 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
 
     println!("# opening CSTP tunnel (CONNECT {TUNNEL_PATH}) …");
     let (mut chan, cfg) = open_channel(session, None)?;
-    let assigned = cfg.address.ok_or("gateway did not assign an IPv4 address")?;
+    let assigned = cfg
+        .address
+        .ok_or("gateway did not assign an IPv4 address")?;
     let mtu = if cfg.mtu >= 576 { cfg.mtu } else { 1390 };
     let dns = cfg.dns.clone();
     println!(
@@ -140,9 +145,26 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
 
     let (mut tun_file, tun_name) = tun::open_tun(TUN_NAME)?;
     tun::set_nonblocking(&tun_file);
-    tun::ip(&["addr", "add", &format!("{assigned}/{}", cfg.prefix()), "dev", &tun_name])?;
-    tun::ip(&["link", "set", "dev", &tun_name, "up", "mtu", &mtu.to_string()])?;
-    println!("# tun {tun_name} up — {assigned}/{}, mtu {mtu}", cfg.prefix());
+    tun::ip(&[
+        "addr",
+        "add",
+        &format!("{assigned}/{}", cfg.prefix()),
+        "dev",
+        &tun_name,
+    ])?;
+    tun::ip(&[
+        "link",
+        "set",
+        "dev",
+        &tun_name,
+        "up",
+        "mtu",
+        &mtu.to_string(),
+    ])?;
+    println!(
+        "# tun {tun_name} up — {assigned}/{}, mtu {mtu}",
+        cfg.prefix()
+    );
     // Our own route/address churn on this device (72 split-include routes, re-added on
     // every reconnect) must not read as a network change, or it kicks us into an
     // endless reconnect loop that never passes traffic.
@@ -159,11 +181,19 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
     let mut restore = sysnet::NetRestore::default();
     if opts.no_routes {
         out!("# --no-routes: NOT installing routes or DNS.");
-        out!("#   test with:  ping -I {tun_name} {}", dns.first().map(|d| d.to_string()).unwrap_or_else(|| "<internal-host>".into()));
+        out!(
+            "#   test with:  ping -I {tun_name} {}",
+            dns.first()
+                .map(|d| d.to_string())
+                .unwrap_or_else(|| "<internal-host>".into())
+        );
     } else {
         let gw = resolve_v4(&session.ep.host, session.ep.port).ok();
         restore.routes = setup_routes(gw, &tun_name, &cfg);
-        restore.dns = sysnet::set_dns(&sysnet::tunnelled_dns(&dns, &tun_name), &cfg.domains.join(" "));
+        restore.dns = sysnet::set_dns(
+            &sysnet::tunnelled_dns(&dns, &tun_name),
+            &cfg.domains.join(" "),
+        );
         restore.leak = crate::leakguard::enable(&tun_name, &gw.into_iter().collect::<Vec<_>>())?;
     }
     restore.commit(&tun_name);
@@ -175,8 +205,17 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
     // The gateway's DPD/keepalive, bounded so they stay frequent.
     let dpd = clamp_secs(cfg.dpd, 30, 30, 90);
     let keepalive = clamp_secs(cfg.keepalive, 20, 20, 60);
-    let ka = Liveness { dpd_secs: dpd, keepalive_secs: keepalive, dpd_dead_secs: (dpd * 2).max(90) };
-    out!("# liveness: DPD {}s, keepalive {}s, dead-peer {}s", ka.dpd_secs, ka.keepalive_secs, ka.dpd_dead_secs);
+    let ka = Liveness {
+        dpd_secs: dpd,
+        keepalive_secs: keepalive,
+        dpd_dead_secs: (dpd * 2).max(90),
+    };
+    out!(
+        "# liveness: DPD {}s, keepalive {}s, dead-peer {}s",
+        ka.dpd_secs,
+        ka.keepalive_secs,
+        ka.dpd_dead_secs
+    );
     out!("# TUNNEL UP. (send 'disconnect' on stdin or SIGTERM to stop)");
     crate::report::up(&tun_name, Some(assigned.into()));
 
@@ -211,8 +250,20 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
                     let new_ip = newcfg.address.unwrap_or(assigned);
                     if new_ip != assigned {
                         out!("# gateway reassigned IP {assigned} → {new_ip}; re-addressing {tun_name}");
-                        let _ = tun::ip(&["addr", "del", &format!("{assigned}/{}", cfg.prefix()), "dev", &tun_name]);
-                        let _ = tun::ip(&["addr", "add", &format!("{new_ip}/{}", newcfg.prefix()), "dev", &tun_name]);
+                        let _ = tun::ip(&[
+                            "addr",
+                            "del",
+                            &format!("{assigned}/{}", cfg.prefix()),
+                            "dev",
+                            &tun_name,
+                        ]);
+                        let _ = tun::ip(&[
+                            "addr",
+                            "add",
+                            &format!("{new_ip}/{}", newcfg.prefix()),
+                            "dev",
+                            &tun_name,
+                        ]);
                     }
                     out!("# reconnected — tunnel back up (IP {new_ip})");
                     crate::report::recovered(Some(new_ip.into()));
@@ -239,13 +290,23 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
     let _ = chan.send(AC_DISCONN, &[0xb0]);
     drop(dtls);
     drop(chan);
-    let _ = http::request(&session.ep, "POST", "/+webvpn+/webvpn_logout.html", &mut session.cookies, None, b"");
+    let _ = http::request(
+        &session.ep,
+        "POST",
+        "/+webvpn+/webvpn_logout.html",
+        &mut session.cookies,
+        None,
+        b"",
+    );
     drop(restore);
     final_result
 }
 
 /// `want_addr` asks the gateway for the same IP on reconnect.
-fn open_channel(session: &Session, want_addr: Option<Ipv4Addr>) -> Result<(Channel, TunnelConfig), String> {
+fn open_channel(
+    session: &Session,
+    want_addr: Option<Ipv4Addr>,
+) -> Result<(Channel, TunnelConfig), String> {
     let token = session
         .token
         .clone()
@@ -278,13 +339,19 @@ fn open_channel(session: &Session, want_addr: Option<Ipv4Addr>) -> Result<(Chann
     // Offer DTLS 1.2 AEAD (ECDHE first) so a modern ASA gives us the DTLS1.2 resume;
     // the gateway echoes the chosen name back in X-DTLS12-CipherSuite. The names must
     // match what the GnuTLS resume expects (see dtls::DTLS12_CIPHERSUITES).
-    req.push_str(&format!("X-DTLS12-CipherSuite: {}\r\n", dtls::DTLS12_CIPHERSUITES));
+    req.push_str(&format!(
+        "X-DTLS12-CipherSuite: {}\r\n",
+        dtls::DTLS12_CIPHERSUITES
+    ));
     req.push_str("\r\n");
-    tls.write_all(req.as_bytes()).map_err(|e| format!("CONNECT write: {e}"))?;
+    tls.write_all(req.as_bytes())
+        .map_err(|e| format!("CONNECT write: {e}"))?;
     tls.flush().ok();
 
     // Read status + headers (no body for CONNECT); keep any trailing bytes.
-    tls.get_ref().set_read_timeout(Some(session.ep.timeout)).ok();
+    tls.get_ref()
+        .set_read_timeout(Some(session.ep.timeout))
+        .ok();
     let resp = http::read_response(&mut tls, false)?;
     if resp.status != 200 {
         if resp.status == 503 {
@@ -296,13 +363,26 @@ fn open_channel(session: &Session, want_addr: Option<Ipv4Addr>) -> Result<(Chann
     let cfg = config::TunnelConfig::from_headers(&resp.headers);
 
     tls.get_ref().set_nonblocking(true).ok();
-    Ok((Channel { tls, fd, rx: resp.body, dtls_master }, cfg))
+    Ok((
+        Channel {
+            tls,
+            fd,
+            rx: resp.body,
+            dtls_master,
+        },
+        cfg,
+    ))
 }
 
 /// Try to bring up the DTLS fast path for this channel (best-effort). Returns
 /// `None` when the gateway offered no DTLS, `--no-dtls` was set, or the handshake
 /// didn't complete — the caller just stays on CSTP, which always works.
-fn try_dtls(session: &Session, chan: &Channel, cfg: &TunnelConfig, no_dtls: bool) -> Option<dtls::Dtls> {
+fn try_dtls(
+    session: &Session,
+    chan: &Channel,
+    cfg: &TunnelConfig,
+    no_dtls: bool,
+) -> Option<dtls::Dtls> {
     if no_dtls || cfg.dtls_port == 0 || cfg.dtls_session_id.is_empty() {
         return None;
     }
@@ -318,10 +398,25 @@ fn try_dtls(session: &Session, chan: &Channel, cfg: &TunnelConfig, no_dtls: bool
         Ok(ip) => ip,
         Err(_) => return None,
     };
-    out!("# trying DTLS (UDP {} · {cipher} · {}) …", cfg.dtls_port, if dtls12 { "DTLSv1.2" } else { "DTLSv1-BAD" });
-    match dtls::connect(gw, cfg.dtls_port, &cfg.dtls_session_id, &chan.dtls_master, &cipher, dtls12, Duration::from_secs(4)) {
+    out!(
+        "# trying DTLS (UDP {} · {cipher} · {}) …",
+        cfg.dtls_port,
+        if dtls12 { "DTLSv1.2" } else { "DTLSv1-BAD" }
+    );
+    match dtls::connect(
+        gw,
+        cfg.dtls_port,
+        &cfg.dtls_session_id,
+        &chan.dtls_master,
+        &cipher,
+        dtls12,
+        Duration::from_secs(4),
+    ) {
         Ok(d) => {
-            out!("# DTLS up — data plane on UDP {} (faster; CSTP kept for control + fallback)", cfg.dtls_port);
+            out!(
+                "# DTLS up — data plane on UDP {} (faster; CSTP kept for control + fallback)",
+                cfg.dtls_port
+            );
             Some(d)
         }
         Err(e) => {
@@ -371,10 +466,26 @@ fn data_loop(
         // The DTLS slot stays at index 2 (fd = -1 is ignored by poll when absent);
         // the kick fd is always polled at index 3.
         let mut fds = [
-            libc::pollfd { fd: tun_fd, events: libc::POLLIN, revents: 0 },
-            libc::pollfd { fd: sock_fd, events: libc::POLLIN, revents: 0 },
-            libc::pollfd { fd: dtls_fd, events: libc::POLLIN, revents: 0 },
-            libc::pollfd { fd: kick_fd, events: libc::POLLIN, revents: 0 },
+            libc::pollfd {
+                fd: tun_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: sock_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: dtls_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: kick_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
         ];
         let n = unsafe { libc::poll(fds.as_mut_ptr(), 4, 1000) };
         if n < 0 {
@@ -435,7 +546,9 @@ fn data_loop(
                         last_dtls_rx = Instant::now();
                         let _ = d.send(AC_DPD_RESP, &[]);
                     }
-                    Ok(Some((AC_DPD_RESP, _))) | Ok(Some((AC_KEEPALIVE, _))) => last_dtls_rx = Instant::now(),
+                    Ok(Some((AC_DPD_RESP, _))) | Ok(Some((AC_KEEPALIVE, _))) => {
+                        last_dtls_rx = Instant::now()
+                    }
                     Ok(Some((_other, _))) => last_dtls_rx = Instant::now(),
                     Ok(None) => break,
                     Err(e) => {
@@ -474,9 +587,13 @@ fn data_loop(
                         let why = disconnect_reason(&p);
                         return Err(format!("gateway sent disconnect{why}"));
                     }
-                    Some((AC_TERM_SERVER, _)) => return Err("gateway kicked the session (terminate)".into()),
+                    Some((AC_TERM_SERVER, _)) => {
+                        return Err("gateway kicked the session (terminate)".into())
+                    }
                     Some((AC_COMPRESSED, _)) => {
-                        return Err("gateway sent a compressed packet (compression not negotiated)".into());
+                        return Err(
+                            "gateway sent a compressed packet (compression not negotiated)".into(),
+                        );
                     }
                     Some((_other, _)) => {
                         rx += 1;
@@ -487,7 +604,10 @@ fn data_loop(
             }
         }
 
-        if ka.dpd_secs > 0 && last_rx.elapsed().as_secs() >= ka.dpd_secs && last_dpd.elapsed().as_secs() >= ka.dpd_secs / 2 {
+        if ka.dpd_secs > 0
+            && last_rx.elapsed().as_secs() >= ka.dpd_secs
+            && last_dpd.elapsed().as_secs() >= ka.dpd_secs / 2
+        {
             chan.send(AC_DPD_OUT, &[])?;
             last_dpd = Instant::now();
             last_tx = Instant::now();
@@ -504,12 +624,18 @@ fn data_loop(
                 last_dtls_dpd = Instant::now();
             }
             if last_dtls_rx.elapsed().as_secs() >= ka.dpd_dead_secs {
-                out!("# DTLS went quiet for {}s — falling back to CSTP", last_dtls_rx.elapsed().as_secs());
-            *dtls = None;
+                out!(
+                    "# DTLS went quiet for {}s — falling back to CSTP",
+                    last_dtls_rx.elapsed().as_secs()
+                );
+                *dtls = None;
             }
         }
         if last_rx.elapsed().as_secs() >= ka.dpd_dead_secs {
-            return Err(format!("no data from gateway for {}s (dead peer)", last_rx.elapsed().as_secs()));
+            return Err(format!(
+                "no data from gateway for {}s (dead peer)",
+                last_rx.elapsed().as_secs()
+            ));
         }
         if last_stats.elapsed().as_secs() >= 10 {
             let path = if dtls.is_some() { "DTLS" } else { "CSTP" };
@@ -524,7 +650,16 @@ fn disconnect_reason(p: &[u8]) -> String {
     if p.len() < 2 {
         return String::new();
     }
-    let msg: String = p[1..].iter().map(|&b| if b.is_ascii_graphic() || b == b' ' { b as char } else { '.' }).collect();
+    let msg: String = p[1..]
+        .iter()
+        .map(|&b| {
+            if b.is_ascii_graphic() || b == b' ' {
+                b as char
+            } else {
+                '.'
+            }
+        })
+        .collect();
     format!(": {}", msg.trim())
 }
 
@@ -560,14 +695,18 @@ fn setup_routes(gw: Option<Ipv4Addr>, tun: &str, cfg: &TunnelConfig) -> Vec<Stri
     // Keep the encrypted tunnel's own packets off the tun.
     let mut pin: Option<(usize, String)> = None;
     if let Some((g, (via, dev))) = gw.and_then(|g| original_path(g).map(|p| (g, p))) {
-        let suffix = via.map(|v| format!("via {v} dev {dev}")).unwrap_or_else(|| format!("dev {dev}"));
+        let suffix = via
+            .map(|v| format!("via {v} dev {dev}"))
+            .unwrap_or_else(|| format!("dev {dev}"));
         pin = Some((add.len(), format!("{g}/32 ({suffix})")));
         pair(&mut add, &mut del, format!("{g}/32"), &suffix);
     }
 
     for ex in &cfg.split_exclude {
         if let Some((via, dev)) = original_path(ex.net) {
-            let suffix = via.map(|v| format!("via {v} dev {dev}")).unwrap_or_else(|| format!("dev {dev}"));
+            let suffix = via
+                .map(|v| format!("via {v} dev {dev}"))
+                .unwrap_or_else(|| format!("dev {dev}"));
             pair(&mut add, &mut del, ex.to_cidr(), &suffix);
         }
     }
@@ -583,7 +722,10 @@ fn setup_routes(gw: Option<Ipv4Addr>, tun: &str, cfg: &TunnelConfig) -> Vec<Stri
         pair(&mut add, &mut del, r.to_cidr(), &dev_suffix);
     }
     if !cfg.split_include.is_empty() {
-        out!("# split tunnel: {} include route(s) via {tun}", cfg.split_include.len());
+        out!(
+            "# split tunnel: {} include route(s) via {tun}",
+            cfg.split_include.len()
+        );
     }
     if !cfg.default_route && cfg.split_include.is_empty() {
         out!("# WARNING: no default route and no split includes — tunnel has no routes");
@@ -598,21 +740,42 @@ fn setup_routes(gw: Option<Ipv4Addr>, tun: &str, cfg: &TunnelConfig) -> Vec<Stri
         }
     }
     if !failed.is_empty() {
-        out!("# {} route(s) already existed — not ours, kept on disconnect", failed.len());
+        out!(
+            "# {} route(s) already existed — not ours, kept on disconnect",
+            failed.len()
+        );
     }
-    del.into_iter().enumerate().filter(|(i, _)| !failed.contains(i)).map(|(_, d)| d).collect()
+    del.into_iter()
+        .enumerate()
+        .filter(|(i, _)| !failed.contains(i))
+        .map(|(_, d)| d)
+        .collect()
 }
 
 /// Parse `ip route get <ip>` for the current `via`/`dev` of a destination.
 fn original_path(dst: Ipv4Addr) -> Option<(Option<String>, String)> {
-    let out = std::process::Command::new("ip").args(["route", "get", &dst.to_string()]).output().ok()?;
+    let out = std::process::Command::new("ip")
+        .args(["route", "get", &dst.to_string()])
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }
     let text = String::from_utf8_lossy(&out.stdout);
-    let toks: Vec<&str> = text.lines().next().unwrap_or("").split_whitespace().collect();
-    let via = toks.windows(2).find(|w| w[0] == "via").map(|w| w[1].to_string());
-    let dev = toks.windows(2).find(|w| w[0] == "dev").map(|w| w[1].to_string())?;
+    let toks: Vec<&str> = text
+        .lines()
+        .next()
+        .unwrap_or("")
+        .split_whitespace()
+        .collect();
+    let via = toks
+        .windows(2)
+        .find(|w| w[0] == "via")
+        .map(|w| w[1].to_string());
+    let dev = toks
+        .windows(2)
+        .find(|w| w[0] == "dev")
+        .map(|w| w[1].to_string())?;
     Some((via, dev))
 }
 
@@ -648,7 +811,10 @@ mod tests {
         let mut wire = vec![b'S', b'T', b'F', 1, 0, 3, AC_DATA, 0, b'a', b'b', b'c'];
         wire.extend_from_slice(&[b'S', b'T', b'F', 1, 0, 0, AC_KEEPALIVE, 0]);
         wire.extend_from_slice(&[b'S', b'T', b'F', 1, 0, 10, AC_DATA, 0, 1, 2]);
-        assert_eq!(take_frame(&mut wire).unwrap(), Some((AC_DATA, b"abc".to_vec())));
+        assert_eq!(
+            take_frame(&mut wire).unwrap(),
+            Some((AC_DATA, b"abc".to_vec()))
+        );
         assert_eq!(take_frame(&mut wire).unwrap(), Some((AC_KEEPALIVE, vec![])));
         assert_eq!(take_frame(&mut wire).unwrap(), None);
         assert_eq!(wire.len(), 10);

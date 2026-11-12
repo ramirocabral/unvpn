@@ -30,7 +30,10 @@ pub struct Key {
 
 impl Key {
     fn from_slice(b: &[u8]) -> Key {
-        let mut k = Key { cipher: [0; 64], hmac: [0; 64] };
+        let mut k = Key {
+            cipher: [0; 64],
+            hmac: [0; 64],
+        };
         k.cipher.copy_from_slice(&b[..64]);
         k.hmac.copy_from_slice(&b[64..128]);
         k
@@ -46,18 +49,29 @@ pub struct Key2 {
 impl Key2 {
     pub fn from_bytes(b: &[u8]) -> Result<Key2, String> {
         if b.len() < 256 {
-            return Err(format!("key material too short ({} bytes, need 256)", b.len()));
+            return Err(format!(
+                "key material too short ({} bytes, need 256)",
+                b.len()
+            ));
         }
-        Ok(Key2 { keys: [Key::from_slice(&b[..128]), Key::from_slice(&b[128..256])] })
+        Ok(Key2 {
+            keys: [Key::from_slice(&b[..128]), Key::from_slice(&b[128..256])],
+        })
     }
 
     /// Parse an `OpenVPN Static key V1` PEM-ish block (hex lines between markers).
     pub fn from_static_pem(text: &str) -> Result<Key2, String> {
         let begin = "-----BEGIN OpenVPN Static key V1-----";
         let end = "-----END OpenVPN Static key V1-----";
-        let start = text.find(begin).ok_or("not an OpenVPN static key (no BEGIN marker)")? + begin.len();
+        let start = text
+            .find(begin)
+            .ok_or("not an OpenVPN static key (no BEGIN marker)")?
+            + begin.len();
         let stop = text[start..].find(end).ok_or("static key: no END marker")? + start;
-        let hex: String = text[start..stop].chars().filter(|c| c.is_ascii_hexdigit()).collect();
+        let hex: String = text[start..stop]
+            .chars()
+            .filter(|c| c.is_ascii_hexdigit())
+            .collect();
         let bytes = hex_decode(&hex)?;
         if bytes.len() != 256 {
             return Err(format!("static key is {} bytes, expected 256", bytes.len()));
@@ -80,7 +94,10 @@ fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
     if s.len() % 2 != 0 {
         return Err("odd-length hex".into());
     }
-    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|e| e.to_string())).collect()
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|e| e.to_string()))
+        .collect()
 }
 
 pub fn digest(name: &str) -> Result<MessageDigest, String> {
@@ -150,8 +167,22 @@ pub fn openvpn_prf_keys(
 
 pub enum Wrap {
     None,
-    Auth { md: MessageDigest, out: PKey<Private>, inp: PKey<Private>, hlen: usize, pid: u32, time: u32 },
-    Crypt { out_cipher: [u8; 32], out_hmac: PKey<Private>, in_cipher: [u8; 32], in_hmac: PKey<Private>, pid: u32, time: u32 },
+    Auth {
+        md: MessageDigest,
+        out: PKey<Private>,
+        inp: PKey<Private>,
+        hlen: usize,
+        pid: u32,
+        time: u32,
+    },
+    Crypt {
+        out_cipher: [u8; 32],
+        out_hmac: PKey<Private>,
+        in_cipher: [u8; 32],
+        in_hmac: PKey<Private>,
+        pid: u32,
+        time: u32,
+    },
 }
 
 const TLS_CRYPT_TAG: usize = 32;
@@ -207,7 +238,14 @@ impl Wrap {
                 v.extend_from_slice(rest);
                 v
             }
-            Wrap::Auth { md, out, hlen, pid, time, .. } => {
+            Wrap::Auth {
+                md,
+                out,
+                hlen,
+                pid,
+                time,
+                ..
+            } => {
                 *pid += 1;
                 let pt = [pid.to_be_bytes(), time.to_be_bytes()].concat();
                 let mac = hmac_with(*md, out, &[&pt, &[op], sid, rest]);
@@ -219,7 +257,13 @@ impl Wrap {
                 v.extend_from_slice(rest);
                 v
             }
-            Wrap::Crypt { out_cipher, out_hmac, pid, time, .. } => {
+            Wrap::Crypt {
+                out_cipher,
+                out_hmac,
+                pid,
+                time,
+                ..
+            } => {
                 *pid += 1;
                 let mut v = Vec::with_capacity(17 + TLS_CRYPT_TAG + rest.len());
                 v.push(op);
@@ -257,7 +301,9 @@ impl Wrap {
                 }
                 Ok((op, sid, rest.to_vec()))
             }
-            Wrap::Crypt { in_cipher, in_hmac, .. } => {
+            Wrap::Crypt {
+                in_cipher, in_hmac, ..
+            } => {
                 if pkt.len() < 17 + TLS_CRYPT_TAG {
                     return Err("short tls-crypt packet".into());
                 }
@@ -276,7 +322,8 @@ impl Wrap {
 
 fn aes256_ctr(key: &[u8; 32], iv: &[u8], data: &[u8]) -> Vec<u8> {
     let mut ctx = CipherCtx::new().expect("ctx");
-    ctx.encrypt_init(Some(Cipher::aes_256_ctr()), Some(key), Some(iv)).expect("ctr init");
+    ctx.encrypt_init(Some(Cipher::aes_256_ctr()), Some(key), Some(iv))
+        .expect("ctr init");
     let mut out = vec![0u8; data.len() + 16];
     let n = ctx.cipher_update(data, Some(&mut out)).expect("ctr update");
     out.truncate(n);
@@ -284,7 +331,10 @@ fn aes256_ctr(key: &[u8; 32], iv: &[u8], data: &[u8]) -> Vec<u8> {
 }
 
 fn now_secs() -> u32 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as u32).unwrap_or(0)
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as u32)
+        .unwrap_or(0)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -327,13 +377,15 @@ const AEAD_TAG: usize = 16;
 impl DataCrypto {
     /// Client: encrypt = key 0, decrypt = key 1.
     pub fn new(key2: &Key2, cipher_name: &str, auth: &str) -> Result<DataCrypto, String> {
-        let (cipher, klen, kind) =
-            cipher_by_name(cipher_name).ok_or_else(|| format!("unsupported data cipher {cipher_name}"))?;
+        let (cipher, klen, kind) = cipher_by_name(cipher_name)
+            .ok_or_else(|| format!("unsupported data cipher {cipher_name}"))?;
         let (ek, dk) = (&key2.keys[0], &key2.keys[1]);
         let mut enc = CipherCtx::new().map_err(|e| e.to_string())?;
         let mut dec = CipherCtx::new().map_err(|e| e.to_string())?;
-        enc.encrypt_init(Some(cipher), Some(&ek.cipher[..klen]), None).map_err(|e| format!("cipher init: {e}"))?;
-        dec.decrypt_init(Some(cipher), Some(&dk.cipher[..klen]), None).map_err(|e| format!("cipher init: {e}"))?;
+        enc.encrypt_init(Some(cipher), Some(&ek.cipher[..klen]), None)
+            .map_err(|e| format!("cipher init: {e}"))?;
+        dec.decrypt_init(Some(cipher), Some(&dk.cipher[..klen]), None)
+            .map_err(|e| format!("cipher init: {e}"))?;
         let mut enc_iv = [0u8; 8];
         let mut dec_iv = [0u8; 8];
         let (mut md, mut enc_hmac, mut dec_hmac) = (None, None, None);
@@ -367,8 +419,16 @@ impl DataCrypto {
 
     /// Encrypt `payload` into a full data packet starting with `hdr` (1 byte for
     /// P_DATA_V1, 4 bytes for P_DATA_V2). `aad_hdr`: authenticate the header too (V2).
-    pub fn encrypt(&mut self, hdr: &[u8], aad_hdr: bool, payload: &[u8]) -> Result<Vec<u8>, String> {
-        self.send_pid = self.send_pid.checked_add(1).ok_or("data packet-id wrapped (renegotiate)")?;
+    pub fn encrypt(
+        &mut self,
+        hdr: &[u8],
+        aad_hdr: bool,
+        payload: &[u8],
+    ) -> Result<Vec<u8>, String> {
+        self.send_pid = self
+            .send_pid
+            .checked_add(1)
+            .ok_or("data packet-id wrapped (renegotiate)")?;
         let pid = self.send_pid.to_be_bytes();
         match self.kind {
             CipherKind::Aead => {
@@ -383,15 +443,21 @@ impl DataCrypto {
                 let ct_at = out.len();
                 out.resize(ct_at + payload.len() + 16, 0);
                 let e = &mut self.enc;
-                e.encrypt_init(None, None, Some(&iv)).map_err(|e| e.to_string())?;
+                e.encrypt_init(None, None, Some(&iv))
+                    .map_err(|e| e.to_string())?;
                 if aad_hdr {
                     e.cipher_update(hdr, None).map_err(|e| e.to_string())?;
                 }
                 e.cipher_update(&pid, None).map_err(|e| e.to_string())?;
-                let n = e.cipher_update(payload, Some(&mut out[ct_at..])).map_err(|e| e.to_string())?;
-                let f = e.cipher_final(&mut out[ct_at + n..]).map_err(|e| e.to_string())?;
+                let n = e
+                    .cipher_update(payload, Some(&mut out[ct_at..]))
+                    .map_err(|e| e.to_string())?;
+                let f = e
+                    .cipher_final(&mut out[ct_at + n..])
+                    .map_err(|e| e.to_string())?;
                 out.truncate(ct_at + n + f);
-                e.tag(&mut out[tag_at..tag_at + AEAD_TAG]).map_err(|e| e.to_string())?;
+                e.tag(&mut out[tag_at..tag_at + AEAD_TAG])
+                    .map_err(|e| e.to_string())?;
                 Ok(out)
             }
             CipherKind::Cbc => {
@@ -402,11 +468,18 @@ impl DataCrypto {
                 pt.extend_from_slice(payload);
                 let mut ct = vec![0u8; pt.len() + 32];
                 let e = &mut self.enc;
-                e.encrypt_init(None, None, Some(&iv)).map_err(|e| e.to_string())?;
-                let n = e.cipher_update(&pt, Some(&mut ct)).map_err(|e| e.to_string())?;
+                e.encrypt_init(None, None, Some(&iv))
+                    .map_err(|e| e.to_string())?;
+                let n = e
+                    .cipher_update(&pt, Some(&mut ct))
+                    .map_err(|e| e.to_string())?;
                 let f = e.cipher_final(&mut ct[n..]).map_err(|e| e.to_string())?;
                 ct.truncate(n + f);
-                let mac = hmac_with(self.md.unwrap(), self.enc_hmac.as_ref().unwrap(), &[&iv, &ct]);
+                let mac = hmac_with(
+                    self.md.unwrap(),
+                    self.enc_hmac.as_ref().unwrap(),
+                    &[&iv, &ct],
+                );
                 let mut out = Vec::with_capacity(hdr.len() + mac.len() + 16 + ct.len());
                 out.extend_from_slice(hdr);
                 out.extend_from_slice(&mac);
@@ -417,7 +490,12 @@ impl DataCrypto {
         }
     }
 
-    pub fn decrypt(&mut self, pkt: &[u8], hdr_len: usize, aad_hdr: bool) -> Result<Vec<u8>, String> {
+    pub fn decrypt(
+        &mut self,
+        pkt: &[u8],
+        hdr_len: usize,
+        aad_hdr: bool,
+    ) -> Result<Vec<u8>, String> {
         match self.kind {
             CipherKind::Aead => {
                 if pkt.len() < hdr_len + 4 + AEAD_TAG {
@@ -431,15 +509,20 @@ impl DataCrypto {
                 iv[..4].copy_from_slice(pid);
                 iv[4..].copy_from_slice(&self.dec_iv);
                 let d = &mut self.dec;
-                d.decrypt_init(None, None, Some(&iv)).map_err(|e| e.to_string())?;
+                d.decrypt_init(None, None, Some(&iv))
+                    .map_err(|e| e.to_string())?;
                 if aad_hdr {
                     d.cipher_update(hdr, None).map_err(|e| e.to_string())?;
                 }
                 d.cipher_update(pid, None).map_err(|e| e.to_string())?;
                 let mut out = vec![0u8; ct.len() + 16];
-                let n = d.cipher_update(ct, Some(&mut out)).map_err(|e| e.to_string())?;
+                let n = d
+                    .cipher_update(ct, Some(&mut out))
+                    .map_err(|e| e.to_string())?;
                 d.set_tag(tag).map_err(|e| e.to_string())?;
-                let f = d.cipher_final(&mut out[n..]).map_err(|_| "data packet authentication failed".to_string())?;
+                let f = d
+                    .cipher_final(&mut out[n..])
+                    .map_err(|_| "data packet authentication failed".to_string())?;
                 out.truncate(n + f);
                 let id = u32::from_be_bytes([pid[0], pid[1], pid[2], pid[3]]);
                 if !self.replay.check(id) {
@@ -461,10 +544,15 @@ impl DataCrypto {
                     return Err("data packet HMAC mismatch".into());
                 }
                 let d = &mut self.dec;
-                d.decrypt_init(None, None, Some(iv)).map_err(|e| e.to_string())?;
+                d.decrypt_init(None, None, Some(iv))
+                    .map_err(|e| e.to_string())?;
                 let mut out = vec![0u8; ct.len() + 32];
-                let n = d.cipher_update(ct, Some(&mut out)).map_err(|e| e.to_string())?;
-                let f = d.cipher_final(&mut out[n..]).map_err(|_| "data packet padding error".to_string())?;
+                let n = d
+                    .cipher_update(ct, Some(&mut out))
+                    .map_err(|e| e.to_string())?;
+                let f = d
+                    .cipher_final(&mut out[n..])
+                    .map_err(|_| "data packet padding error".to_string())?;
                 out.truncate(n + f);
                 if out.len() < 4 {
                     return Err("short decrypted packet".into());
@@ -491,7 +579,9 @@ mod tests {
 
     /// Swap directions: what the server would use (encrypt = key 1, decrypt = key 0).
     fn server_side(k: &Key2) -> Key2 {
-        Key2 { keys: [k.keys[1].clone(), k.keys[0].clone()] }
+        Key2 {
+            keys: [k.keys[1].clone(), k.keys[0].clone()],
+        }
     }
 
     #[test]
@@ -511,13 +601,26 @@ mod tests {
         let mut seed = b"PRF Testvector".to_vec();
         seed.extend_from_slice(&[0xcd; 64]);
         let out = tls1_prf(&secret, &seed, 104);
-        assert_eq!(&out[..16], &[0xd3, 0xd4, 0xd1, 0xe3, 0x49, 0xb5, 0xd5, 0x15, 0x04, 0x46, 0x66, 0xd5, 0x1d, 0xe3, 0x2b, 0xab]);
+        assert_eq!(
+            &out[..16],
+            &[
+                0xd3, 0xd4, 0xd1, 0xe3, 0x49, 0xb5, 0xd5, 0x15, 0x04, 0x46, 0x66, 0xd5, 0x1d, 0xe3,
+                0x2b, 0xab
+            ]
+        );
     }
 
     #[test]
     fn static_key_parse_and_direction() {
-        let hex: String = (0..256u32).map(|i| format!("{:02x}", i as u8)).collect::<Vec<_>>().chunks(16).map(|c| c.concat() + "\n").collect();
-        let pem = format!("#\n-----BEGIN OpenVPN Static key V1-----\n{hex}-----END OpenVPN Static key V1-----\n");
+        let hex: String = (0..256u32)
+            .map(|i| format!("{:02x}", i as u8))
+            .collect::<Vec<_>>()
+            .chunks(16)
+            .map(|c| c.concat() + "\n")
+            .collect();
+        let pem = format!(
+            "#\n-----BEGIN OpenVPN Static key V1-----\n{hex}-----END OpenVPN Static key V1-----\n"
+        );
         let k = Key2::from_static_pem(&pem).unwrap();
         assert_eq!(k.keys[1].cipher[0], 128);
         let (o, i) = k.directional(Some(1));
@@ -534,12 +637,18 @@ mod tests {
         let sid = [7u8; 8];
         let pkt = client.wrap(0x38, &sid, b"rest-of-packet");
         let (op, s, rest) = server.unwrap(&pkt).unwrap();
-        assert_eq!((op, s, rest.as_slice()), (0x38, sid, &b"rest-of-packet"[..]));
+        assert_eq!(
+            (op, s, rest.as_slice()),
+            (0x38, sid, &b"rest-of-packet"[..])
+        );
         let mut bad = pkt.clone();
         *bad.last_mut().unwrap() ^= 1;
         assert!(server.unwrap(&bad).is_err());
         // Same-direction key can't verify (proves the direction matters).
-        assert!(Wrap::tls_auth(&k, Some(1), "SHA256").unwrap().unwrap(&pkt).is_err());
+        assert!(Wrap::tls_auth(&k, Some(1), "SHA256")
+            .unwrap()
+            .unwrap(&pkt)
+            .is_err());
     }
 
     #[test]
@@ -551,7 +660,10 @@ mod tests {
         let pkt = client.wrap(0x20, &sid, b"\x00\x00\x00\x00\x01hello");
         assert_ne!(&pkt[pkt.len() - 5..], b"hello");
         let (op, s, rest) = server.unwrap(&pkt).unwrap();
-        assert_eq!((op, s, rest.as_slice()), (0x20, sid, &b"\x00\x00\x00\x00\x01hello"[..]));
+        assert_eq!(
+            (op, s, rest.as_slice()),
+            (0x20, sid, &b"\x00\x00\x00\x00\x01hello"[..])
+        );
     }
 
     #[test]
@@ -565,7 +677,10 @@ mod tests {
             assert_eq!(&pkt[..4], &hdr);
             assert_eq!(&pkt[4..8], &[0, 0, 0, 1]); // packet id 1
             assert_eq!(sv.decrypt(&pkt, 4, true).unwrap(), b"ip packet bytes");
-            assert!(sv.decrypt(&pkt, 4, true).is_err(), "{c}: replay must be rejected");
+            assert!(
+                sv.decrypt(&pkt, 4, true).is_err(),
+                "{c}: replay must be rejected"
+            );
             let mut t = cl.encrypt(&hdr, true, b"x").unwrap();
             t[0] ^= 1; // header is authenticated
             assert!(sv.decrypt(&t, 4, true).is_err());
@@ -577,8 +692,13 @@ mod tests {
         let k = key2_seq();
         let mut cl = DataCrypto::new(&k, "AES-256-CBC", "SHA256").unwrap();
         let mut sv = DataCrypto::new(&server_side(&k), "AES-256-CBC", "SHA256").unwrap();
-        let pkt = cl.encrypt(&[0x30], false, b"payload that spans more than one block").unwrap();
+        let pkt = cl
+            .encrypt(&[0x30], false, b"payload that spans more than one block")
+            .unwrap();
         assert_eq!(pkt.len(), 1 + 32 + 16 + 48);
-        assert_eq!(sv.decrypt(&pkt, 1, false).unwrap(), b"payload that spans more than one block");
+        assert_eq!(
+            sv.decrypt(&pkt, 1, false).unwrap(),
+            b"payload that spans more than one block"
+        );
     }
 }

@@ -27,19 +27,31 @@ pub fn build_sa_msg(session: &Ikev1Session, lifetime_secs: u32, auth_method: u16
         (IKE_ENC_AES_CBC, &[256u16, 128][..]),
         (IKE_ENC_3DES, &[0u16][..]),
     ] {
-        for &hash in &[IKE_HASH_SHA512, IKE_HASH_SHA384, IKE_HASH_SHA256, IKE_HASH_SHA1] {
+        for &hash in &[
+            IKE_HASH_SHA512,
+            IKE_HASH_SHA384,
+            IKE_HASH_SHA256,
+            IKE_HASH_SHA1,
+        ] {
             for &group in &[IKE_GROUP_MODP2048, IKE_GROUP_MODP1024] {
                 for &keylen in keylens {
                     let mut attributes = vec![
                         Attribute::short(IkeAttributeType::EncryptionAlgorithm.into(), enc),
                         Attribute::short(IkeAttributeType::HashAlgorithm.into(), hash),
                         Attribute::short(IkeAttributeType::GroupDescription.into(), group),
-                        Attribute::short(IkeAttributeType::AuthenticationMethod.into(), auth_method),
+                        Attribute::short(
+                            IkeAttributeType::AuthenticationMethod.into(),
+                            auth_method,
+                        ),
                         Attribute::short(IkeAttributeType::LifeType.into(), IKE_LIFE_SECONDS),
-                        Attribute::short(IkeAttributeType::LifeDuration.into(), lifetime_secs as u16),
+                        Attribute::short(
+                            IkeAttributeType::LifeDuration.into(),
+                            lifetime_secs as u16,
+                        ),
                     ];
                     if keylen != 0 {
-                        attributes.push(Attribute::short(IkeAttributeType::KeyLength.into(), keylen));
+                        attributes
+                            .push(Attribute::short(IkeAttributeType::KeyLength.into(), keylen));
                     }
                     transforms.push(Transform {
                         number: (transforms.len() + 1) as u8,
@@ -117,8 +129,12 @@ pub fn parse_chosen_suite(msg: &IsakmpMessage) -> Result<ChosenSuite, String> {
             .find(|a| a.attr_type == u16::from(IkeAttributeType::LifeDuration))
             .and_then(|a| match &a.value {
                 AttrValue::Short(v) => Some(*v as u32),
-                AttrValue::Long(b) if b.len() == 4 => Some(u32::from_be_bytes(b[..4].try_into().unwrap())),
-                AttrValue::Long(b) if b.len() == 2 => Some(u16::from_be_bytes(b[..2].try_into().unwrap()) as u32),
+                AttrValue::Long(b) if b.len() == 4 => {
+                    Some(u32::from_be_bytes(b[..4].try_into().unwrap()))
+                }
+                AttrValue::Long(b) if b.len() == 2 => {
+                    Some(u16::from_be_bytes(b[..2].try_into().unwrap()) as u32)
+                }
                 _ => None,
             })
     };
@@ -126,7 +142,9 @@ pub fn parse_chosen_suite(msg: &IsakmpMessage) -> Result<ChosenSuite, String> {
     let enc_alg = attr(IkeAttributeType::EncryptionAlgorithm).ok_or("no enc alg")?;
     let hash_alg = attr(IkeAttributeType::HashAlgorithm).ok_or("no hash alg")?;
     let group = attr(IkeAttributeType::GroupDescription).ok_or("no DH group")?;
-    let key_bits = attr(IkeAttributeType::KeyLength).unwrap_or(if enc_alg == IKE_ENC_3DES { 192 } else { 0 }) as usize;
+    let key_bits =
+        attr(IkeAttributeType::KeyLength).unwrap_or(if enc_alg == IKE_ENC_3DES { 192 } else { 0 })
+            as usize;
     let lifetime = life_attr().unwrap_or(28800);
 
     Ok(ChosenSuite {
@@ -288,7 +306,9 @@ pub fn build_cert_auth_payloads(
         data: leaf.subject_name().to_der().map_err(|e| e.to_string())?,
     };
     let hash_i = session.hash_id_i(&ident_body(&id));
-    let rsa = key.rsa().map_err(|e| format!("the certificate key is not RSA: {e}"))?;
+    let rsa = key
+        .rsa()
+        .map_err(|e| format!("the certificate key is not RSA: {e}"))?;
     let mut sig = vec![0u8; rsa.size() as usize];
     let n = rsa
         .private_encrypt(&hash_i, &mut sig, openssl::rsa::Padding::PKCS1)
@@ -366,12 +386,14 @@ pub fn decrypt_message(session: &mut Ikev1Session, raw: &[u8]) -> Result<IsakmpM
     // Every message after the key exchange is encrypted; one in clear could come
     // from anyone on the path.
     if !is_encrypted(raw) {
-        let notify = IsakmpMessage::parse_payloads(next_payload, body).ok().and_then(|ps| {
-            ps.into_iter().find_map(|p| match p {
-                Payload::Notification(n) => Some(n.message_type),
-                _ => None,
-            })
-        });
+        let notify = IsakmpMessage::parse_payloads(next_payload, body)
+            .ok()
+            .and_then(|ps| {
+                ps.into_iter().find_map(|p| match p {
+                    Payload::Notification(n) => Some(n.message_type),
+                    _ => None,
+                })
+            });
         return Err(match notify {
             Some(t) => format!("ignored an unencrypted message from the gateway's address (NOTIFY {t})"),
             None => format!("ignored an unencrypted message from the gateway's address (exchange {exchange_type})"),
@@ -521,12 +543,18 @@ pub fn build_om_request(
         .iter()
         .map(|t| Attribute::long(u16::from(*t), vec![0, 0, 0, 0]))
         .collect();
-    attrs.push(Attribute::long(u16::from(ConfigAttributeType::MacAddress), mac.to_vec()));
+    attrs.push(Attribute::long(
+        u16::from(ConfigAttributeType::MacAddress),
+        mac.to_vec(),
+    ));
     attrs.push(Attribute::long(
         u16::from(ConfigAttributeType::Ipv4Address),
         requested_ip.octets().to_vec(),
     ));
-    attrs.push(Attribute::long(u16::from(ConfigAttributeType::Ipv4Netmask), vec![0, 0, 0, 0]));
+    attrs.push(Attribute::long(
+        u16::from(ConfigAttributeType::Ipv4Netmask),
+        vec![0, 0, 0, 0],
+    ));
     let payloads = build_config_payloads(
         session,
         u8::from(AttributesPayloadType::Request),
@@ -579,11 +607,17 @@ pub fn build_quick_mode(
                             u16::from(EspAttributeType::LifeDuration),
                             lifetime_secs.to_be_bytes().to_vec(),
                         ),
-                        Attribute::short(u16::from(EspAttributeType::AuthenticationAlgorithm), auth),
+                        Attribute::short(
+                            u16::from(EspAttributeType::AuthenticationAlgorithm),
+                            auth,
+                        ),
                         Attribute::short(u16::from(EspAttributeType::EncapsulationMode), encap),
                     ];
                     if keylen != 0 {
-                        attributes.push(Attribute::short(u16::from(EspAttributeType::KeyLength), keylen));
+                        attributes.push(Attribute::short(
+                            u16::from(EspAttributeType::KeyLength),
+                            keylen,
+                        ));
                     }
                     transforms.push(Transform {
                         number: (transforms.len() + 1) as u8,
@@ -620,7 +654,11 @@ pub fn build_quick_mode(
         port: 0,
         data: vec![0u8; 8],
     });
-    let hash = make_hash(session, message_id, &[sa.clone(), nonce_p.clone(), idci.clone(), idcr.clone()]);
+    let hash = make_hash(
+        session,
+        message_id,
+        &[sa.clone(), nonce_p.clone(), idci.clone(), idcr.clone()],
+    );
     vec![Payload::Hash(hash), sa, nonce_p, idci, idcr]
 }
 
@@ -661,7 +699,11 @@ pub fn parse_esp_proposal(msg: &IsakmpMessage) -> Result<ChosenEsp, String> {
         .iter()
         .find(|a| a.attr_type == u16::from(EspAttributeType::LifeDuration))
         .and_then(|a| a.as_u32());
-    let lifetime_secs = if life_type == 1 { life_dur.unwrap_or(0) } else { 0 };
+    let lifetime_secs = if life_type == 1 {
+        life_dur.unwrap_or(0)
+    } else {
+        0
+    };
     let nonce_r = find_nonce(msg).ok_or("no nonce in QM2")?;
     Ok(ChosenEsp {
         gateway_spi,
@@ -675,7 +717,12 @@ pub fn parse_esp_proposal(msg: &IsakmpMessage) -> Result<ChosenEsp, String> {
 }
 
 /// Build Quick Mode msg 3 (ack): HASH(3) = prf(SKEYID_a, 0 | M-ID | Ni_b | Nr_b).
-pub fn build_qm_ack(session: &Ikev1Session, message_id: u32, nonce_i: &[u8], nonce_r: &[u8]) -> Vec<Payload> {
+pub fn build_qm_ack(
+    session: &Ikev1Session,
+    message_id: u32,
+    nonce_i: &[u8],
+    nonce_r: &[u8],
+) -> Vec<Payload> {
     let hash = session.prf(
         &session.skeyid_a,
         &[&[0u8], &message_id.to_be_bytes(), nonce_i, nonce_r],
@@ -710,13 +757,16 @@ mod tests {
 
     fn keyed_session() -> Ikev1Session {
         let mut gw = Ikev1Session::new();
-        gw.set_suite(IKE_GROUP_MODP2048, IKE_HASH_SHA256, IKE_ENC_AES_CBC, 256).unwrap();
+        gw.set_suite(IKE_GROUP_MODP2048, IKE_HASH_SHA256, IKE_ENC_AES_CBC, 256)
+            .unwrap();
         let mut s = Ikev1Session::new();
         s.responder_spi = 0x1122334455667788;
         let msg1 = build_sa_msg(&s, 28800, IKE_AUTH_RSA_SIG);
         s.set_sa_bytes(&sa_body(&msg1).unwrap());
-        s.set_suite(IKE_GROUP_MODP2048, IKE_HASH_SHA256, IKE_ENC_AES_CBC, 256).unwrap();
-        s.compute_keys(&gw.initiator_pubkey, &gw.initiator_nonce).unwrap();
+        s.set_suite(IKE_GROUP_MODP2048, IKE_HASH_SHA256, IKE_ENC_AES_CBC, 256)
+            .unwrap();
+        s.compute_keys(&gw.initiator_pubkey, &gw.initiator_nonce)
+            .unwrap();
         s
     }
 
@@ -730,7 +780,13 @@ mod tests {
             message_type: 24,
             data: vec![],
         });
-        let enc = encrypt_message(&mut s, u8::from(ExchangeType::Informational), 7, std::slice::from_ref(&notify)).unwrap();
+        let enc = encrypt_message(
+            &mut s,
+            u8::from(ExchangeType::Informational),
+            7,
+            std::slice::from_ref(&notify),
+        )
+        .unwrap();
         assert!(is_encrypted(&enc));
         let mut clear = enc[..ISAKMP_HEADER_LEN].to_vec();
         clear[19] &= !FLAG_ENCRYPTION;
@@ -745,9 +801,15 @@ mod tests {
         assert!(!is_encrypted(&clear[..10]));
     }
 
-    fn self_signed(cn: &str) -> (openssl::pkey::PKey<openssl::pkey::Private>, openssl::x509::X509) {
+    fn self_signed(
+        cn: &str,
+    ) -> (
+        openssl::pkey::PKey<openssl::pkey::Private>,
+        openssl::x509::X509,
+    ) {
         use openssl::x509::{X509NameBuilder, X509};
-        let key = openssl::pkey::PKey::from_rsa(openssl::rsa::Rsa::generate(2048).unwrap()).unwrap();
+        let key =
+            openssl::pkey::PKey::from_rsa(openssl::rsa::Rsa::generate(2048).unwrap()).unwrap();
         let mut n = X509NameBuilder::new().unwrap();
         n.append_entry_by_text("O", "example").unwrap();
         n.append_entry_by_text("CN", cn).unwrap();
@@ -757,9 +819,12 @@ mod tests {
         b.set_subject_name(&n).unwrap();
         b.set_issuer_name(&n).unwrap();
         b.set_pubkey(&key).unwrap();
-        b.set_not_before(&openssl::asn1::Asn1Time::days_from_now(0).unwrap()).unwrap();
-        b.set_not_after(&openssl::asn1::Asn1Time::days_from_now(1).unwrap()).unwrap();
-        b.sign(&key, openssl::hash::MessageDigest::sha256()).unwrap();
+        b.set_not_before(&openssl::asn1::Asn1Time::days_from_now(0).unwrap())
+            .unwrap();
+        b.set_not_after(&openssl::asn1::Asn1Time::days_from_now(1).unwrap())
+            .unwrap();
+        b.sign(&key, openssl::hash::MessageDigest::sha256())
+            .unwrap();
         (key, b.build())
     }
 
@@ -767,12 +832,22 @@ mod tests {
     fn rsa_sig_proposal_and_cert_requests() {
         let s = keyed_session();
         let msg1 = build_sa_msg(&s, 28800, IKE_AUTH_RSA_SIG);
-        let Payload::Sa(sa) = &msg1.payloads[0] else { panic!() };
+        let Payload::Sa(sa) = &msg1.payloads[0] else {
+            panic!()
+        };
         for t in &sa.proposals[0].transforms {
-            let am = t.attributes.iter().find(|a| a.attr_type == u16::from(IkeAttributeType::AuthenticationMethod));
+            let am = t
+                .attributes
+                .iter()
+                .find(|a| a.attr_type == u16::from(IkeAttributeType::AuthenticationMethod));
             assert_eq!(am.and_then(|a| a.as_u16()), Some(IKE_AUTH_RSA_SIG));
         }
-        let msg3 = build_ke(&s, Ipv4Addr::new(192, 0, 2, 1), Ipv4Addr::new(203, 0, 113, 1), &[vec![0x30, 0], vec![]]);
+        let msg3 = build_ke(
+            &s,
+            Ipv4Addr::new(192, 0, 2, 1),
+            Ipv4Addr::new(203, 0, 113, 1),
+            &[vec![0x30, 0], vec![]],
+        );
         let crs: Vec<&Vec<u8>> = msg3
             .payloads
             .iter()
@@ -791,22 +866,42 @@ mod tests {
         let s = keyed_session();
         let (key, cert) = self_signed("alice");
         let (_, ca) = self_signed("ca");
-        let pl = build_cert_auth_payloads(&s, &auth_blob("vpn_cert", Some("abc")), &key, &[cert.clone(), ca.clone()]).unwrap();
+        let pl = build_cert_auth_payloads(
+            &s,
+            &auth_blob("vpn_cert", Some("abc")),
+            &key,
+            &[cert.clone(), ca.clone()],
+        )
+        .unwrap();
         let kinds: Vec<u8> = pl.iter().map(|p| p.payload_type()).collect();
         assert_eq!(kinds, [5, 6, 6, 9, 11]);
-        let Payload::Identification(id) = &pl[0] else { panic!() };
+        let Payload::Identification(id) = &pl[0] else {
+            panic!()
+        };
         assert_eq!(id.id_type, 9);
         assert_eq!(id.data, cert.subject_name().to_der().unwrap());
-        let Payload::Certificate(c0) = &pl[1] else { panic!() };
+        let Payload::Certificate(c0) = &pl[1] else {
+            panic!()
+        };
         assert_eq!(c0[0], 4);
         assert_eq!(&c0[1..], cert.to_der().unwrap().as_slice());
-        let Payload::Signature(sig) = &pl[3] else { panic!() };
+        let Payload::Signature(sig) = &pl[3] else {
+            panic!()
+        };
         let rsa = cert.public_key().unwrap().rsa().unwrap();
         let mut out = vec![0u8; rsa.size() as usize];
-        let n = rsa.public_decrypt(sig, &mut out, openssl::rsa::Padding::PKCS1).unwrap();
+        let n = rsa
+            .public_decrypt(sig, &mut out, openssl::rsa::Padding::PKCS1)
+            .unwrap();
         assert_eq!(&out[..n], s.hash_id_i(&ident_body(id)).as_slice());
-        let Payload::Notification(nt) = &pl[4] else { panic!() };
+        let Payload::Notification(nt) = &pl[4] else {
+            panic!()
+        };
         let blob = String::from_utf8(nt.data.clone()).unwrap();
-        assert!(blob.contains(":selected_realm_id (vpn_cert)") && blob.contains(":secondary_realm_hash (abc)"), "{blob}");
+        assert!(
+            blob.contains(":selected_realm_id (vpn_cert)")
+                && blob.contains(":secondary_realm_hash (abc)"),
+            "{blob}"
+        );
     }
 }

@@ -12,9 +12,9 @@
 use openssl::{
     hash::MessageDigest,
     pkey::PKey,
+    rand::rand_bytes,
     sign::Signer,
     symm::{Cipher, Crypter, Mode},
-    rand::rand_bytes,
 };
 
 use super::model::*;
@@ -48,7 +48,12 @@ pub struct Ikev2Crypto {
 }
 
 impl Ikev2Crypto {
-    pub fn new(prf_id: u16, integ_id: u16, encr_id: u16, encr_key_bits: usize) -> Result<Self, String> {
+    pub fn new(
+        prf_id: u16,
+        integ_id: u16,
+        encr_id: u16,
+        encr_key_bits: usize,
+    ) -> Result<Self, String> {
         let prf = match prf_id {
             PRF_HMAC_SHA1 => MessageDigest::sha1(),
             PRF_HMAC_SHA256 => MessageDigest::sha256(),
@@ -70,7 +75,13 @@ impl Ikev2Crypto {
             (ENCR_3DES, _) => (Cipher::des_ede3_cbc(), 24),
             (a, k) => return Err(format!("unsupported IKEv2 cipher {a}/{k}")),
         };
-        Ok(Ikev2Crypto { prf, integ, integ_icv_len, cipher, enc_key_len })
+        Ok(Ikev2Crypto {
+            prf,
+            integ,
+            integ_icv_len,
+            cipher,
+            enc_key_len,
+        })
     }
 
     pub fn prf_len(&self) -> usize {
@@ -271,7 +282,13 @@ impl Ikev2Crypto {
     /// CHILD SA key material (RFC 7296 §2.17, no PFS): KEYMAT = prf+(SK_d, Ni | Nr),
     /// split into the initiator→responder keys then responder→initiator keys, each
     /// `enc_key || integ_key` for the negotiated ESP transforms.
-    pub fn child_keymat(&self, sk_d: &[u8], ni: &[u8], nr: &[u8], per_dir: usize) -> (Vec<u8>, Vec<u8>) {
+    pub fn child_keymat(
+        &self,
+        sk_d: &[u8],
+        ni: &[u8],
+        nr: &[u8],
+        per_dir: usize,
+    ) -> (Vec<u8>, Vec<u8>) {
         let mut seed = Vec::with_capacity(ni.len() + nr.len());
         seed.extend_from_slice(ni);
         seed.extend_from_slice(nr);
@@ -285,7 +302,12 @@ impl Ikev2Crypto {
 pub fn dh_new(group: u16) -> Result<IkeCrypto, String> {
     // IkeCrypto bundles a digest+cipher we don't use here; pass SHA256/AES256 as
     // inert placeholders. Only public_key/shared_secret are called.
-    IkeCrypto::new(group, IKE_HASH_SHA256_PLACEHOLDER, IKE_ENC_AES_CBC_PLACEHOLDER, 256)
+    IkeCrypto::new(
+        group,
+        IKE_HASH_SHA256_PLACEHOLDER,
+        IKE_ENC_AES_CBC_PLACEHOLDER,
+        256,
+    )
 }
 
 // The numeric hash/enc ids IkeCrypto expects (from ike::model); duplicated as

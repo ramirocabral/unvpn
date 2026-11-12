@@ -14,10 +14,10 @@ mod ccc;
 mod connect;
 mod control;
 mod cpcert;
+mod f5;
 mod forti;
 mod forti_ipsec;
 mod gnutls;
-mod f5;
 mod gp;
 mod ike;
 mod ivanti;
@@ -124,7 +124,10 @@ fn cmd_tunnel(args: &[String]) {
                 Ok(p) => {
                     println!("# {} reply:\n{}\n", p.name, p.body.pretty(0));
                     if p.name == "hello_reply" {
-                        let ip = p.path(&["OM", "ipaddr"]).and_then(|v| v.text()).unwrap_or_default();
+                        let ip = p
+                            .path(&["OM", "ipaddr"])
+                            .and_then(|v| v.text())
+                            .unwrap_or_default();
                         let subnet = p
                             .path(&["optional", "subnet"])
                             .and_then(|v| v.text())
@@ -137,7 +140,10 @@ fn cmd_tunnel(args: &[String]) {
                 Err(e) => println!("(could not parse control reply: {e})\n{s}"),
             }
         }
-        Ok((2, data)) => println!("# unexpected DATA packet ({} bytes) during handshake", data.len()),
+        Ok((2, data)) => println!(
+            "# unexpected DATA packet ({} bytes) during handshake",
+            data.len()
+        ),
         Ok((t, _)) => println!("# unexpected packet type {t}"),
         Err(e) => {
             eprintln!("read failed: {e}");
@@ -217,7 +223,11 @@ fn ip_checksum(header: &[u8]) -> u16 {
 /// gateway on port 18234, carried *inside* the tunnel. Check Point tears a tunnel
 /// down after a few minutes of not seeing these, even if ESP data is flowing —
 /// this is what kept the tunnel from surviving past ~20 min.
-fn ipsec_keepalive_packet(src: std::net::Ipv4Addr, dst: std::net::Ipv4Addr, counter: u32) -> Vec<u8> {
+fn ipsec_keepalive_packet(
+    src: std::net::Ipv4Addr,
+    dst: std::net::Ipv4Addr,
+    counter: u32,
+) -> Vec<u8> {
     let mut payload = [0u8; 12];
     payload[0..4].copy_from_slice(&counter.to_be_bytes());
     payload[4..6].copy_from_slice(&3u16.to_be_bytes());
@@ -271,13 +281,22 @@ fn run_tunnel(
     let prefix = tun::mask_to_prefix(om_mask);
     let (tun_rd, tun_name) = tun::open_tun("unvpn0")?;
     let tun_wr = tun_rd.try_clone().map_err(|e| e.to_string())?;
-    tun::ip(&["addr", "add", &format!("{om_ip}/{prefix}"), "dev", &tun_name])?;
+    tun::ip(&[
+        "addr",
+        "add",
+        &format!("{om_ip}/{prefix}"),
+        "dev",
+        &tun_name,
+    ])?;
     tun::ip(&["link", "set", "dev", &tun_name, "up", "mtu", "1400"])?;
     crate::netmon::ignore_iface(&tun_name);
     println!("# tun {tun_name} up — {om_ip}/{prefix}");
 
     let _ = sock.send(&[0xff]); // NAT-T keepalive
-    println!("# ESP on socket {:?} (same NAT-T port as IKE)", sock.local_addr().ok());
+    println!(
+        "# ESP on socket {:?} (same NAT-T port as IKE)",
+        sock.local_addr().ok()
+    );
 
     // From here every exit path must undo what we change; a disconnect asked for
     // while connecting means we touch no routes or DNS at all.
@@ -295,7 +314,9 @@ fn run_tunnel(
     });
     let mut _restore = sysnet::NetRestore::default();
     match routes {
-        None => out!("# --no-routes: installing no routes/DNS (reach hosts with `ping -I {tun_name}`)"),
+        None => {
+            out!("# --no-routes: installing no routes/DNS (reach hosts with `ping -I {tun_name}`)")
+        }
         Some(nets) => {
             _restore.routes = cp_setup_routes(gw_v4, &tun_name, &nets);
             _restore.dns = sysnet::set_dns(&sysnet::tunnelled_dns(&dns, &tun_name), &domains);
@@ -312,13 +333,15 @@ fn run_tunnel(
     // IKE messages (NAT-T marker 0x00000000) arriving on the shared socket are
     // routed here for the control thread (rekey). Only wired up when we hold the
     // IKE session (the `--connect` path; the tunnel-up debug path can't rekey).
-    let (ike_tx, ike_rx): (Option<mpsc::Sender<Vec<u8>>>, Option<mpsc::Receiver<Vec<u8>>>) =
-        if session.is_some() {
-            let (t, r) = mpsc::channel();
-            (Some(t), Some(r))
-        } else {
-            (None, None)
-        };
+    let (ike_tx, ike_rx): (
+        Option<mpsc::Sender<Vec<u8>>>,
+        Option<mpsc::Receiver<Vec<u8>>>,
+    ) = if session.is_some() {
+        let (t, r) = mpsc::channel();
+        (Some(t), Some(r))
+    } else {
+        (None, None)
+    };
 
     let tin = Arc::new(AtomicU64::new(0));
     let eout = Arc::new(AtomicU64::new(0));
@@ -349,7 +372,13 @@ fn run_tunnel(
         });
     }
     {
-        let (sa, s, c1, c2, ce) = (esp.clone(), sock.clone(), uin.clone(), tout.clone(), derr.clone());
+        let (sa, s, c1, c2, ce) = (
+            esp.clone(),
+            sock.clone(),
+            uin.clone(),
+            tout.clone(),
+            derr.clone(),
+        );
         let itx = ike_tx;
         let mut wr = tun_wr;
         std::thread::spawn(move || {
@@ -414,7 +443,9 @@ fn run_tunnel(
     if let (Some(session), Some(ike_rx)) = (session, ike_rx) {
         let (esp_c, sock_c, uin_c) = (esp.clone(), sock.clone(), uin.clone());
         std::thread::spawn(move || {
-            ike_control_loop(session, sock_c, esp_c, om_ip, ike_rx, rekey_secs, lease_secs, mac, uin_c)
+            ike_control_loop(
+                session, sock_c, esp_c, om_ip, ike_rx, rekey_secs, lease_secs, mac, uin_c,
+            )
         });
     }
 
@@ -448,13 +479,19 @@ const CP_FALLBACK_ROUTE: (std::net::Ipv4Addr, u8) = (std::net::Ipv4Addr::new(10,
 
 /// The site's encryption domain as prefixes, from a CCC `ClientSettings` request
 /// on the session Office Mode handed out.
-fn fetch_encryption_domain(host: &str, session_id: &str) -> Result<Vec<(std::net::Ipv4Addr, u8)>, String> {
+fn fetch_encryption_domain(
+    host: &str,
+    session_id: &str,
+) -> Result<Vec<(std::net::Ipv4Addr, u8)>, String> {
     let body = ccc::client_settings(new_request_id(), session_id).serialize();
     let raw = post(host, &http_request(host, CCC_PATH, &body))?;
-    let pkt = ccc::parse(split_http_body(&raw)).map_err(|e| format!("bad ClientSettings answer: {e}"))?;
+    let pkt =
+        ccc::parse(split_http_body(&raw)).map_err(|e| format!("bad ClientSettings answer: {e}"))?;
     let ranges = ccc::encryption_domain(&pkt)?;
-    let mut nets: Vec<(std::net::Ipv4Addr, u8)> =
-        ranges.into_iter().flat_map(|(f, t)| tun::range_to_prefixes(f, t)).collect();
+    let mut nets: Vec<(std::net::Ipv4Addr, u8)> = ranges
+        .into_iter()
+        .flat_map(|(f, t)| tun::range_to_prefixes(f, t))
+        .collect();
     nets.sort();
     nets.dedup();
     Ok(nets)
@@ -468,8 +505,16 @@ fn cp_routes(host: &str, session_id: Option<&str>) -> Vec<(std::net::Ipv4Addr, u
     };
     match got {
         Ok(nets) if !nets.is_empty() => {
-            let shown: Vec<String> = nets.iter().take(8).map(|(n, l)| format!("{n}/{l}")).collect();
-            let more = if nets.len() > 8 { format!(" (+{} more)", nets.len() - 8) } else { String::new() };
+            let shown: Vec<String> = nets
+                .iter()
+                .take(8)
+                .map(|(n, l)| format!("{n}/{l}"))
+                .collect();
+            let more = if nets.len() > 8 {
+                format!(" (+{} more)", nets.len() - 8)
+            } else {
+                String::new()
+            };
             out!("# encryption domain: {}{more}", shown.join(" "));
             nets
         }
@@ -480,14 +525,21 @@ fn cp_routes(host: &str, session_id: Option<&str>) -> Vec<(std::net::Ipv4Addr, u
 
 fn cp_fallback(why: &str) -> Vec<(std::net::Ipv4Addr, u8)> {
     let (n, l) = CP_FALLBACK_ROUTE;
-    out!("# encryption domain unavailable ({}) — routing {n}/{l} into the tunnel", sysnet::one_line(why));
+    out!(
+        "# encryption domain unavailable ({}) — routing {n}/{l} into the tunnel",
+        sysnet::one_line(why)
+    );
     vec![CP_FALLBACK_ROUTE]
 }
 
 /// Pin the gateway to its pre-VPN path, then route `nets` into `tun` — one
 /// `ip -batch`. Returns the `route del` lines for teardown, minus routes that
 /// already existed. A `/0` goes in as 0/1 + 128/1 so the real default stays.
-fn cp_setup_routes(gw: Option<std::net::Ipv4Addr>, tun: &str, nets: &[(std::net::Ipv4Addr, u8)]) -> Vec<String> {
+fn cp_setup_routes(
+    gw: Option<std::net::Ipv4Addr>,
+    tun: &str,
+    nets: &[(std::net::Ipv4Addr, u8)],
+) -> Vec<String> {
     let mut add: Vec<String> = Vec::new();
     let mut del: Vec<String> = Vec::new();
     let mut pair = |net: String, suffix: &str| {
@@ -522,9 +574,16 @@ fn cp_setup_routes(gw: Option<std::net::Ipv4Addr>, tun: &str, nets: &[(std::net:
     }
     out!("# {} route(s) via {tun}", nets.len());
     if !failed.is_empty() {
-        out!("# {} route(s) already existed — not ours, kept on disconnect", failed.len());
+        out!(
+            "# {} route(s) already existed — not ours, kept on disconnect",
+            failed.len()
+        );
     }
-    del.into_iter().enumerate().filter(|(i, _)| !failed.contains(i)).map(|(_, d)| d).collect()
+    del.into_iter()
+        .enumerate()
+        .filter(|(i, _)| !failed.contains(i))
+        .map(|(_, d)| d)
+        .collect()
 }
 
 fn rekey_interval(lifetime_secs: u32) -> std::time::Duration {
@@ -535,7 +594,11 @@ fn rekey_interval(lifetime_secs: u32) -> std::time::Duration {
     {
         return Duration::from_secs(n.max(20));
     }
-    let base = if lifetime_secs > 0 { lifetime_secs as u64 } else { 1200 };
+    let base = if lifetime_secs > 0 {
+        lifetime_secs as u64
+    } else {
+        1200
+    };
     let at = (base * 85 / 100).min(base.saturating_sub(60)).max(60);
     Duration::from_secs(at)
 }
@@ -584,7 +647,9 @@ fn ike_control_loop(
     println!(
         "# IKE control up — ESP lifetime {lifetime_secs}s (rekey {}s), OM lease {lease_secs}s{}",
         esp_interval.as_secs(),
-        lease_next.map(|_| format!(" (renew {}s)", lease_renew_at(lease_secs).as_secs())).unwrap_or_default()
+        lease_next
+            .map(|_| format!(" (renew {}s)", lease_renew_at(lease_secs).as_secs()))
+            .unwrap_or_default()
     );
 
     loop {
@@ -611,7 +676,10 @@ fn ike_control_loop(
                         reported = true;
                     }
                 }
-                None => out!("# no data from the gateway for {}s — probing", last_progress.elapsed().as_secs()),
+                None => out!(
+                    "# no data from the gateway for {}s — probing",
+                    last_progress.elapsed().as_secs()
+                ),
             }
             match do_rekey(&mut session, &sock, &esp, om_ip, &ike_rx) {
                 Ok((si, so, life)) => {
@@ -631,7 +699,9 @@ fn ike_control_loop(
                     recover_fails += 1;
                     out!("# recovery attempt {recover_fails}/{MAX_RECOVER_FAILS} failed: {e}");
                     if recover_fails >= MAX_RECOVER_FAILS {
-                        out!("# giving up — the IKE session is gone (reconnect to re-authenticate)");
+                        out!(
+                            "# giving up — the IKE session is gone (reconnect to re-authenticate)"
+                        );
                         TUNNEL_LOST.store(true, Ordering::SeqCst);
                         TUNNEL_STOP.store(true, Ordering::SeqCst);
                         break;
@@ -650,7 +720,10 @@ fn ike_control_loop(
         match ike_rx.recv_timeout(wait) {
             Ok(raw) => {
                 if raw.len() >= 20 {
-                    println!("# IKE control: gateway sent IKE exchange {} (ignored)", raw[18]);
+                    println!(
+                        "# IKE control: gateway sent IKE exchange {} (ignored)",
+                        raw[18]
+                    );
                 }
             }
             Err(RecvTimeoutError::Timeout) => {
@@ -685,7 +758,10 @@ fn ike_control_loop(
                                 lifetime_secs = life;
                                 esp_interval = rekey_interval(lifetime_secs);
                             }
-                            println!("# ESP SA rekeyed (spi_in={si:#010x} spi_out={so:#010x}, next {}s)", esp_interval.as_secs());
+                            println!(
+                                "# ESP SA rekeyed (spi_in={si:#010x} spi_out={so:#010x}, next {}s)",
+                                esp_interval.as_secs()
+                            );
                         }
                         Err(e) => println!("# warning: ESP rekey failed: {e} — keeping current SA"),
                     }
@@ -712,7 +788,12 @@ fn do_lease_renew(
     use std::time::{Duration, Instant};
 
     let (om_mid, _id, om_pl) = ike::service::build_om_request(session, mac, om_ip);
-    let msg = ike::service::encrypt_message(session, u8::from(ExchangeType::Transaction), om_mid, &om_pl)?;
+    let msg = ike::service::encrypt_message(
+        session,
+        u8::from(ExchangeType::Transaction),
+        om_mid,
+        &om_pl,
+    )?;
 
     let mut reply = None;
     'retx: for _ in 0..5u32 {
@@ -748,7 +829,9 @@ fn do_lease_renew(
     };
     let lease = ike::service::get_long_attr(&oma, ConfigAttributeType::CccVariableLeaseTime)
         .and_then(to_secs)
-        .or_else(|| ike::service::get_long_attr(&oma, ConfigAttributeType::AddressExpiry).and_then(to_secs))
+        .or_else(|| {
+            ike::service::get_long_attr(&oma, ConfigAttributeType::AddressExpiry).and_then(to_secs)
+        })
         .unwrap_or(0);
     Ok(lease)
 }
@@ -776,7 +859,8 @@ fn do_rekey(
     let qm_nonce = ike::crypto::random(32);
     let qm_mid = ike::crypto::random_u32();
     let qm1 = ike::service::build_quick_mode(session, our_spi, &qm_nonce, om_ip, qm_mid, 3600);
-    let qm1_msg = ike::service::encrypt_message(session, u8::from(ExchangeType::Quick), qm_mid, &qm1)?;
+    let qm1_msg =
+        ike::service::encrypt_message(session, u8::from(ExchangeType::Quick), qm_mid, &qm1)?;
     // (Re)transmit QM1 until QM2 for our message-id arrives (the gateway can drop
     // the first one); skip retransmits / unsolicited informationals.
     use std::sync::mpsc::RecvTimeoutError;
@@ -811,15 +895,27 @@ fn do_rekey(
     }
     let chosen = ike::service::parse_esp_proposal(&qm2)?;
     let qm3 = ike::service::build_qm_ack(session, qm_mid, &qm_nonce, &chosen.nonce_r);
-    send_natt(sock, &ike::service::encrypt_message(session, u8::from(ExchangeType::Quick), qm_mid, &qm3)?)?;
+    send_natt(
+        sock,
+        &ike::service::encrypt_message(session, u8::from(ExchangeType::Quick), qm_mid, &qm3)?,
+    )?;
 
-    let enc_len = if chosen.key_bits > 0 { chosen.key_bits / 8 } else { 24 };
+    let enc_len = if chosen.key_bits > 0 {
+        chosen.key_bits / 8
+    } else {
+        24
+    };
     let auth_len = match chosen.auth_alg {
         a if a == ike::model::ESP_AUTH_HMAC_SHA96 || a == ike::model::ESP_AUTH_HMAC_SHA160 => 20,
         _ => 32,
     };
     let km_in = session.gen_esp_keymat(our_spi, &qm_nonce, &chosen.nonce_r, enc_len + auth_len);
-    let km_out = session.gen_esp_keymat(chosen.gateway_spi, &qm_nonce, &chosen.nonce_r, enc_len + auth_len);
+    let km_out = session.gen_esp_keymat(
+        chosen.gateway_spi,
+        &qm_nonce,
+        &chosen.nonce_r,
+        enc_len + auth_len,
+    );
     let new_sa = std::sync::Arc::new(ike::esp::EspSa::new(
         chosen.transform_id,
         chosen.auth_alg,
@@ -856,7 +952,11 @@ fn save_session_file(
     dns: &[std::net::Ipv4Addr],
     domains: &str,
 ) -> Result<(), String> {
-    let dns_str = dns.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(",");
+    let dns_str = dns
+        .iter()
+        .map(|d| d.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
     let data = format!(
         "gateway={host}\nom_ip={om_ip}\nom_mask={om_mask}\ntransform_id={}\nauth_alg={}\nkey_bits={}\nour_spi={}\ngw_spi={}\ndns={dns_str}\ndomains={domains}\nkm_in={}\nkm_out={}\n",
         esp.transform_id,
@@ -897,11 +997,14 @@ fn cmd_tunnel_up(args: &[String]) {
                 m.insert(k.to_string(), v.to_string());
             }
         }
-        let get = |k: &str| -> Result<String, String> { m.get(k).cloned().ok_or(format!("missing {k}")) };
+        let get =
+            |k: &str| -> Result<String, String> { m.get(k).cloned().ok_or(format!("missing {k}")) };
         let host = get("gateway")?;
         let om_ip: std::net::Ipv4Addr = get("om_ip")?.parse().map_err(|_| "bad om_ip")?;
         let om_mask: std::net::Ipv4Addr = get("om_mask")?.parse().map_err(|_| "bad om_mask")?;
-        let transform_id: u8 = get("transform_id")?.parse().map_err(|_| "bad transform_id")?;
+        let transform_id: u8 = get("transform_id")?
+            .parse()
+            .map_err(|_| "bad transform_id")?;
         let auth_alg: u16 = get("auth_alg")?.parse().map_err(|_| "bad auth_alg")?;
         let key_bits: usize = get("key_bits")?.parse().map_err(|_| "bad key_bits")?;
         let our_spi: u32 = get("our_spi")?.parse().map_err(|_| "bad our_spi")?;
@@ -925,9 +1028,23 @@ fn cmd_tunnel_up(args: &[String]) {
         println!(
             "# loaded session: gw {host}, OM {om_ip}/{om_mask}, transform {transform_id} auth {auth_alg} our_spi {our_spi:#010x} gw_spi {gw_spi:#010x}"
         );
-        let sock = std::sync::Arc::new(std::net::UdpSocket::bind("0.0.0.0:0").map_err(|e| e.to_string())?);
-        sock.connect((host.as_str(), 4500)).map_err(|e| e.to_string())?;
-        run_tunnel(om_ip, om_mask, esp_sa, sock, dns, domains, 0, 0, Vec::new(), None, Some(vec![CP_FALLBACK_ROUTE]))
+        let sock =
+            std::sync::Arc::new(std::net::UdpSocket::bind("0.0.0.0:0").map_err(|e| e.to_string())?);
+        sock.connect((host.as_str(), 4500))
+            .map_err(|e| e.to_string())?;
+        run_tunnel(
+            om_ip,
+            om_mask,
+            esp_sa,
+            sock,
+            dns,
+            domains,
+            0,
+            0,
+            Vec::new(),
+            None,
+            Some(vec![CP_FALLBACK_ROUTE]),
+        )
     };
     if let Err(e) = run() {
         report::fail("tunnel-up", &e);
@@ -945,8 +1062,13 @@ struct CertLogin {
 }
 
 /// Open the certificate file (password from stdin) and pick the login option.
-fn prepare_cert_login(host: &str, path: &str, wanted_realm: Option<&str>) -> Result<CertLogin, String> {
-    let pw = anyconnect::read_secret("Certificate password: ").ok_or("no certificate password given")?;
+fn prepare_cert_login(
+    host: &str,
+    path: &str,
+    wanted_realm: Option<&str>,
+) -> Result<CertLogin, String> {
+    let pw =
+        anyconnect::read_secret("Certificate password: ").ok_or("no certificate password given")?;
     let id = cpcert::p12::load(path, &pw)?;
     let subject = cpcert::p12::dn_string(id.cert.subject_name());
     let common_name = id
@@ -958,9 +1080,15 @@ fn prepare_cert_login(host: &str, path: &str, wanted_realm: Option<&str>) -> Res
         .unwrap_or_default();
     let now = openssl::asn1::Asn1Time::days_from_now(0).map_err(|e| e.to_string())?;
     if id.cert.not_after() < now {
-        println!("# warning: the certificate expired on {}", id.cert.not_after());
+        println!(
+            "# warning: the certificate expired on {}",
+            id.cert.not_after()
+        );
     }
-    println!("# certificate: {subject} (valid until {})", id.cert.not_after());
+    println!(
+        "# certificate: {subject} (valid until {})",
+        id.cert.not_after()
+    );
 
     let info = match gateway_hello(host) {
         Ok(p) => cpcert::GatewayInfo::from_hello(&p),
@@ -974,7 +1102,12 @@ fn prepare_cert_login(host: &str, path: &str, wanted_realm: Option<&str>) -> Res
         Some(r) if info.login_options.is_empty() => (r.to_string(), None),
         w => {
             let o = info.certificate_option(w)?;
-            println!("# login option: {} \"{}\" [{}]", o.id, o.display_name, o.factors.join(" + "));
+            println!(
+                "# login option: {} \"{}\" [{}]",
+                o.id,
+                o.display_name,
+                o.factors.join(" + ")
+            );
             (o.id, Some(o.secondary_realm_hash).filter(|h| !h.is_empty()))
         }
     };
@@ -986,7 +1119,13 @@ fn prepare_cert_login(host: &str, path: &str, wanted_realm: Option<&str>) -> Res
     }
     let mut chain = vec![id.cert];
     chain.extend(id.chain);
-    Ok(CertLogin { key: id.key, chain, realm, secondary_realm_hash, common_name })
+    Ok(CertLogin {
+        key: id.key,
+        chain,
+        realm,
+        secondary_realm_hash,
+        common_name,
+    })
 }
 
 fn cmd_ike(args: &[String]) {
@@ -1043,7 +1182,11 @@ fn cmd_ike(args: &[String]) {
         },
         None => None,
     };
-    let realm = cert_login.as_ref().map(|c| c.realm.clone()).or(realm).unwrap_or_else(|| "vpn".to_string());
+    let realm = cert_login
+        .as_ref()
+        .map(|c| c.realm.clone())
+        .or(realm)
+        .unwrap_or_else(|| "vpn".to_string());
     if user.is_empty() {
         if let Some(c) = &cert_login {
             user = c.common_name.clone();
@@ -1080,21 +1223,36 @@ fn cmd_ike(args: &[String]) {
             let mut s = format!("SA rejected: {e}");
             for p in &m2.payloads {
                 if let Payload::Notification(n) = p {
-                    s.push_str(&format!("\n  NOTIFY {}: {}", n.message_type, String::from_utf8_lossy(&n.data)));
+                    s.push_str(&format!(
+                        "\n  NOTIFY {}: {}",
+                        n.message_type,
+                        String::from_utf8_lossy(&n.data)
+                    ));
                 }
             }
             s
         })?;
         println!(
             "# msg2 SA: enc={} hash={} group={} key_bits={} lifetime={}s responder_spi={:#018x}",
-            suite.enc_alg, suite.hash_alg, suite.group, suite.key_bits, suite.lifetime, suite.responder_spi
+            suite.enc_alg,
+            suite.hash_alg,
+            suite.group,
+            suite.key_bits,
+            suite.lifetime,
+            suite.responder_spi
         );
         session.responder_spi = suite.responder_spi;
         session.set_suite(suite.group, suite.hash_alg, suite.enc_alg, suite.key_bits)?;
 
         // msg 3/4 — KE + Nonce + NAT-D.
         let cert_requests: Vec<Vec<u8>> = match &cert_login {
-            Some(c) => vec![c.chain[0].issuer_name().to_der().map_err(|e| e.to_string())?, Vec::new()],
+            Some(c) => vec![
+                c.chain[0]
+                    .issuer_name()
+                    .to_der()
+                    .map_err(|e| e.to_string())?,
+                Vec::new(),
+            ],
             None if probe_sig => vec![Vec::new()],
             None => Vec::new(),
         };
@@ -1120,7 +1278,10 @@ fn cmd_ike(args: &[String]) {
                         .and_then(|b| openssl::x509::X509Name::from_der(b).ok())
                         .map(|n| cpcert::p12::dn_string(&n))
                         .unwrap_or_else(|| "(any)".into());
-                    println!("# gateway asks for a certificate (encoding {}) from: {dn}", d.first().copied().unwrap_or(0));
+                    println!(
+                        "# gateway asks for a certificate (encoding {}) from: {dn}",
+                        d.first().copied().unwrap_or(0)
+                    );
                 }
             }
             println!("# the gateway accepts certificate (RSA signature) authentication; stopping before any identity is sent");
@@ -1166,12 +1327,17 @@ fn cmd_ike(args: &[String]) {
         let hash_r = session.hash_id_r(&id_r);
         // The gateway signs HASH_R with its certificate's key in both the hybrid and
         // the certificate login; HASH_R alone proves nothing about who answered.
-        let sig = service::find_signature(&m6).ok_or("the gateway sent no signature (SIG_R) in msg6")?;
-        let gw_der = service::find_certificates(&m6).into_iter().next().ok_or("the gateway sent no certificate in msg6")?;
+        let sig =
+            service::find_signature(&m6).ok_or("the gateway sent no signature (SIG_R) in msg6")?;
+        let gw_der = service::find_certificates(&m6)
+            .into_iter()
+            .next()
+            .ok_or("the gateway sent no certificate in msg6")?;
         session
             .verify_rsa_signature(&hash_r, &sig, &gw_der)
             .map_err(|e| format!("the gateway's signature (SIG_R) does not verify: {e}"))?;
-        let gw_cert = openssl::x509::X509::from_der(&gw_der).map_err(|e| format!("gateway certificate: {e}"))?;
+        let gw_cert = openssl::x509::X509::from_der(&gw_der)
+            .map_err(|e| format!("gateway certificate: {e}"))?;
         // A certificate login carries the CA that issued the user's certificate; a
         // gateway certificate from that CA needs no other trust.
         let by_users_ca = cert_login
@@ -1183,7 +1349,11 @@ fn cmd_ike(args: &[String]) {
         if by_users_ca {
             net::trust::note_verified(&ike_endpoint, &gw_der);
         } else {
-            net::trust::accept(&ike_endpoint, &gw_cert, "IKE certificate, not checked against any CA")?;
+            net::trust::accept(
+                &ike_endpoint,
+                &gw_cert,
+                "IKE certificate, not checked against any CA",
+            )?;
         }
         println!("# Phase 1 COMPLETE — gateway SIG_R verified against its certificate.");
 
@@ -1215,7 +1385,8 @@ fn cmd_ike(args: &[String]) {
         let mut cfg_mid = 0u32;
         if let Some(mut req) = first {
             loop {
-                let attrs = service::find_attributes(&req).ok_or("expected config attributes after Phase 1")?;
+                let attrs = service::find_attributes(&req)
+                    .ok_or("expected config attributes after Phase 1")?;
                 let message_id = req.message_id;
                 cfg_mid = message_id;
                 let identifier = attrs.identifier;
@@ -1255,10 +1426,18 @@ fn cmd_ike(args: &[String]) {
                         user.clone()
                     }
                     _ if cert_login.is_some() => {
-                        println!("# gateway challenge [{:?}]: {}", ctype, sysnet::one_line(&prompt));
+                        println!(
+                            "# gateway challenge [{:?}]: {}",
+                            ctype,
+                            sysnet::one_line(&prompt)
+                        );
                         // The text may be followed by its structured form after a NUL.
                         let text = prompt.split(" | ").next().unwrap_or("").trim();
-                        let label = if text.is_empty() { "Verification code".to_string() } else { text.to_string() };
+                        let label = if text.is_empty() {
+                            "Verification code".to_string()
+                        } else {
+                            text.to_string()
+                        };
                         match passcode.take() {
                             Some(p) => p,
                             None => {
@@ -1274,7 +1453,11 @@ fn cmd_ike(args: &[String]) {
                         }
                     }
                     _ => {
-                        println!("# gateway challenge [{:?}]: {}", ctype, sysnet::one_line(&prompt));
+                        println!(
+                            "# gateway challenge [{:?}]: {}",
+                            ctype,
+                            sysnet::one_line(&prompt)
+                        );
                         match passcode.take() {
                             Some(p) => p,
                             None => match anyconnect::read_secret("Passcode (PIN+tokencode): ") {
@@ -1304,7 +1487,11 @@ fn cmd_ike(args: &[String]) {
                     message_id,
                     &reply,
                 )?;
-                let stale = udp.drain().into_iter().filter(|d| !seen.contains(d)).count();
+                let stale = udp
+                    .drain()
+                    .into_iter()
+                    .filter(|d| !seen.contains(d))
+                    .count();
                 if stale > 0 {
                     println!("# discarded {stale} unexpected message(s) received while waiting for input");
                 }
@@ -1353,10 +1540,11 @@ fn cmd_ike(args: &[String]) {
         let om_mask = service::get_long_attr(&oma, ConfigAttributeType::Ipv4Netmask)
             .and_then(to_ip)
             .unwrap_or(std::net::Ipv4Addr::new(255, 255, 255, 255));
-        let dns: Vec<std::net::Ipv4Addr> = service::get_long_attrs(&oma, ConfigAttributeType::Ipv4Dns)
-            .into_iter()
-            .filter_map(to_ip)
-            .collect();
+        let dns: Vec<std::net::Ipv4Addr> =
+            service::get_long_attrs(&oma, ConfigAttributeType::Ipv4Dns)
+                .into_iter()
+                .filter_map(to_ip)
+                .collect();
         let domains = service::get_long_attr(&oma, ConfigAttributeType::InternalDomainName)
             .map(|v| String::from_utf8_lossy(&v).trim_matches('\0').to_string())
             .unwrap_or_default();
@@ -1369,18 +1557,26 @@ fn cmd_ike(args: &[String]) {
         };
         let lease_secs = service::get_long_attr(&oma, ConfigAttributeType::CccVariableLeaseTime)
             .and_then(to_secs)
-            .or_else(|| service::get_long_attr(&oma, ConfigAttributeType::AddressExpiry).and_then(to_secs))
+            .or_else(|| {
+                service::get_long_attr(&oma, ConfigAttributeType::AddressExpiry).and_then(to_secs)
+            })
             .unwrap_or(0);
         println!("# Office Mode: IP {om_ip} / {om_mask}  DNS {dns:?}  domains \"{domains}\"  lease={lease_secs}s");
         let ccc_session = service::get_long_attr(&oma, ConfigAttributeType::CccSessionId)
-            .map(|v| String::from_utf8_lossy(&v).trim_matches('\0').trim().to_string())
+            .map(|v| {
+                String::from_utf8_lossy(&v)
+                    .trim_matches('\0')
+                    .trim()
+                    .to_string()
+            })
             .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_graphic()));
 
         let our_spi = ike::crypto::random_u32();
         let qm_nonce = ike::crypto::random(32);
         let qm_mid = ike::crypto::random_u32();
         let qm1 = service::build_quick_mode(&session, our_spi, &qm_nonce, om_ip, qm_mid, 3600);
-        let qm1_msg = service::encrypt_message(&mut session, u8::from(ExchangeType::Quick), qm_mid, &qm1)?;
+        let qm1_msg =
+            service::encrypt_message(&mut session, u8::from(ExchangeType::Quick), qm_mid, &qm1)?;
         udp.send(&qm1_msg)?;
         let stale = [0u32, om_mid, cfg_mid];
         let mut qm2_opt: Option<ike::wire::IsakmpMessage> = None;
@@ -1422,14 +1618,26 @@ fn cmd_ike(args: &[String]) {
         );
 
         let qm3 = service::build_qm_ack(&session, qm_mid, &qm_nonce, &esp.nonce_r);
-        udp.send(&service::encrypt_message(&mut session, u8::from(ExchangeType::Quick), qm_mid, &qm3)?)?;
-        let enc_len = if esp.key_bits > 0 { esp.key_bits / 8 } else { 24 };
+        udp.send(&service::encrypt_message(
+            &mut session,
+            u8::from(ExchangeType::Quick),
+            qm_mid,
+            &qm3,
+        )?)?;
+        let enc_len = if esp.key_bits > 0 {
+            esp.key_bits / 8
+        } else {
+            24
+        };
         let auth_len = match esp.auth_alg {
-            a if a == ike::model::ESP_AUTH_HMAC_SHA96 || a == ike::model::ESP_AUTH_HMAC_SHA160 => 20,
+            a if a == ike::model::ESP_AUTH_HMAC_SHA96 || a == ike::model::ESP_AUTH_HMAC_SHA160 => {
+                20
+            }
             _ => 32,
         };
         let km_in = session.gen_esp_keymat(our_spi, &qm_nonce, &esp.nonce_r, enc_len + auth_len);
-        let km_out = session.gen_esp_keymat(esp.gateway_spi, &qm_nonce, &esp.nonce_r, enc_len + auth_len);
+        let km_out =
+            session.gen_esp_keymat(esp.gateway_spi, &qm_nonce, &esp.nonce_r, enc_len + auth_len);
         let esp_sa = std::sync::Arc::new(ike::esp::EspSa::new(
             esp.transform_id,
             esp.auth_alg,
@@ -1442,15 +1650,26 @@ fn cmd_ike(args: &[String]) {
         println!("# FULL IKE/IPSec HANDSHAKE COMPLETE — ESP SA ready.");
 
         if let Some(path) = &save_session {
-            save_session_file(path, &host, om_ip, om_mask, &esp, our_spi, &km_in, &km_out, &dns, &domains)?;
+            save_session_file(
+                path, &host, om_ip, om_mask, &esp, our_spi, &km_in, &km_out, &dns, &domains,
+            )?;
             println!("# session saved to {path} (reuse: sudo unvpn tunnel-up --session {path})");
         }
         if connect {
             let routes = (!no_routes).then(|| cp_routes(&host, ccc_session.as_deref()));
             let sock = std::sync::Arc::new(udp.try_clone_socket().map_err(|e| e.to_string())?);
             return run_tunnel(
-                om_ip, om_mask, esp_sa, sock, dns, domains,
-                esp.lifetime_secs, lease_secs, mac, Some(session), routes,
+                om_ip,
+                om_mask,
+                esp_sa,
+                sock,
+                dns,
+                domains,
+                esp.lifetime_secs,
+                lease_secs,
+                mac,
+                Some(session),
+                routes,
             );
         }
         println!("# Office Mode IP {om_ip} ready. (--connect brings up the tunnel; needs sudo)");
@@ -1598,37 +1817,94 @@ fn usage(out: &mut dyn Write) {
     let _ = writeln!(out, "unvpn — native multi-vendor VPN client\n");
     let _ = writeln!(out, "usage:");
     let _ = writeln!(out, "  unvpn connect <profile>          # connect a profile saved in the app (run as your user)");
-    let _ = writeln!(out, "  unvpn connect --list             # the saved profiles");
-    let _ = writeln!(out, "  unvpn status [--json]            # the running tunnels");
-    let _ = writeln!(out, "  unvpn disconnect [<name> | --all]  # stop a running tunnel (the app's too)");
+    let _ = writeln!(
+        out,
+        "  unvpn connect --list             # the saved profiles"
+    );
+    let _ = writeln!(
+        out,
+        "  unvpn status [--json]            # the running tunnels"
+    );
+    let _ = writeln!(
+        out,
+        "  unvpn disconnect [<name> | --all]  # stop a running tunnel (the app's too)"
+    );
     let _ = writeln!(out, "  sudo unvpn recover               # undo what a killed engine left behind (routes, kill switch, DNS)");
     let _ = writeln!(out, "  unvpn hello [--gateway <host>] [--send]");
-    let _ = writeln!(out, "  unvpn login --gateway <host> [--user <u>] [--realm <r>] [--passcode <p>] [--probe]");
-    let _ = writeln!(out, "  unvpn tunnel --gateway <host> --active-key <obfuscated-hex> [--om-ip <ip>]");
-    let _ = writeln!(out, "  unvpn ike --gateway <host> [--passcode <PIN+tokencode>] [--connect [--no-routes]]");
-    let _ = writeln!(out, "       # M3/M4: IKEv1 handshake; with --connect (sudo) brings up the tun tunnel");
-    let _ = writeln!(out, "  unvpn ike --gateway <host> --cert <file.p12> [--realm <login-option>] [--connect]");
-    let _ = writeln!(out, "       # certificate login; the file password is read from stdin");
-    let _ = writeln!(out, "  unvpn cp-enroll -g <host> -r <registration-key> -o <file.p12>");
-    let _ = writeln!(out, "       # get a Check Point user certificate with a one-time registration key");
-    let _ = writeln!(out, "  unvpn forti -g <host[:port]> -u <user> [--connect]   # Fortinet SSL-VPN back-end");
+    let _ = writeln!(
+        out,
+        "  unvpn login --gateway <host> [--user <u>] [--realm <r>] [--passcode <p>] [--probe]"
+    );
+    let _ = writeln!(
+        out,
+        "  unvpn tunnel --gateway <host> --active-key <obfuscated-hex> [--om-ip <ip>]"
+    );
+    let _ = writeln!(
+        out,
+        "  unvpn ike --gateway <host> [--passcode <PIN+tokencode>] [--connect [--no-routes]]"
+    );
+    let _ = writeln!(
+        out,
+        "       # M3/M4: IKEv1 handshake; with --connect (sudo) brings up the tun tunnel"
+    );
+    let _ = writeln!(
+        out,
+        "  unvpn ike --gateway <host> --cert <file.p12> [--realm <login-option>] [--connect]"
+    );
+    let _ = writeln!(
+        out,
+        "       # certificate login; the file password is read from stdin"
+    );
+    let _ = writeln!(
+        out,
+        "  unvpn cp-enroll -g <host> -r <registration-key> -o <file.p12>"
+    );
+    let _ = writeln!(
+        out,
+        "       # get a Check Point user certificate with a one-time registration key"
+    );
+    let _ = writeln!(
+        out,
+        "  unvpn forti -g <host[:port]> -u <user> [--connect]   # Fortinet SSL-VPN back-end"
+    );
     let _ = writeln!(out, "  unvpn forti-ipsec -g <host> -u <user> [--localid <group>] [--connect]  # FortiClient IPsec (IKEv2) back-end");
-    let _ = writeln!(out, "  unvpn f5 -g <host[:port]> -u <user> [--connect]      # F5 BIG-IP APM SSL-VPN back-end");
+    let _ = writeln!(
+        out,
+        "  unvpn f5 -g <host[:port]> -u <user> [--connect]      # F5 BIG-IP APM SSL-VPN back-end"
+    );
     let _ = writeln!(out, "  unvpn anyconnect -g <url> -u <user> [--connect]       # Cisco AnyConnect SSL-VPN back-end");
     let _ = writeln!(out, "  unvpn gp -g <portal> -u <user> [--connect]            # Palo Alto GlobalProtect back-end");
     let _ = writeln!(out, "  unvpn ivanti -g <host> -u <user> [--connect]          # Ivanti Connect Secure (Pulse) back-end");
-    let _ = writeln!(out, "  unvpn openvpn -c <profile.ovpn> [-u <user>] [--connect] # OpenVPN back-end");
-    let _ = writeln!(out, "  unvpn wireguard -c <profile.conf> --connect            # WireGuard (kernel) back-end");
+    let _ = writeln!(
+        out,
+        "  unvpn openvpn -c <profile.ovpn> [-u <user>] [--connect] # OpenVPN back-end"
+    );
+    let _ = writeln!(
+        out,
+        "  unvpn wireguard -c <profile.conf> --connect            # WireGuard (kernel) back-end"
+    );
     let _ = writeln!(out, "  unvpn pins <host:port | f5-vpn://…>                    # the --pin flags your profiles keep for it");
     let _ = writeln!(out, "  unvpn --version");
     let _ = writeln!(out, "\nglobal flags (any back-end):");
     let _ = writeln!(out, "  --killswitch   fail-closed firewall: block all egress but the tunnel, gateway, LAN and DHCP");
-    let _ = writeln!(out, "  --allow-ipv6   keep IPv6 egress (default: blocked, since the tunnels are IPv4-only)");
+    let _ = writeln!(
+        out,
+        "  --allow-ipv6   keep IPv6 egress (default: blocked, since the tunnels are IPv4-only)"
+    );
     let _ = writeln!(out, "  --pin [<host>:<port>=]sha256:<hex>");
     let _ = writeln!(out, "                 trust this gateway certificate when no system CA vouches for it (repeatable);");
-    let _ = writeln!(out, "                 without one, an unknown certificate is shown and you are asked");
-    let _ = writeln!(out, "  --insecure     accept any gateway certificate without checking it");
-    let _ = writeln!(out, "  --label <name> the connection's name in `unvpn status`");
+    let _ = writeln!(
+        out,
+        "                 without one, an unknown certificate is shown and you are asked"
+    );
+    let _ = writeln!(
+        out,
+        "  --insecure     accept any gateway certificate without checking it"
+    );
+    let _ = writeln!(
+        out,
+        "  --label <name> the connection's name in `unvpn status`"
+    );
     let _ = writeln!(out, "  --detachable   once connected, stay up when stdin closes (for front-ends that may restart)");
 }
 
@@ -1774,7 +2050,10 @@ fn cmd_login(args: &[String]) {
                     if let Some(c) = &cookie {
                         println!("   CPCVPN_SESSION_ID cookie: {c}");
                     }
-                    if let Some(k) = resp.path(&["ResponseData", "active_key"]).and_then(|v| v.text()) {
+                    if let Some(k) = resp
+                        .path(&["ResponseData", "active_key"])
+                        .and_then(|v| v.text())
+                    {
                         let key = ccc::deobfuscate(&k).unwrap_or_default();
                         println!("   active_key : {} bytes (deobfuscated)", key.len());
                     }
@@ -1884,7 +2163,10 @@ fn extract_cookie(resp: &str, name: &str) -> Option<String> {
     let pat = format!("{name}=");
     for line in http_headers(resp).lines() {
         let l = line.trim();
-        let rest = match l.strip_prefix("Set-Cookie:").or_else(|| l.strip_prefix("set-cookie:")) {
+        let rest = match l
+            .strip_prefix("Set-Cookie:")
+            .or_else(|| l.strip_prefix("set-cookie:"))
+        {
             Some(r) => r.trim(),
             None => continue,
         };
@@ -1913,7 +2195,8 @@ fn http_request(host: &str, path: &str, body: &str) -> String {
 /// One CCC request over TLS to the gateway's port 443.
 fn post(host: &str, request: &str) -> Result<String, String> {
     let mut tls = net::tls::connect(host, 443, Duration::from_secs(15))?;
-    tls.write_all(request.as_bytes()).map_err(|e| e.to_string())?;
+    tls.write_all(request.as_bytes())
+        .map_err(|e| e.to_string())?;
 
     let mut buf = Vec::new();
     tls.read_to_end(&mut buf).map_err(|e| e.to_string())?;

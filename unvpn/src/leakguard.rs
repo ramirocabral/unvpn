@@ -64,7 +64,11 @@ pub fn delete_table(table: &str) -> bool {
 
 /// The leak-protection tables in place now, of every session.
 pub fn tables() -> Vec<String> {
-    let Ok(out) = Command::new("nft").args(["list", "tables", "inet"]).stderr(Stdio::null()).output() else {
+    let Ok(out) = Command::new("nft")
+        .args(["list", "tables", "inet"])
+        .stderr(Stdio::null())
+        .output()
+    else {
         return Vec::new();
     };
     parse_tables(&String::from_utf8_lossy(&out.stdout))
@@ -102,19 +106,36 @@ pub fn enable(tun: &str, gateways: &[Ipv4Addr]) -> Result<Option<LeakGuard>, Str
     }
     if !nft_available() {
         if killswitch {
-            return Err("--killswitch needs nftables, but `nft` was not found (install nftables)".into());
+            return Err(
+                "--killswitch needs nftables, but `nft` was not found (install nftables)".into(),
+            );
         }
         out!("# note: `nft` not found — IPv6 leak block skipped (install nftables, or --allow-ipv6 to silence)");
         return Ok(None);
     }
 
     let table = table_name(tun);
-    let lan = if killswitch { lan_subnets(tun) } else { Vec::new() };
-    let rules = ruleset(&Params { table: &table, tun, gateways, lan: &lan, killswitch, block_ipv6 });
+    let lan = if killswitch {
+        lan_subnets(tun)
+    } else {
+        Vec::new()
+    };
+    let rules = ruleset(&Params {
+        table: &table,
+        tun,
+        gateways,
+        lan: &lan,
+        killswitch,
+        block_ipv6,
+    });
     apply(&rules).map_err(|e| format!("could not install leak protection: {e}"))?;
 
     if killswitch {
-        let gws = gateways.iter().map(|g| g.to_string()).collect::<Vec<_>>().join(", ");
+        let gws = gateways
+            .iter()
+            .map(|g| g.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
         out!("# kill switch ON — only {tun}, gateway {gws}, LAN and DHCP allowed (fail-closed)");
         out!("#   (if unvpn is killed hard, `sudo unvpn recover` lifts it)");
     }
@@ -127,7 +148,10 @@ pub fn enable(tun: &str, gateways: &[Ipv4Addr]) -> Result<Option<LeakGuard>, Str
 /// nftables identifiers allow alphanumerics and `_`; tun names are already in that
 /// set, but sanitise defensively so the table name can never be malformed.
 pub fn table_name(tun: &str) -> String {
-    let safe: String = tun.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
+    let safe: String = tun
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
     format!("unvpn_{safe}")
 }
 
@@ -151,7 +175,9 @@ fn ruleset(p: &Params) -> String {
     r.push_str(&format!("delete table inet {t}\n", t = p.table));
     r.push_str(&format!("table inet {t} {{\n", t = p.table));
     r.push_str("  chain output {\n");
-    r.push_str(&format!("    type filter hook output priority 0; policy {policy};\n"));
+    r.push_str(&format!(
+        "    type filter hook output priority 0; policy {policy};\n"
+    ));
     r.push_str("    oifname \"lo\" accept\n");
     r.push_str(&format!("    oifname \"{tun}\" accept\n", tun = p.tun));
     if p.block_ipv6 {
@@ -191,7 +217,9 @@ fn apply(ruleset: &str) -> Result<(), String> {
         .ok_or("nft: no stdin")?
         .write_all(ruleset.as_bytes())
         .map_err(|e| format!("write to nft: {e}"))?;
-    let out = child.wait_with_output().map_err(|e| format!("nft wait: {e}"))?;
+    let out = child
+        .wait_with_output()
+        .map_err(|e| format!("nft wait: {e}"))?;
     if out.status.success() {
         Ok(())
     } else {
@@ -203,7 +231,9 @@ fn apply(ruleset: &str) -> Result<(), String> {
 /// (printers, the router, the LAN resolver, SSH to a box on the same network),
 /// taken from the kernel's link-scope routes, minus the tunnel's own.
 fn lan_subnets(tun: &str) -> Vec<String> {
-    let out = Command::new("ip").args(["-4", "route", "show", "scope", "link"]).output();
+    let out = Command::new("ip")
+        .args(["-4", "route", "show", "scope", "link"])
+        .output();
     let text = match out {
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
         _ => return Vec::new(),
@@ -294,7 +324,10 @@ mod tests {
 
     #[test]
     fn our_tables_from_an_nft_listing() {
-        assert_eq!(parse_tables("table inet filter\ntable inet unvpn_unvpn0\ntable inet unvpn_unvpn1\n"), ["unvpn_unvpn0", "unvpn_unvpn1"]);
+        assert_eq!(
+            parse_tables("table inet filter\ntable inet unvpn_unvpn0\ntable inet unvpn_unvpn1\n"),
+            ["unvpn_unvpn0", "unvpn_unvpn1"]
+        );
         assert!(parse_tables("").is_empty());
     }
 
@@ -304,7 +337,10 @@ mod tests {
 192.168.1.0/24 dev wlan0 proto kernel scope link src 192.168.1.23 metric 600
 10.5.0.0/16 dev cpfg0 proto kernel scope link src 10.5.0.9
 169.254.0.0/16 dev wlan0 scope link";
-        assert_eq!(parse_link_subnets(out, "cpfg0"), vec!["192.168.1.0/24", "169.254.0.0/16"]);
+        assert_eq!(
+            parse_link_subnets(out, "cpfg0"),
+            vec!["192.168.1.0/24", "169.254.0.0/16"]
+        );
     }
 
     #[test]

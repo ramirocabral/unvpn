@@ -155,7 +155,12 @@ fn os_version() -> String {
                 let bytes: Vec<u8> = a[..end].iter().map(|&c| c as u8).collect();
                 String::from_utf8_lossy(&bytes).into_owned()
             };
-            return format!("{} {} {}", field(&u.sysname), field(&u.release), field(&u.machine));
+            return format!(
+                "{} {} {}",
+                field(&u.sysname),
+                field(&u.release),
+                field(&u.machine)
+            );
         }
     }
     "Linux".to_string()
@@ -211,7 +216,9 @@ mod tests {
     fn no_serial_sends_unregistered_payload() {
         let ps = auth_payloads(&EmsSerial::None, "user", "10.0.0.2", "");
         assert_eq!(ps.len(), 1);
-        let Payload::Notify(n) = &ps[0] else { panic!("expected Notify") };
+        let Payload::Notify(n) = &ps[0] else {
+            panic!("expected Notify")
+        };
         let text = String::from_utf8(n.data.clone()).unwrap();
         assert!(text.starts_with("VER=1\nFCTVER="));
         assert!(text.contains("\nIP=10.0.0.2\n"));
@@ -222,12 +229,21 @@ mod tests {
 
     #[test]
     fn forticlient_connect_notify_type_and_blob() {
-        let ps = auth_payloads(&EmsSerial::Explicit("FCTEMS0000123456".into()), "jdoe", "10.0.0.2", "");
+        let ps = auth_payloads(
+            &EmsSerial::Explicit("FCTEMS0000123456".into()),
+            "jdoe",
+            "10.0.0.2",
+            "",
+        );
         assert_eq!(ps.len(), 2);
-        let Payload::Notify(n2) = &ps[1] else { panic!("expected a second Notify") };
+        let Payload::Notify(n2) = &ps[1] else {
+            panic!("expected a second Notify")
+        };
         assert_eq!(n2.ntype, 0xF103);
         assert_eq!(n2.data, b"FCTEMS0000123456");
-        let Payload::Notify(n) = &ps[0] else { panic!("expected Notify") };
+        let Payload::Notify(n) = &ps[0] else {
+            panic!("expected Notify")
+        };
         assert_eq!(n.ntype, 0xF100);
         assert_eq!(n.protocol, 0);
         assert!(n.spi.is_empty());
@@ -245,7 +261,20 @@ mod tests {
         let info = ClientInfo::registered("u", "1.2.3.4", "", "S");
         let text = String::from_utf8(info.blob()).unwrap();
         let order: Vec<&str> = text.lines().map(|l| l.split('=').next().unwrap()).collect();
-        assert_eq!(order, ["VER", "FCTVER", "UID", "IP", "HOST", "USER", "OSVER", "REG_STATUS", "EMSSN"]);
+        assert_eq!(
+            order,
+            [
+                "VER",
+                "FCTVER",
+                "UID",
+                "IP",
+                "HOST",
+                "USER",
+                "OSVER",
+                "REG_STATUS",
+                "EMSSN"
+            ]
+        );
     }
 
     #[test]

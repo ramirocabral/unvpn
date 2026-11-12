@@ -65,35 +65,49 @@ pub fn classify(body: &str) -> Result<Reply, GpError> {
     if !t.starts_with('<') {
         return parse_javascript(t);
     }
-    let root = xml::parse(t).map_err(|e| GpError::Other(format!("unparseable server response ({e})")))?;
+    let root =
+        xml::parse(t).map_err(|e| GpError::Other(format!("unparseable server response ({e})")))?;
     match root.name.as_str() {
         "response" if root.attr("status") == Some("error") => {
-            let msg = root.child_text("error").unwrap_or_else(|| "server returned an error".into());
+            let msg = root
+                .child_text("error")
+                .unwrap_or_else(|| "server returned an error".into());
             Err(classify_error(msg))
         }
         "prelogin-response" => {
             if root.child_text("status").is_some_and(|s| s != "Success") {
-                let msg = root.child_text("msg").unwrap_or_else(|| "prelogin failed".into());
+                let msg = root
+                    .child_text("msg")
+                    .unwrap_or_else(|| "prelogin failed".into());
                 return Err(classify_error(msg));
             }
             Ok(Reply::Xml(root))
         }
         "challenge" => Ok(Reply::Challenge {
-            prompt: root.child_text("respmsg").unwrap_or_else(|| "Challenge".into()),
+            prompt: root
+                .child_text("respmsg")
+                .unwrap_or_else(|| "Challenge".into()),
             input_str: root.child_text("inputstr").unwrap_or_default(),
         }),
         "html" => match root.child("body") {
             Some(b) => parse_javascript(b.deep_text().trim()),
-            None => Err(GpError::Other("unexpected HTML response from server".into())),
+            None => Err(GpError::Other(
+                "unexpected HTML response from server".into(),
+            )),
         },
         _ => Ok(Reply::Xml(root)),
     }
 }
 
 fn classify_error(msg: String) -> GpError {
-    if msg == "GlobalProtect gateway does not exist" || msg == "GlobalProtect portal does not exist" {
+    if msg == "GlobalProtect gateway does not exist" || msg == "GlobalProtect portal does not exist"
+    {
         GpError::NotHere(msg)
-    } else if msg.to_ascii_lowercase().contains("invalid username or password") || msg.contains("Authentication failed") {
+    } else if msg
+        .to_ascii_lowercase()
+        .contains("invalid username or password")
+        || msg.contains("Authentication failed")
+    {
         GpError::BadCreds(msg)
     } else {
         GpError::Other(msg)
@@ -106,7 +120,11 @@ fn parse_javascript(js: &str) -> Result<Reply, GpError> {
     let grab = |key: &str| -> Option<String> {
         let start = js.find(key)? + key.len();
         let rest = &js[start..];
-        let rest = rest.trim_start().strip_prefix('=')?.trim_start().strip_prefix('"')?;
+        let rest = rest
+            .trim_start()
+            .strip_prefix('=')?
+            .trim_start()
+            .strip_prefix('"')?;
         // Up to the first unescaped quote; then undo JS string escapes.
         let mut out = String::new();
         let mut chars = rest.chars();
@@ -127,11 +145,19 @@ fn parse_javascript(js: &str) -> Result<Reply, GpError> {
         }
         None
     };
-    let status = grab("respStatus").ok_or_else(|| GpError::Other(format!("unrecognized server response: {}", preview(js))))?;
+    let status = grab("respStatus")
+        .ok_or_else(|| GpError::Other(format!("unrecognized server response: {}", preview(js))))?;
     let msg = grab("respMsg").unwrap_or_default();
     match status.as_str() {
-        "Challenge" => Ok(Reply::Challenge { prompt: msg, input_str: grab("inputStr.value").unwrap_or_default() }),
-        "Error" => Err(classify_error(if msg.is_empty() { "authentication error".into() } else { msg })),
+        "Challenge" => Ok(Reply::Challenge {
+            prompt: msg,
+            input_str: grab("inputStr.value").unwrap_or_default(),
+        }),
+        "Error" => Err(classify_error(if msg.is_empty() {
+            "authentication error".into()
+        } else {
+            msg
+        })),
         other => Err(GpError::Other(format!("unexpected respStatus {other:?}"))),
     }
 }
@@ -161,7 +187,10 @@ pub struct Saml {
 
 pub fn parse_prelogin(root: &Element) -> Prelogin {
     let get = |n: &str| root.child_text(n).unwrap_or_default();
-    let saml = match (root.child_text("saml-auth-method"), root.child_text("saml-request")) {
+    let saml = match (
+        root.child_text("saml-auth-method"),
+        root.child_text("saml-request"),
+    ) {
         (Some(method), Some(req)) => {
             let url = if method.eq_ignore_ascii_case("POST") {
                 format!("data:text/html;base64,{req}")
@@ -220,9 +249,14 @@ pub fn parse_portal(root: &Element, region: Option<&str>) -> Result<PortalConfig
         .and_then(|h| h.child_text("hip-report-interval"))
         .and_then(|s| s.parse().ok());
 
-    let list = root.child("gateways").and_then(|g| g.child("external")).and_then(|e| e.child("list"));
+    let list = root
+        .child("gateways")
+        .and_then(|g| g.child("external"))
+        .and_then(|e| e.child("list"));
     for e in list.into_iter().flat_map(|l| l.children_named("entry")) {
-        let Some(host) = e.attr("name").map(str::to_string) else { continue };
+        let Some(host) = e.attr("name").map(str::to_string) else {
+            continue;
+        };
         let mut priority = u32::MAX;
         if let (Some(region), Some(rules)) = (region, e.child("priority-rule")) {
             for r in rules.children_named("entry") {
@@ -234,7 +268,11 @@ pub fn parse_portal(root: &Element, region: Option<&str>) -> Result<PortalConfig
             }
         }
         let label = e.child_text("description").unwrap_or_else(|| host.clone());
-        pc.gateways.push(GatewayEntry { host, label, priority });
+        pc.gateways.push(GatewayEntry {
+            host,
+            label,
+            priority,
+        });
     }
     if pc.gateways.is_empty() {
         return Err("the portal configuration lists no gateways".into());
@@ -245,7 +283,10 @@ pub fn parse_portal(root: &Element, region: Option<&str>) -> Result<PortalConfig
 
 /// Pick the gateway: `want` matched against the host or label, else the
 /// portal's preferred one.
-pub fn choose_gateway<'a>(gws: &'a [GatewayEntry], want: Option<&str>) -> Result<&'a GatewayEntry, String> {
+pub fn choose_gateway<'a>(
+    gws: &'a [GatewayEntry],
+    want: Option<&str>,
+) -> Result<&'a GatewayEntry, String> {
     let Some(w) = want.map(str::trim).filter(|w| !w.is_empty()) else {
         return gws.first().ok_or_else(|| "no gateways".to_string());
     };
@@ -254,8 +295,14 @@ pub fn choose_gateway<'a>(gws: &'a [GatewayEntry], want: Option<&str>) -> Result
         .find(|g| g.host.eq_ignore_ascii_case(w) || host_only(&g.host) == w.to_ascii_lowercase())
         .or_else(|| gws.iter().find(|g| g.label.eq_ignore_ascii_case(w)))
         .ok_or_else(|| {
-            let names: Vec<_> = gws.iter().map(|g| format!("{} ({})", g.label, g.host)).collect();
-            format!("gateway {w:?} not offered by the portal; available: {}", names.join(", "))
+            let names: Vec<_> = gws
+                .iter()
+                .map(|g| format!("{} ({})", g.label, g.host))
+                .collect();
+            format!(
+                "gateway {w:?} not offered by the portal; available: {}",
+                names.join(", ")
+            )
         })
 }
 
@@ -302,7 +349,9 @@ pub fn parse_login(root: &Element, computer: &str) -> Result<AuthCookie, String>
     if root.name != "jnlp" {
         return Err(format!("unexpected login reply <{}>", root.name));
     }
-    let desc = root.child("application-desc").ok_or("login reply has no <application-desc>")?;
+    let desc = root
+        .child("application-desc")
+        .ok_or("login reply has no <application-desc>")?;
     let args: Vec<String> = desc
         .children_named("argument")
         .map(|a| {
@@ -328,7 +377,9 @@ pub fn parse_login(root: &Element, computer: &str) -> Result<AuthCookie, String>
     }
     let conn_type = arg(12);
     if !conn_type.is_empty() && conn_type != "tunnel" {
-        return Err(format!("gateway offers connection-type {conn_type:?}, not a tunnel"));
+        return Err(format!(
+            "gateway offers connection-type {conn_type:?}, not a tunnel"
+        ));
     }
     Ok(ac)
 }
@@ -406,8 +457,17 @@ impl Session {
         }
     }
 
-    pub fn post(&mut self, ep_is_portal: bool, path: &str, body: &str) -> Result<http::Response, String> {
-        let ep = if ep_is_portal { self.portal_ep.clone() } else { self.ep.clone() };
+    pub fn post(
+        &mut self,
+        ep_is_portal: bool,
+        path: &str,
+        body: &str,
+    ) -> Result<http::Response, String> {
+        let ep = if ep_is_portal {
+            self.portal_ep.clone()
+        } else {
+            self.ep.clone()
+        };
         http::post_form(&ep, path, &mut self.cookies, body)
     }
 
@@ -423,32 +483,67 @@ impl Session {
         }
         match classify(&resp.body_str())? {
             Reply::Xml(root) if root.name == "prelogin-response" => Ok(parse_prelogin(&root)),
-            Reply::Xml(root) => Err(GpError::Other(format!("unexpected prelogin reply <{}>", root.name))),
-            Reply::Challenge { .. } => Err(GpError::Other("unexpected challenge at prelogin".into())),
+            Reply::Xml(root) => Err(GpError::Other(format!(
+                "unexpected prelogin reply <{}>",
+                root.name
+            ))),
+            Reply::Challenge { .. } => {
+                Err(GpError::Other("unexpected challenge at prelogin".into()))
+            }
         }
     }
 
     /// Gather first-form answers: from SAML, or username + password.
-    fn first_answers(&self, pre: &Prelogin, creds: &Creds, p: &mut dyn Prompter) -> Result<Answers, String> {
+    fn first_answers(
+        &self,
+        pre: &Prelogin,
+        creds: &Creds,
+        p: &mut dyn Prompter,
+    ) -> Result<Answers, String> {
         if let Some(saml) = &pre.saml {
             p.info(&format!("SAML {} authentication required", saml.method));
             let r = p.saml(saml)?;
-            let user = if r.user.is_empty() { creds.user.clone() } else { r.user };
+            let user = if r.user.is_empty() {
+                creds.user.clone()
+            } else {
+                r.user
+            };
             if user.is_empty() {
                 return Err("SAML login returned no username — pass it with -u".into());
             }
-            return Ok(Answers { user, secret_field: r.field, secret: r.value, ..Default::default() });
+            return Ok(Answers {
+                user,
+                secret_field: r.field,
+                secret: r.value,
+                ..Default::default()
+            });
         }
         let user = if creds.user.is_empty() {
-            p.username(if pre.user_label.is_empty() { "Username" } else { &pre.user_label })?
+            p.username(if pre.user_label.is_empty() {
+                "Username"
+            } else {
+                &pre.user_label
+            })?
         } else {
             creds.user.clone()
         };
         let secret = match &creds.password {
             Some(pw) => pw.clone(),
-            None => p.password(if pre.pass_label.is_empty() { "Password" } else { &pre.pass_label }, &pre.message)?,
+            None => p.password(
+                if pre.pass_label.is_empty() {
+                    "Password"
+                } else {
+                    &pre.pass_label
+                },
+                &pre.message,
+            )?,
         };
-        Ok(Answers { user, secret_field: "passwd".into(), secret, ..Default::default() })
+        Ok(Answers {
+            user,
+            secret_field: "passwd".into(),
+            secret,
+            ..Default::default()
+        })
     }
 
     /// The fixed fields of a portal-getconfig / gateway-login POST.
@@ -502,14 +597,21 @@ impl Session {
                 512 => {
                     // The server's own words, when it says something short and plain.
                     let text = crate::sysnet::one_line(&resp.body_str());
-                    let detail = if !text.is_empty() && !text.starts_with('<') && text.len() <= 200 {
+                    let detail = if !text.is_empty() && !text.starts_with('<') && text.len() <= 200
+                    {
                         format!(" (server: {text})")
                     } else {
                         String::new()
                     };
-                    return Err(GpError::BadCreds(format!("invalid username or password{detail}")));
+                    return Err(GpError::BadCreds(format!(
+                        "invalid username or password{detail}"
+                    )));
                 }
-                513 => return Err(GpError::Other("the gateway requires a client certificate".into())),
+                513 => {
+                    return Err(GpError::Other(
+                        "the gateway requires a client certificate".into(),
+                    ))
+                }
                 s => return Err(GpError::Other(format!("{path}: HTTP {s}"))),
             }
             match classify(&resp.body_str())? {
@@ -528,24 +630,41 @@ impl Session {
 
     /// Full login: portal (if it is one) → choose gateway → gateway login.
     /// On success `self.auth` holds the session cookie and `self.ep` the gateway.
-    pub fn login(&mut self, creds: &Creds, role: Role, want_gw: Option<&str>, p: &mut dyn Prompter) -> Result<(), String> {
+    pub fn login(
+        &mut self,
+        creds: &Creds,
+        role: Role,
+        want_gw: Option<&str>,
+        p: &mut dyn Prompter,
+    ) -> Result<(), String> {
         let mut portal_cfg = PortalConfig::default();
         let mut replay: Option<Answers> = None;
 
         if role != Role::Gateway {
             match self.prelogin(true) {
                 Ok(pre) => {
-                    p.info(&format!("{} is a GlobalProtect portal", self.portal_ep.host_header()));
+                    p.info(&format!(
+                        "{} is a GlobalProtect portal",
+                        self.portal_ep.host_header()
+                    ));
                     let (root, used) = self.portal_login(&pre, creds, p)?;
                     portal_cfg = parse_portal(&root, pre.region.as_deref())?;
                     for g in &portal_cfg.gateways {
-                        let pri = if g.priority == u32::MAX { String::new() } else { format!(" [priority {}]", g.priority) };
+                        let pri = if g.priority == u32::MAX {
+                            String::new()
+                        } else {
+                            format!(" [priority {}]", g.priority)
+                        };
                         p.info(&format!("  gateway: {} ({}){pri}", g.label, g.host));
                     }
                     let gw = choose_gateway(&portal_cfg.gateways, want_gw)?;
                     p.info(&format!("using gateway {} ({})", gw.label, gw.host));
                     let (host, port, _) = http::split_url(&gw.host)?;
-                    self.ep = Endpoint { host, port, ..self.portal_ep.clone() };
+                    self.ep = Endpoint {
+                        host,
+                        port,
+                        ..self.portal_ep.clone()
+                    };
                     if let Some(v) = &portal_cfg.version {
                         self.app_version = Some(v.clone());
                     }
@@ -553,13 +672,21 @@ impl Session {
                     // Replay the portal credentials on the gateway (a "blind
                     // retry"): fine with a portal cookie, or a plain
                     // password. A one-time challenge answer or a SAML cookie is not.
-                    let has_cookie = portal_cfg.userauthcookie.is_some() || portal_cfg.prelogon_cookie.is_some();
+                    let has_cookie =
+                        portal_cfg.userauthcookie.is_some() || portal_cfg.prelogon_cookie.is_some();
                     if has_cookie || (!used.from_challenge && used.secret_field == "passwd") {
-                        replay = Some(Answers { input_str: None, from_challenge: false, ..used });
+                        replay = Some(Answers {
+                            input_str: None,
+                            from_challenge: false,
+                            ..used
+                        });
                     }
                 }
                 Err(GpError::NotHere(_)) if role == Role::Auto => {
-                    p.info(&format!("{} is not a portal — trying it as a gateway", self.portal_ep.host_header()));
+                    p.info(&format!(
+                        "{} is not a portal — trying it as a gateway",
+                        self.portal_ep.host_header()
+                    ));
                 }
                 Err(e) => return Err(format!("portal prelogin: {e}")),
             }
@@ -568,18 +695,24 @@ impl Session {
         if let Some(a) = replay {
             match self.submit(false, &portal_cfg, a, p) {
                 Ok((root, _)) => return self.finish_login(&root),
-                Err(GpError::BadCreds(_)) => p.info("the gateway did not accept the portal login — authenticating again"),
+                Err(GpError::BadCreds(_)) => {
+                    p.info("the gateway did not accept the portal login — authenticating again")
+                }
                 Err(e) => return Err(format!("gateway login: {e}")),
             }
         }
 
-        let pre = self.prelogin(false).map_err(|e| format!("gateway prelogin: {e}"))?;
+        let pre = self
+            .prelogin(false)
+            .map_err(|e| format!("gateway prelogin: {e}"))?;
         let mut tries = 0;
         loop {
             let a = self.first_answers(&pre, creds, p)?;
             match self.submit(false, &portal_cfg, a, p) {
                 Ok((root, _)) => return self.finish_login(&root),
-                Err(GpError::BadCreds(m)) if creds.password.is_none() && pre.saml.is_none() && tries < 2 => {
+                Err(GpError::BadCreds(m))
+                    if creds.password.is_none() && pre.saml.is_none() && tries < 2 =>
+                {
                     tries += 1;
                     p.info(&format!("{m} — try again"));
                 }
@@ -588,13 +721,20 @@ impl Session {
         }
     }
 
-    fn portal_login(&mut self, pre: &Prelogin, creds: &Creds, p: &mut dyn Prompter) -> Result<(Element, Answers), String> {
+    fn portal_login(
+        &mut self,
+        pre: &Prelogin,
+        creds: &Creds,
+        p: &mut dyn Prompter,
+    ) -> Result<(Element, Answers), String> {
         let mut tries = 0;
         loop {
             let a = self.first_answers(pre, creds, p)?;
             match self.submit(true, &PortalConfig::default(), a, p) {
                 Ok(r) => return Ok(r),
-                Err(GpError::BadCreds(m)) if creds.password.is_none() && pre.saml.is_none() && tries < 2 => {
+                Err(GpError::BadCreds(m))
+                    if creds.password.is_none() && pre.saml.is_none() && tries < 2 =>
+                {
                     tries += 1;
                     p.info(&format!("{m} — try again"));
                 }
@@ -609,7 +749,10 @@ impl Session {
     }
 
     pub fn cookie_query(&self) -> Result<String, String> {
-        self.auth.as_ref().map(AuthCookie::query).ok_or_else(|| "not authenticated".into())
+        self.auth
+            .as_ref()
+            .map(AuthCookie::query)
+            .ok_or_else(|| "not authenticated".into())
     }
 
     /// `POST /ssl-vpn/logout.esp` — the authcookie stays valid otherwise.
@@ -648,23 +791,38 @@ pub fn parse_saml_result(raw: &str) -> Option<SamlResult> {
         return tag("prelogin-cookie")
             .map(|v| ("prelogin-cookie", v))
             .or_else(|| tag("portal-userauthcookie").map(|v| ("portal-userauthcookie", v)))
-            .map(|(f, value)| SamlResult { user, field: f.into(), value });
+            .map(|(f, value)| SamlResult {
+                user,
+                field: f.into(),
+                value,
+            });
     }
     if raw.contains('=') {
         let mut user = String::new();
         let mut found = None;
         for kv in raw.split([';', '&', '\n']).map(str::trim) {
-            let Some((k, v)) = kv.split_once('=') else { continue };
-            let (k, v) = (k.trim().to_ascii_lowercase(), http::percent_decode(v.trim()));
+            let Some((k, v)) = kv.split_once('=') else {
+                continue;
+            };
+            let (k, v) = (
+                k.trim().to_ascii_lowercase(),
+                http::percent_decode(v.trim()),
+            );
             match k.as_str() {
                 "saml-username" => user = v,
-                "prelogin-cookie" | "portal-userauthcookie" if !v.is_empty() => found = Some((k, v)),
+                "prelogin-cookie" | "portal-userauthcookie" if !v.is_empty() => {
+                    found = Some((k, v))
+                }
                 _ => {}
             }
         }
         return found.map(|(field, value)| SamlResult { user, field, value });
     }
-    Some(SamlResult { user: String::new(), field: "prelogin-cookie".into(), value: raw.to_string() })
+    Some(SamlResult {
+        user: String::new(),
+        field: "prelogin-cookie".into(),
+        value: raw.to_string(),
+    })
 }
 
 #[cfg(test)]
@@ -687,7 +845,9 @@ mod tests {
 
     #[test]
     fn prelogin_password_form() {
-        let Reply::Xml(root) = classify(PRELOGIN).unwrap() else { panic!() };
+        let Reply::Xml(root) = classify(PRELOGIN).unwrap() else {
+            panic!()
+        };
         let p = parse_prelogin(&root);
         assert_eq!(p.message, "Enter login credentials");
         assert_eq!(p.pass_label, "Password");
@@ -708,7 +868,9 @@ mod tests {
             "<prelogin-response><status>Success</status><saml-auth-method>REDIRECT</saml-auth-method><saml-request>{}</saml-request></prelogin-response>",
             openssl::base64::encode_block(url.as_bytes())
         );
-        let Reply::Xml(root) = classify(&body).unwrap() else { panic!() };
+        let Reply::Xml(root) = classify(&body).unwrap() else {
+            panic!()
+        };
         let s = parse_prelogin(&root).saml.unwrap();
         assert_eq!(s.method, "REDIRECT");
         assert_eq!(s.url, url);
@@ -729,7 +891,9 @@ mod tests {
     #[test]
     fn html_wrapped_challenge_and_js_error() {
         let html = "<html><head></head><body>var respStatus = \"Challenge\"; var respMsg = \"OTP\"; thisForm.inputStr.value = \"x1\";</body></html>";
-        assert!(matches!(classify(html).unwrap(), Reply::Challenge { ref input_str, .. } if input_str == "x1"));
+        assert!(
+            matches!(classify(html).unwrap(), Reply::Challenge { ref input_str, .. } if input_str == "x1")
+        );
         let err = "var respStatus = \"Error\";\nvar respMsg = \"Invalid username or password\";";
         assert!(matches!(classify(err), Err(GpError::BadCreds(_))));
     }
@@ -737,9 +901,14 @@ mod tests {
     #[test]
     fn xml_challenge_and_error() {
         let c = "<challenge><user>alice</user><inputstr>abc</inputstr><respmsg>Token</respmsg></challenge>";
-        assert!(matches!(classify(c).unwrap(), Reply::Challenge { ref prompt, .. } if prompt == "Token"));
-        let e = "<response status=\"error\"><error>Invalid authentication cookie</error></response>";
-        assert!(matches!(classify(e), Err(GpError::Other(ref m)) if m == "Invalid authentication cookie"));
+        assert!(
+            matches!(classify(c).unwrap(), Reply::Challenge { ref prompt, .. } if prompt == "Token")
+        );
+        let e =
+            "<response status=\"error\"><error>Invalid authentication cookie</error></response>";
+        assert!(
+            matches!(classify(e), Err(GpError::Other(ref m)) if m == "Invalid authentication cookie")
+        );
     }
 
     const POLICY: &str = r#"<?xml version="1.0" encoding="UTF-8" ?>
@@ -769,7 +938,9 @@ mod tests {
 
     #[test]
     fn portal_policy_gateways_by_priority() {
-        let Reply::Xml(root) = classify(POLICY).unwrap() else { panic!() };
+        let Reply::Xml(root) = classify(POLICY).unwrap() else {
+            panic!()
+        };
         let pc = parse_portal(&root, Some("AR")).unwrap();
         assert_eq!(pc.gateways[0].host, "gw-a.example.com:4443");
         assert_eq!(pc.gateways[0].priority, 1);
@@ -780,8 +951,16 @@ mod tests {
         assert_eq!(pc.hip_interval, Some(3600));
 
         assert_eq!(choose_gateway(&pc.gateways, None).unwrap().label, "GW A");
-        assert_eq!(choose_gateway(&pc.gateways, Some("gw b")).unwrap().host, "gw-b.example.com");
-        assert_eq!(choose_gateway(&pc.gateways, Some("gw-a.example.com")).unwrap().label, "GW A");
+        assert_eq!(
+            choose_gateway(&pc.gateways, Some("gw b")).unwrap().host,
+            "gw-b.example.com"
+        );
+        assert_eq!(
+            choose_gateway(&pc.gateways, Some("gw-a.example.com"))
+                .unwrap()
+                .label,
+            "GW A"
+        );
         assert!(choose_gateway(&pc.gateways, Some("nope")).is_err());
     }
 
@@ -802,7 +981,9 @@ mod tests {
 <argument>4100</argument>
 <argument>198.51.100.7</argument>
 </application-desc></jnlp>"#;
-        let Reply::Xml(root) = classify(doc).unwrap() else { panic!() };
+        let Reply::Xml(root) = classify(doc).unwrap() else {
+            panic!()
+        };
         let ac = parse_login(&root, "myhost").unwrap();
         assert_eq!(ac.authcookie, "0123456789abcdef0123456789abcdef");
         assert_eq!(ac.portal, "GP-Gateway-N");
@@ -812,21 +993,36 @@ mod tests {
             ac.query(),
             "authcookie=0123456789abcdef0123456789abcdef&portal=GP-Gateway-N&user=alice&domain=%28empty_domain%29&preferred-ip=198.51.100.7&computer=myhost"
         );
-        assert_eq!(ac.query_filtered(&["authcookie", "preferred-ip"]), "portal=GP-Gateway-N&user=alice&domain=%28empty_domain%29&computer=myhost");
+        assert_eq!(
+            ac.query_filtered(&["authcookie", "preferred-ip"]),
+            "portal=GP-Gateway-N&user=alice&domain=%28empty_domain%29&computer=myhost"
+        );
     }
 
     #[test]
     fn saml_results() {
         let xml = "<html><!-- <saml-auth-status>1</saml-auth-status><prelogin-cookie>PC123</prelogin-cookie><saml-username>alice@example.com</saml-username> --></html>";
-        let url = format!("globalprotectcallback:{}", openssl::base64::encode_block(xml.as_bytes()));
+        let url = format!(
+            "globalprotectcallback:{}",
+            openssl::base64::encode_block(xml.as_bytes())
+        );
         let r = parse_saml_result(&url).unwrap();
-        assert_eq!((r.user.as_str(), r.field.as_str(), r.value.as_str()), ("alice@example.com", "prelogin-cookie", "PC123"));
+        assert_eq!(
+            (r.user.as_str(), r.field.as_str(), r.value.as_str()),
+            ("alice@example.com", "prelogin-cookie", "PC123")
+        );
 
         let r = parse_saml_result("saml-username=bob; portal-userauthcookie=XYZ").unwrap();
-        assert_eq!((r.user.as_str(), r.field.as_str(), r.value.as_str()), ("bob", "portal-userauthcookie", "XYZ"));
+        assert_eq!(
+            (r.user.as_str(), r.field.as_str(), r.value.as_str()),
+            ("bob", "portal-userauthcookie", "XYZ")
+        );
 
         let r = parse_saml_result("  RAWCOOKIE ").unwrap();
-        assert_eq!((r.field.as_str(), r.value.as_str()), ("prelogin-cookie", "RAWCOOKIE"));
+        assert_eq!(
+            (r.field.as_str(), r.value.as_str()),
+            ("prelogin-cookie", "RAWCOOKIE")
+        );
         assert!(parse_saml_result("   ").is_none());
     }
 }

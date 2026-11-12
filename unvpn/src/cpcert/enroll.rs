@@ -27,7 +27,10 @@ const MIN_PASSWORD_LEN: usize = 6;
 
 /// The internal CA fingerprint as Check Point displays it.
 pub fn ca_fingerprint(cert: &X509) -> String {
-    let d = cert.digest(MessageDigest::sha1()).map(|d| d.to_vec()).unwrap_or_default();
+    let d = cert
+        .digest(MessageDigest::sha1())
+        .map(|d| d.to_vec())
+        .unwrap_or_default();
     let mut k = [0u8; 16];
     k.copy_from_slice(&d[..16]);
     rfc1751::key_to_english(&k)
@@ -51,7 +54,10 @@ pub fn http_request(host: &str, body: &[u8]) -> Vec<u8> {
 pub fn http_body(raw: &[u8]) -> Result<(u16, Vec<u8>), String> {
     let (head_end, sep) = match find(raw, b"\r\n\r\n") {
         Some(i) => (i, 4),
-        None => (find(raw, b"\n\n").ok_or("no HTTP header in the CA answer")?, 2),
+        None => (
+            find(raw, b"\n\n").ok_or("no HTTP header in the CA answer")?,
+            2,
+        ),
     };
     let head = String::from_utf8_lossy(&raw[..head_end]);
     let mut lines = head.lines();
@@ -93,7 +99,10 @@ pub fn http_body(raw: &[u8]) -> Result<(u16, Vec<u8>), String> {
         out
     } else if let Some(n) = clen {
         if rest.len() < n {
-            return Err(format!("CA answer truncated ({} of {n} body bytes)", rest.len()));
+            return Err(format!(
+                "CA answer truncated ({} of {n} body bytes)",
+                rest.len()
+            ));
         }
         rest[..n].to_vec()
     } else {
@@ -108,7 +117,9 @@ fn find(h: &[u8], n: &[u8]) -> Option<usize> {
 
 /// Whether a raw HTTP response is complete (to stop reading on a kept-alive socket).
 fn response_complete(raw: &[u8]) -> bool {
-    let Some(i) = find(raw, b"\r\n\r\n") else { return false };
+    let Some(i) = find(raw, b"\r\n\r\n") else {
+        return false;
+    };
     let head = String::from_utf8_lossy(&raw[..i]).to_ascii_lowercase();
     if let Some(v) = head.lines().find_map(|l| l.strip_prefix("content-length:")) {
         if let Ok(n) = v.trim().parse::<usize>() {
@@ -130,8 +141,12 @@ fn post(host: &str, port: u16, request: &[u8], raw_out: &Path) -> Result<Vec<u8>
     let mut s = TcpStream::connect_timeout(&addr, Duration::from_secs(15))
         .map_err(|e| format!("cannot reach the internal CA at {addr}: {e}"))?;
     s.set_write_timeout(Some(Duration::from_secs(30))).ok();
-    s.write_all(request).map_err(|e| format!("sending the request: {e}"))?;
-    println!("# request sent ({} bytes); waiting for the CA...", request.len());
+    s.write_all(request)
+        .map_err(|e| format!("sending the request: {e}"))?;
+    println!(
+        "# request sent ({} bytes); waiting for the CA...",
+        request.len()
+    );
 
     let start = Instant::now();
     let mut raw = Vec::new();
@@ -147,9 +162,17 @@ fn post(host: &str, port: u16, request: &[u8], raw_out: &Path) -> Result<Vec<u8>
                     break;
                 }
             }
-            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
                 let waited = start.elapsed();
-                if !raw.is_empty() && waited > Duration::from_secs(10) && find(&raw, b"\r\n\r\n").is_some() {
+                if !raw.is_empty()
+                    && waited > Duration::from_secs(10)
+                    && find(&raw, b"\r\n\r\n").is_some()
+                {
                     break;
                 }
                 if waited > Duration::from_secs(120) {
@@ -180,7 +203,8 @@ fn write_private(path: &Path, data: &[u8]) -> Result<(), String> {
             .mode(0o600)
             .open(&tmp)
             .map_err(|e| format!("{}: {e}", tmp.display()))?;
-        f.write_all(data).map_err(|e| format!("{}: {e}", tmp.display()))?;
+        f.write_all(data)
+            .map_err(|e| format!("{}: {e}", tmp.display()))?;
         f.sync_all().ok();
     }
     std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
@@ -194,7 +218,9 @@ impl Staging {
     fn new(out: &Path) -> Staging {
         let mut d = out.as_os_str().to_owned();
         d.push(".enroll");
-        Staging { dir: PathBuf::from(d) }
+        Staging {
+            dir: PathBuf::from(d),
+        }
     }
     fn key(&self) -> PathBuf {
         self.dir.join("key.pem")
@@ -235,19 +261,28 @@ pub struct Options {
 pub fn run(o: &Options) -> Result<String, String> {
     let st = Staging::new(&o.out);
     if o.out.exists() && !st.exists() {
-        return Err(format!("{} already exists; choose another file name", o.out.display()));
+        return Err(format!(
+            "{} already exists; choose another file name",
+            o.out.display()
+        ));
     }
 
     let (key, request) = if st.exists() {
         let pem = std::fs::read(st.key()).map_err(|e| format!("{}: {e}", st.key().display()))?;
-        let key = PKey::private_key_from_pem_passphrase(&pem, o.password.as_bytes())
-            .map_err(|_| "cannot open the stored enrollment key (different password than the first attempt?)")?;
-        let request = std::fs::read(st.request()).map_err(|e| format!("{}: {e}", st.request().display()))?;
+        let key =
+            PKey::private_key_from_pem_passphrase(&pem, o.password.as_bytes()).map_err(|_| {
+                "cannot open the stored enrollment key (different password than the first attempt?)"
+            })?;
+        let request =
+            std::fs::read(st.request()).map_err(|e| format!("{}: {e}", st.request().display()))?;
         println!("# continuing the enrollment stored in {}", st.dir.display());
         (key, request)
     } else {
         if o.resume || o.resend {
-            return Err(format!("nothing to continue: {} does not exist", st.dir.display()));
+            return Err(format!(
+                "nothing to continue: {} does not exist",
+                st.dir.display()
+            ));
         }
         let rsa = Rsa::generate(o.key_bits).map_err(|e| e.to_string())?;
         let key = PKey::from_rsa(rsa).map_err(|e| e.to_string())?;
@@ -258,7 +293,11 @@ pub fn run(o: &Options) -> Result<String, String> {
             .map_err(|e| e.to_string())?;
         write_private(&st.key(), &pem)?;
         write_private(&st.request(), &request)?;
-        println!("# new {}-bit key and request saved in {}", o.key_bits, st.dir.display());
+        println!(
+            "# new {}-bit key and request saved in {}",
+            o.key_bits,
+            st.dir.display()
+        );
         (key, request)
     };
 
@@ -287,14 +326,20 @@ pub fn run(o: &Options) -> Result<String, String> {
     }
     let spki = key.public_key_to_der().map_err(|e| e.to_string())?;
     let issued = cmc::parse_response(&body, &spki, &o.regkey).map_err(|e| {
-        format!("{e} (HTTP {code}; the answer is kept in {}, re-run with --resume once resolved)", st.raw().display())
+        format!(
+            "{e} (HTTP {code}; the answer is kept in {}, re-run with --resume once resolved)",
+            st.raw().display()
+        )
     })?;
     for n in &issued.notes {
         println!("# note: {n}");
     }
 
     let ca_fp = issued.ca.as_ref().map(ca_fingerprint);
-    let fp_match = ca_fp.as_ref().map(|f| o.expected_ca.iter().any(|e| e == f)).unwrap_or(false);
+    let fp_match = ca_fp
+        .as_ref()
+        .map(|f| o.expected_ca.iter().any(|e| e == f))
+        .unwrap_or(false);
     if let Some(f) = &ca_fp {
         println!("# internal CA fingerprint: {f}");
     }
@@ -307,7 +352,10 @@ pub fn run(o: &Options) -> Result<String, String> {
         if fp_match {
             println!("# the CA matches the one the gateway advertises");
         } else {
-            println!("# WARNING: the CA fingerprint differs from the gateway's: {}", o.expected_ca.join(" / "));
+            println!(
+                "# WARNING: the CA fingerprint differs from the gateway's: {}",
+                o.expected_ca.join(" / ")
+            );
         }
     }
     let authenticated = issued.ca_proof == Some(true) || fp_match;
@@ -346,7 +394,9 @@ fn mark_sent(st: &Staging) -> Result<(), String> {
 
 pub fn validate_password(p: &str) -> Result<(), String> {
     if p.chars().count() < MIN_PASSWORD_LEN {
-        return Err(format!("the certificate password must have at least {MIN_PASSWORD_LEN} characters"));
+        return Err(format!(
+            "the certificate password must have at least {MIN_PASSWORD_LEN} characters"
+        ));
     }
     Ok(())
 }

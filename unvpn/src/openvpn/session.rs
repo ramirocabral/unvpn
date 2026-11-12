@@ -35,7 +35,11 @@ pub struct DataParams {
 
 #[derive(Debug)]
 pub enum Event {
-    TlsUp { key_id: u8, version: String, cipher: String },
+    TlsUp {
+        key_id: u8,
+        version: String,
+        cipher: String,
+    },
     /// The server's key-method-2 message arrived (key negotiation complete).
     KeyExchanged { key_id: u8 },
     /// A NUL-terminated text message on the control channel.
@@ -78,7 +82,11 @@ struct KeyState {
 
 impl KeyState {
     fn new(key_id: u8, initial_op: u8, tcp: bool) -> Result<KeyState, String> {
-        let mut local = KeySource { pre_master: [0; 48], r1: [0; 32], r2: [0; 32] };
+        let mut local = KeySource {
+            pre_master: [0; 48],
+            r1: [0; 32],
+            r2: [0; 32],
+        };
         openssl::rand::rand_bytes(&mut local.pre_master).map_err(|e| e.to_string())?;
         openssl::rand::rand_bytes(&mut local.r1).map_err(|e| e.to_string())?;
         openssl::rand::rand_bytes(&mut local.r2).map_err(|e| e.to_string())?;
@@ -167,14 +175,25 @@ impl Engine {
 
     /// Returns the decrypted payload of a data packet.
     pub fn handle_packet(&mut self, pkt: &[u8]) -> Result<Option<Vec<u8>>, String> {
-        let Some(&first) = pkt.first() else { return Ok(None) };
+        let Some(&first) = pkt.first() else {
+            return Ok(None);
+        };
         let (op, kid) = (opcode(first), key_id(first));
         if is_data(op) {
             let hdr_len = if op == P_DATA_V2 { 4 } else { 1 };
-            let Some(ks) = self.keys.iter_mut().find(|k| k.key_id == kid && k.data.is_some()) else {
+            let Some(ks) = self
+                .keys
+                .iter_mut()
+                .find(|k| k.key_id == kid && k.data.is_some())
+            else {
                 return Ok(None); // data for a key we don't (yet/anymore) have
             };
-            return match ks.data.as_mut().unwrap().decrypt(pkt, hdr_len, op == P_DATA_V2) {
+            return match ks
+                .data
+                .as_mut()
+                .unwrap()
+                .decrypt(pkt, hdr_len, op == P_DATA_V2)
+            {
                 Ok(p) => {
                     self.last_rx = Instant::now();
                     Ok(Some(p))
@@ -216,12 +235,16 @@ impl Engine {
             self.last_key_id = kid;
             self.keys.insert(0, ks);
         }
-        let Some(ks) = self.keys.iter_mut().find(|k| k.key_id == kid) else { return Ok(None) };
+        let Some(ks) = self.keys.iter_mut().find(|k| k.key_id == kid) else {
+            return Ok(None);
+        };
         ks.rel.acked(&c.acks);
         if let Some(id) = c.msg_id {
             for (mop, payload) in ks.rel.receive(id, op, c.payload) {
                 match mop {
-                    P_CONTROL_HARD_RESET_SERVER_V2 | P_CONTROL_SOFT_RESET_V1 => ks.peer_reset = true,
+                    P_CONTROL_HARD_RESET_SERVER_V2 | P_CONTROL_SOFT_RESET_V1 => {
+                        ks.peer_reset = true
+                    }
                     P_CONTROL_V1 => {
                         if let Some(t) = ks.tls.as_mut() {
                             t.get_mut().rx.extend_from_slice(&payload);
@@ -239,7 +262,8 @@ impl Engine {
         // Retire expired lame ducks and stalled renegotiations.
         let before = self.keys.len();
         self.keys.retain(|k| {
-            k.expire.map_or(true, |t| now < t) && (k.data.is_some() || k.key_id == 0 || now.duration_since(k.born) < HAND_WINDOW)
+            k.expire.map_or(true, |t| now < t)
+                && (k.data.is_some() || k.key_id == 0 || now.duration_since(k.born) < HAND_WINDOW)
         });
         if self.keys.len() < before {
             out!("# retired {} old/stalled key(s)", before - self.keys.len());
@@ -260,7 +284,9 @@ impl Engine {
             ssl.set_connect_state();
             ks.tls = Some(SslStream::new(ssl, MemPipe::default()).map_err(|e| e.to_string())?);
         }
-        let Some(tls) = ks.tls.as_mut() else { return Ok(()) };
+        let Some(tls) = ks.tls.as_mut() else {
+            return Ok(());
+        };
 
         if !ks.hs_done {
             match tls.do_handshake() {
@@ -270,19 +296,34 @@ impl Engine {
                     self.events.push_back(Event::TlsUp {
                         key_id: ks.key_id,
                         version: s.version_str().to_string(),
-                        cipher: s.current_cipher().map(|c| c.name().to_string()).unwrap_or_default(),
+                        cipher: s
+                            .current_cipher()
+                            .map(|c| c.name().to_string())
+                            .unwrap_or_default(),
                     });
                 }
-                Err(e) if e.code() == ErrorCode::WANT_READ || e.code() == ErrorCode::WANT_WRITE => {}
+                Err(e) if e.code() == ErrorCode::WANT_READ || e.code() == ErrorCode::WANT_WRITE => {
+                }
                 Err(e) => {
-                    let why = self.peer.lock().unwrap().error.clone().unwrap_or_else(|| e.to_string());
+                    let why = self
+                        .peer
+                        .lock()
+                        .unwrap()
+                        .error
+                        .clone()
+                        .unwrap_or_else(|| e.to_string());
                     return Err(format!("TLS handshake failed: {why}"));
                 }
             }
         }
 
         if ks.hs_done && !ks.sent_key && !self.probe_only {
-            let msg = key_method_2(&ks.local, &self.options_string, self.creds.as_ref(), &self.peer_info);
+            let msg = key_method_2(
+                &ks.local,
+                &self.options_string,
+                self.creds.as_ref(),
+                &self.peer_info,
+            );
             tls.ssl_write(&msg).map_err(|e| format!("TLS write: {e}"))?;
             ks.sent_key = true;
         }
@@ -298,19 +339,29 @@ impl Engine {
                             ks.remote_r1 = r1;
                             ks.remote_r2 = r2;
                             ks.got_key = true;
-                            self.events.push_back(Event::KeyExchanged { key_id: ks.key_id });
+                            self.events
+                                .push_back(Event::KeyExchanged { key_id: ks.key_id });
                         } else {
                             ks.text.extend_from_slice(&buf[..n]);
                         }
                     }
-                    Err(e) if e.code() == ErrorCode::WANT_READ || e.code() == ErrorCode::WANT_WRITE => break,
-                    Err(e) if e.code() == ErrorCode::ZERO_RETURN => return Err("server closed the TLS session".into()),
+                    Err(e)
+                        if e.code() == ErrorCode::WANT_READ
+                            || e.code() == ErrorCode::WANT_WRITE =>
+                    {
+                        break
+                    }
+                    Err(e) if e.code() == ErrorCode::ZERO_RETURN => {
+                        return Err("server closed the TLS session".into())
+                    }
                     Err(e) => return Err(format!("TLS read: {e}")),
                 }
             }
             while let Some(z) = ks.text.iter().position(|&b| b == 0) {
                 let m: Vec<u8> = ks.text.drain(..=z).collect();
-                let s = String::from_utf8_lossy(&m[..m.len() - 1]).trim().to_string();
+                let s = String::from_utf8_lossy(&m[..m.len() - 1])
+                    .trim()
+                    .to_string();
                 if !s.is_empty() {
                     self.events.push_back(Event::Message(s));
                 }
@@ -341,14 +392,24 @@ impl Engine {
         let mut out_pkts = Vec::new();
         for ks in &mut self.keys {
             for (id, op, payload) in ks.rel.due(now) {
-                let acks = if self.remote_sid.is_some() { ks.rel.take_acks() } else { Vec::new() };
+                let acks = if self.remote_sid.is_some() {
+                    ks.rel.take_acks()
+                } else {
+                    Vec::new()
+                };
                 let rest = encode_rest(&acks, &remote, Some(id), &payload);
-                out_pkts.push(self.wrap.wrap(op_byte(op, ks.key_id), &self.local_sid, &rest));
+                out_pkts.push(
+                    self.wrap
+                        .wrap(op_byte(op, ks.key_id), &self.local_sid, &rest),
+                );
             }
             while !ks.rel.to_ack.is_empty() && self.remote_sid.is_some() {
                 let acks = ks.rel.take_acks();
                 let rest = encode_rest(&acks, &remote, None, &[]);
-                out_pkts.push(self.wrap.wrap(op_byte(P_ACK_V1, ks.key_id), &self.local_sid, &rest));
+                out_pkts.push(
+                    self.wrap
+                        .wrap(op_byte(P_ACK_V1, ks.key_id), &self.local_sid, &rest),
+                );
             }
         }
         for p in out_pkts {
@@ -365,7 +426,11 @@ impl Engine {
     /// PUSH_REPLY fixed the cipher/key-derivation. Later keys do this by themselves.
     pub fn install_initial_keys(&mut self, params: DataParams) -> Result<(), String> {
         self.params = Some(params.clone());
-        let i = self.keys.iter().position(|k| k.key_id == 0 && k.got_key).ok_or("initial key exchange not complete")?;
+        let i = self
+            .keys
+            .iter()
+            .position(|k| k.key_id == 0 && k.got_key)
+            .ok_or("initial key exchange not complete")?;
         self.install_keys_at(i, &params)
     }
 
@@ -375,7 +440,9 @@ impl Engine {
         let material = if p.ekm {
             let tls = ks.tls.as_ref().ok_or("no TLS session")?;
             let mut out = vec![0u8; 256];
-            tls.ssl().export_keying_material(&mut out, EKM_LABEL, None).map_err(|e| format!("TLS EKM: {e}"))?;
+            tls.ssl()
+                .export_keying_material(&mut out, EKM_LABEL, None)
+                .map_err(|e| format!("TLS EKM: {e}"))?;
             out
         } else {
             crypto::openvpn_prf_keys(
@@ -413,7 +480,11 @@ impl Engine {
         if self.keys.iter().any(|k| k.data.is_none()) {
             return Ok(()); // one already in progress
         }
-        let kid = if self.last_key_id >= 7 { 1 } else { self.last_key_id + 1 };
+        let kid = if self.last_key_id >= 7 {
+            1
+        } else {
+            self.last_key_id + 1
+        };
         self.last_key_id = kid;
         out!("# renegotiating data keys (key id {kid}) …");
         let ks = KeyState::new(kid, P_CONTROL_SOFT_RESET_V1, self.link.is_tcp())?;
@@ -422,20 +493,35 @@ impl Engine {
     }
 
     pub fn has_data_key(&self) -> bool {
-        self.keys.iter().any(|k| k.data.is_some() && k.expire.is_none())
+        self.keys
+            .iter()
+            .any(|k| k.data.is_some() && k.expire.is_none())
     }
 
     pub fn encrypt(&mut self, payload: &[u8]) -> Result<Option<Vec<u8>>, String> {
         let peer_id = self.peer_id;
-        let Some(ks) = self.keys.iter_mut().find(|k| k.data.is_some() && k.expire.is_none()) else { return Ok(None) };
+        let Some(ks) = self
+            .keys
+            .iter_mut()
+            .find(|k| k.data.is_some() && k.expire.is_none())
+        else {
+            return Ok(None);
+        };
         let kid = ks.key_id;
         let d = ks.data.as_mut().unwrap();
         match peer_id {
             Some(pid) => {
-                let hdr = [op_byte(P_DATA_V2, kid), (pid >> 16) as u8, (pid >> 8) as u8, pid as u8];
+                let hdr = [
+                    op_byte(P_DATA_V2, kid),
+                    (pid >> 16) as u8,
+                    (pid >> 8) as u8,
+                    pid as u8,
+                ];
                 d.encrypt(&hdr, true, payload).map(Some)
             }
-            None => d.encrypt(&[op_byte(P_DATA_V1, kid)], false, payload).map(Some),
+            None => d
+                .encrypt(&[op_byte(P_DATA_V1, kid)], false, payload)
+                .map(Some),
         }
     }
 
@@ -452,7 +538,11 @@ impl Engine {
     /// Send a NUL-terminated text message (`PUSH_REQUEST`, `EXIT`, …) over the
     /// newest key whose TLS session is up.
     pub fn send_text(&mut self, msg: &str) -> Result<(), String> {
-        let ks = self.keys.iter_mut().find(|k| k.got_key).ok_or("control channel not ready")?;
+        let ks = self
+            .keys
+            .iter_mut()
+            .find(|k| k.got_key)
+            .ok_or("control channel not ready")?;
         let tls = ks.tls.as_mut().ok_or("control channel not ready")?;
         let mut b = msg.as_bytes().to_vec();
         b.push(0);
@@ -513,7 +603,11 @@ fn parse_key_method_2(m: &[u8]) -> Result<([u8; 32], [u8; 32]), String> {
 fn read_options(m: &[u8]) -> Option<String> {
     let l = u16::from_be_bytes([*m.get(69)?, *m.get(70)?]) as usize;
     let s = m.get(71..71 + l)?;
-    Some(String::from_utf8_lossy(s).trim_end_matches('\0').to_string())
+    Some(
+        String::from_utf8_lossy(s)
+            .trim_end_matches('\0')
+            .to_string(),
+    )
 }
 
 #[cfg(test)]
@@ -522,8 +616,20 @@ mod tests {
 
     #[test]
     fn key_method_layout() {
-        let k = KeySource { pre_master: [1; 48], r1: [2; 32], r2: [3; 32] };
-        let m = key_method_2(&k, "V4,dev-type tun", Some(&Creds { user: "u".into(), pass: "p".into() }), "IV_VER=x\n");
+        let k = KeySource {
+            pre_master: [1; 48],
+            r1: [2; 32],
+            r2: [3; 32],
+        };
+        let m = key_method_2(
+            &k,
+            "V4,dev-type tun",
+            Some(&Creds {
+                user: "u".into(),
+                pass: "p".into(),
+            }),
+            "IV_VER=x\n",
+        );
         assert_eq!(&m[..5], &[0, 0, 0, 0, 2]);
         assert_eq!(m[5], 1);
         assert_eq!(m[5 + 48], 2);
@@ -545,7 +651,10 @@ mod tests {
         m.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
         let (r1, r2) = parse_key_method_2(&m).unwrap();
         assert_eq!((r1[0], r2[31]), (0xaa, 0xbb));
-        assert_eq!(read_options(&m).as_deref(), Some("V4,dev-type tun,tls-server"));
+        assert_eq!(
+            read_options(&m).as_deref(),
+            Some("V4,dev-type tun,tls-server")
+        );
         assert!(parse_key_method_2(&m[..40]).is_err());
     }
 }

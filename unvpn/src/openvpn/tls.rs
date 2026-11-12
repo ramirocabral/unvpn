@@ -61,7 +61,12 @@ pub struct ClientId {
 
 /// For PKCS#12 the empty password is tried before `key_pass` (the common case).
 pub fn load_client_id(cfg: &Config, key_pass: Option<&str>) -> Result<ClientId, String> {
-    let mut id = ClientId { cert: None, chain: Vec::new(), key: None, p12_ca: Vec::new() };
+    let mut id = ClientId {
+        cert: None,
+        chain: Vec::new(),
+        key: None,
+        p12_ca: Vec::new(),
+    };
     if let Some(der) = &cfg.pkcs12 {
         let p = Pkcs12::from_der(der).map_err(|e| format!("pkcs12: {e}"))?;
         let parsed = p
@@ -108,7 +113,11 @@ pub fn key_is_encrypted(cfg: &Config) -> bool {
 }
 
 /// `peer` collects what verification saw.
-pub fn build_context(cfg: &Config, id: &ClientId, peer: Arc<Mutex<PeerInfo>>) -> Result<SslContext, String> {
+pub fn build_context(
+    cfg: &Config,
+    id: &ClientId,
+    peer: Arc<Mutex<PeerInfo>>,
+) -> Result<SslContext, String> {
     let mut b = SslContextBuilder::new(SslMethod::tls_client()).map_err(|e| e.to_string())?;
     // OpenVPN's default `tls-cert-profile legacy` = OpenSSL security level 1.
     b.set_security_level(1);
@@ -118,7 +127,8 @@ pub fn build_context(cfg: &Config, id: &ClientId, peer: Arc<Mutex<PeerInfo>>) ->
         Some("1.1") => SslVersion::TLS1_1,
         _ => SslVersion::TLS1_2,
     };
-    b.set_min_proto_version(Some(min)).map_err(|e| e.to_string())?;
+    b.set_min_proto_version(Some(min))
+        .map_err(|e| e.to_string())?;
 
     // CA store: <ca>, else the CA certs bundled in the PKCS#12.
     let mut store = X509StoreBuilder::new().map_err(|e| e.to_string())?;
@@ -138,17 +148,22 @@ pub fn build_context(cfg: &Config, id: &ClientId, peer: Arc<Mutex<PeerInfo>>) ->
     if n_ca == 0 {
         return Err("no CA certificate (<ca> or pkcs12 CA) — cannot verify the server".into());
     }
-    b.set_verify_cert_store(store.build()).map_err(|e| e.to_string())?;
+    b.set_verify_cert_store(store.build())
+        .map_err(|e| e.to_string())?;
 
     if let Some(c) = &id.cert {
-        b.set_certificate(c).map_err(|e| format!("client cert: {e}"))?;
+        b.set_certificate(c)
+            .map_err(|e| format!("client cert: {e}"))?;
         for extra in &id.chain {
-            b.add_extra_chain_cert(extra.clone()).map_err(|e| e.to_string())?;
+            b.add_extra_chain_cert(extra.clone())
+                .map_err(|e| e.to_string())?;
         }
     }
     if let Some(k) = &id.key {
-        b.set_private_key(k).map_err(|e| format!("client key: {e}"))?;
-        b.check_private_key().map_err(|e| format!("client key does not match cert: {e}"))?;
+        b.set_private_key(k)
+            .map_err(|e| format!("client key: {e}"))?;
+        b.check_private_key()
+            .map_err(|e| format!("client key does not match cert: {e}"))?;
     }
 
     let want_name = cfg.verify_x509.clone();
@@ -163,13 +178,18 @@ pub fn build_context(cfg: &Config, id: &ClientId, peer: Arc<Mutex<PeerInfo>>) ->
             }
         }
         if !ok {
-            p.error = Some(format!("certificate verify failed at depth {depth}: {}", ctx.error().error_string()));
+            p.error = Some(format!(
+                "certificate verify failed at depth {depth}: {}",
+                ctx.error().error_string()
+            ));
             return false;
         }
         if depth != 0 {
             return true;
         }
-        let Some(cert) = ctx.current_cert() else { return false };
+        let Some(cert) = ctx.current_cert() else {
+            return false;
+        };
         if let Some(w) = &want_name {
             if let Err(e) = check_name(cert, w) {
                 p.error = Some(e);
@@ -177,7 +197,10 @@ pub fn build_context(cfg: &Config, id: &ClientId, peer: Arc<Mutex<PeerInfo>>) ->
             }
         }
         if want_server && !has_server_eku(cert) {
-            p.error = Some("remote-cert-tls server: certificate lacks the TLS Web Server Authentication EKU".into());
+            p.error = Some(
+                "remote-cert-tls server: certificate lacks the TLS Web Server Authentication EKU"
+                    .into(),
+            );
             return false;
         }
         true
@@ -198,7 +221,9 @@ pub fn subject_string(n: &X509NameRef) -> String {
 }
 
 fn common_name(n: &X509NameRef) -> Option<String> {
-    n.entries_by_nid(openssl::nid::Nid::COMMONNAME).next().and_then(|e| e.data().to_string().ok())
+    n.entries_by_nid(openssl::nid::Nid::COMMONNAME)
+        .next()
+        .and_then(|e| e.data().to_string().ok())
 }
 
 fn check_name(cert: &X509Ref, want: &X509Name) -> Result<(), String> {
@@ -212,7 +237,9 @@ fn check_name(cert: &X509Ref, want: &X509Name) -> Result<(), String> {
     if ok {
         Ok(())
     } else {
-        Err(format!("verify-x509-name mismatch: server is \"{subj}\", expected {want:?}"))
+        Err(format!(
+            "verify-x509-name mismatch: server is \"{subj}\", expected {want:?}"
+        ))
     }
 }
 
@@ -225,8 +252,13 @@ fn has_server_eku(cert: &X509Ref) -> bool {
     // openssl-the-crate exposes no EKU accessor; the text dump is stable enough.
     let Ok(t) = cert.to_text() else { return false };
     let t = String::from_utf8_lossy(&t);
-    let Some(i) = t.find("X509v3 Extended Key Usage") else { return false };
-    t[i..].lines().nth(1).is_some_and(|l| l.contains("TLS Web Server Authentication"))
+    let Some(i) = t.find("X509v3 Extended Key Usage") else {
+        return false;
+    };
+    t[i..]
+        .lines()
+        .nth(1)
+        .is_some_and(|l| l.contains("TLS Web Server Authentication"))
 }
 
 #[cfg(test)]
@@ -235,14 +267,20 @@ mod tests {
 
     #[test]
     fn dn_normalization() {
-        assert_eq!(normalize_dn("C=AR, ST=Buenos Aires, CN=x"), normalize_dn("C=AR,ST=Buenos Aires,CN=x"));
+        assert_eq!(
+            normalize_dn("C=AR, ST=Buenos Aires, CN=x"),
+            normalize_dn("C=AR,ST=Buenos Aires,CN=x")
+        );
     }
 
     #[test]
     fn mem_pipe() {
         let mut p = MemPipe::default();
         let mut b = [0u8; 4];
-        assert_eq!(p.read(&mut b).unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
+        assert_eq!(
+            p.read(&mut b).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
         p.rx.extend_from_slice(b"abcdef");
         assert_eq!(p.read(&mut b).unwrap(), 4);
         assert_eq!(&p.rx, b"ef");

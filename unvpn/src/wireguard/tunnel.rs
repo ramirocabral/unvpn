@@ -67,14 +67,18 @@ pub fn run(cfg: Config, opts: RunOpts) -> Result<(), String> {
         out!("# note: config key `{u}` is not supported and is ignored");
     }
     let iface = &cfg.interface;
-    out!("# interface public key: {}", keys::to_b64(&keys::public(&iface.private_key)?));
+    out!(
+        "# interface public key: {}",
+        keys::to_b64(&keys::public(&iface.private_key)?)
+    );
 
     // Resolve endpoints now, while the system resolver is still the pre-VPN one.
     let mut endpoints: Vec<Option<SocketAddr>> = Vec::new();
     for (i, p) in cfg.peers.iter().enumerate() {
         endpoints.push(match &p.endpoint {
             Some(e) => {
-                let sa = resolve(e).map_err(|err| format!("peer #{} endpoint {e}: {err}", i + 1))?;
+                let sa =
+                    resolve(e).map_err(|err| format!("peer #{} endpoint {e}: {err}", i + 1))?;
                 out!("# peer {} → {sa}", short(&p.public_key));
                 Some(sa)
             }
@@ -101,7 +105,11 @@ pub fn run(cfg: Config, opts: RunOpts) -> Result<(), String> {
                 endpoint: *ep,
                 allowed_ips: p.allowed_ips.clone(),
                 // Kick a handshake on peers we can reach; restored after.
-                keepalive: if ep.is_some() { p.persistent_keepalive.unwrap_or(KICK_KEEPALIVE) } else { p.persistent_keepalive.unwrap_or(0) },
+                keepalive: if ep.is_some() {
+                    p.persistent_keepalive.unwrap_or(KICK_KEEPALIVE)
+                } else {
+                    p.persistent_keepalive.unwrap_or(0)
+                },
             })
             .collect(),
     };
@@ -112,10 +120,19 @@ pub fn run(cfg: Config, opts: RunOpts) -> Result<(), String> {
     let mtu = iface.mtu.unwrap_or(DEFAULT_MTU);
     tun::ip(&["link", "set", "dev", &ifname, "mtu", &mtu.to_string(), "up"])?;
     let addrs: Vec<String> = iface.addresses.iter().map(Net::to_string).collect();
-    out!("# interface {ifname} up — {} (mtu {mtu}), {} peer(s)", addrs.join(", "), cfg.peers.len());
+    out!(
+        "# interface {ifname} up — {} (mtu {mtu}), {} peer(s)",
+        addrs.join(", "),
+        cfg.peers.len()
+    );
 
     // First handshake: proves keys, endpoint and UDP path before we touch routes.
-    let reachable: Vec<usize> = endpoints.iter().enumerate().filter(|(_, e)| e.is_some()).map(|(i, _)| i).collect();
+    let reachable: Vec<usize> = endpoints
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.is_some())
+        .map(|(i, _)| i)
+        .collect();
     if reachable.is_empty() {
         out!("# note: no peer has an Endpoint — waiting for peers to connect to us");
     } else {
@@ -137,7 +154,11 @@ pub fn run(cfg: Config, opts: RunOpts) -> Result<(), String> {
     out!(
         "# WireGuard up — IP {}  DNS {:?}  (mtu {mtu})",
         ip.map(|a| a.to_string()).unwrap_or_default(),
-        if opts.no_routes { &[][..] } else { &iface.dns[..] }
+        if opts.no_routes {
+            &[][..]
+        } else {
+            &iface.dns[..]
+        }
     );
 
     let mut restore = sysnet::NetRestore::default();
@@ -195,7 +216,10 @@ fn create_link(name: &str) -> Result<String, String> {
             Ok(()) => return Ok(candidate),
             Err(e) if e.contains("File exists") => continue,
             Err(e) if e.contains("Unknown device type") || e.contains("not supported") => {
-                return Err("this kernel has no WireGuard support (module `wireguard` not available)".into())
+                return Err(
+                    "this kernel has no WireGuard support (module `wireguard` not available)"
+                        .into(),
+                )
             }
             Err(e) => return Err(e),
         }
@@ -204,7 +228,10 @@ fn create_link(name: &str) -> Result<String, String> {
 }
 
 fn now_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 fn peer_state<'a>(st: &'a DeviceState, key: &[u8; 32]) -> Option<&'a super::netlink::PeerState> {
@@ -213,7 +240,12 @@ fn peer_state<'a>(st: &'a DeviceState, key: &[u8; 32]) -> Option<&'a super::netl
 
 /// Poll the kernel until every reachable peer has handshaken (or one has and the
 /// others had `OTHERS_WAIT` more). Errors if none answers within `HANDSHAKE_WAIT`.
-fn wait_handshake(nl: &mut WgNetlink, ifname: &str, cfg: &Config, reachable: &[usize]) -> Result<(), String> {
+fn wait_handshake(
+    nl: &mut WgNetlink,
+    ifname: &str,
+    cfg: &Config,
+    reachable: &[usize],
+) -> Result<(), String> {
     out!("# handshaking with {} peer(s) …", reachable.len());
     let start = Instant::now();
     let mut first_ok: Option<Instant> = None;
@@ -229,7 +261,11 @@ fn wait_handshake(nl: &mut WgNetlink, ifname: &str, cfg: &Config, reachable: &[u
             if !done[i] && peer_state(&st, &p.public_key).is_some_and(|s| s.last_handshake != 0) {
                 done[i] = true;
                 first_ok.get_or_insert_with(Instant::now);
-                out!("# handshake with peer {} ({} ms)", short(&p.public_key), start.elapsed().as_millis());
+                out!(
+                    "# handshake with peer {} ({} ms)",
+                    short(&p.public_key),
+                    start.elapsed().as_millis()
+                );
             }
         }
         let all = reachable.iter().all(|&i| done[i]);
@@ -247,7 +283,10 @@ fn wait_handshake(nl: &mut WgNetlink, ifname: &str, cfg: &Config, reachable: &[u
             ));
         }
         if last_note.elapsed() >= Duration::from_secs(5) {
-            out!("#   still waiting for a handshake ({}s) …", start.elapsed().as_secs());
+            out!(
+                "#   still waiting for a handshake ({}s) …",
+                start.elapsed().as_secs()
+            );
             last_note = Instant::now();
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -271,19 +310,32 @@ fn monitor(nl: &mut WgNetlink, ifname: &str) -> Result<(), String> {
             continue;
         }
         last_stats = Instant::now();
-        let st = nl.get_device(ifname).map_err(|e| format!("interface {ifname} gone? ({e})"))?;
-        let (rx, tx): (u64, u64) = st.peers.iter().fold((0, 0), |a, p| (a.0 + p.rx_bytes, a.1 + p.tx_bytes));
+        let st = nl
+            .get_device(ifname)
+            .map_err(|e| format!("interface {ifname} gone? ({e})"))?;
+        let (rx, tx): (u64, u64) = st
+            .peers
+            .iter()
+            .fold((0, 0), |a, p| (a.0 + p.rx_bytes, a.1 + p.tx_bytes));
         let newest = st.peers.iter().map(|p| p.last_handshake).max().unwrap_or(0);
-        let age = if newest == 0 { None } else { Some(now_secs().saturating_sub(newest)) };
+        let age = if newest == 0 {
+            None
+        } else {
+            Some(now_secs().saturating_sub(newest))
+        };
         out!(
             "#  stats: rx={} tx={} last handshake {}",
             human(rx),
             human(tx),
-            age.map(|a| format!("{a}s ago")).unwrap_or_else(|| "never".into())
+            age.map(|a| format!("{a}s ago"))
+                .unwrap_or_else(|| "never".into())
         );
         // Sending but nothing coming back, and no fresh handshake: peer unreachable.
         if let Some(p) = &prev {
-            let (prx, ptx): (u64, u64) = p.peers.iter().fold((0, 0), |a, p| (a.0 + p.rx_bytes, a.1 + p.tx_bytes));
+            let (prx, ptx): (u64, u64) = p
+                .peers
+                .iter()
+                .fold((0, 0), |a, p| (a.0 + p.rx_bytes, a.1 + p.tx_bytes));
             let silent = tx > ptx && rx == prx && age.is_none_or(|a| a > STALE_HANDSHAKE);
             if silent && !warned {
                 out!("# warning: peer not answering (no reply / handshake for a while) — the kernel keeps retrying");
@@ -311,7 +363,12 @@ fn human(b: u64) -> String {
 /// and comes back untouched), and each endpoint those cover pinned to its
 /// pre-VPN path. `Table = <n>` puts the AllowedIPs in that table as-is (the user's
 /// policy routing decides); `Table = off` installs nothing.
-fn route_plan(cfg: &Config, ifname: &str, endpoints: &[Option<SocketAddr>], path: impl Fn(IpAddr) -> Option<String>) -> Vec<String> {
+fn route_plan(
+    cfg: &Config,
+    ifname: &str,
+    endpoints: &[Option<SocketAddr>],
+    path: impl Fn(IpAddr) -> Option<String>,
+) -> Vec<String> {
     let mut nets: Vec<Net> = Vec::new();
     let mut push = |n: Net| {
         if !nets.contains(&n) {
@@ -375,13 +432,26 @@ fn setup_routes(cfg: &Config, ifname: &str, endpoints: &[Option<SocketAddr>]) ->
     let full4 = add.iter().any(|l| l.contains("route add 0.0.0.0/1 "));
     let full6 = add.iter().any(|l| l.contains("route add ::/1 "));
     if full4 || full6 {
-        out!("# full tunnel ({}) via {ifname}", [full4.then_some("IPv4"), full6.then_some("IPv6")].into_iter().flatten().collect::<Vec<_>>().join(" + "));
+        out!(
+            "# full tunnel ({}) via {ifname}",
+            [full4.then_some("IPv4"), full6.then_some("IPv6")]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" + ")
+        );
     }
-    let split = add.iter().filter(|l| l.contains(&format!("dev {ifname}"))).count();
+    let split = add
+        .iter()
+        .filter(|l| l.contains(&format!("dev {ifname}")))
+        .count();
     out!("# {split} route(s) via {ifname}");
     let failed = tun::ip_batch_failed(&add).unwrap_or_default();
     if !failed.is_empty() {
-        out!("# {} route(s) already existed (or this host lacks IPv6) — left as is", failed.len());
+        out!(
+            "# {} route(s) already existed (or this host lacks IPv6) — left as is",
+            failed.len()
+        );
     }
     add.into_iter()
         .enumerate()
@@ -392,12 +462,20 @@ fn setup_routes(cfg: &Config, ifname: &str, endpoints: &[Option<SocketAddr>]) ->
 
 /// `via X dev Y` / `dev Y` of the current route to `dst` (`ip route get`).
 fn original_path(dst: IpAddr) -> Option<String> {
-    let out = std::process::Command::new("ip").args(["route", "get", &dst.to_string()]).output().ok()?;
+    let out = std::process::Command::new("ip")
+        .args(["route", "get", &dst.to_string()])
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }
     let text = String::from_utf8_lossy(&out.stdout);
-    let toks: Vec<&str> = text.lines().next().unwrap_or("").split_whitespace().collect();
+    let toks: Vec<&str> = text
+        .lines()
+        .next()
+        .unwrap_or("")
+        .split_whitespace()
+        .collect();
     let via = toks.windows(2).find(|w| w[0] == "via").map(|w| w[1]);
     let dev = toks.windows(2).find(|w| w[0] == "dev").map(|w| w[1])?;
     Some(match via {
@@ -428,7 +506,9 @@ mod tests {
     #[test]
     fn full_tunnel_pins_endpoint_and_splits_default() {
         let c = cfg("", "0.0.0.0/0, ::/0");
-        let r = route_plan(&c, "cpwg0", &ep(), |_| Some("via 198.51.100.1 dev eth0".into()));
+        let r = route_plan(&c, "cpwg0", &ep(), |_| {
+            Some("via 198.51.100.1 dev eth0".into())
+        });
         assert_eq!(
             r,
             vec![
@@ -445,13 +525,21 @@ mod tests {
     fn split_tunnel_needs_no_pin() {
         let c = cfg("", "10.8.0.0/24, 172.16.0.0/12");
         let r = route_plan(&c, "cpwg0", &ep(), |_| panic!("no pin needed"));
-        assert_eq!(r, vec!["route add 10.8.0.0/24 dev cpwg0", "route add 172.16.0.0/12 dev cpwg0"]);
+        assert_eq!(
+            r,
+            vec![
+                "route add 10.8.0.0/24 dev cpwg0",
+                "route add 172.16.0.0/12 dev cpwg0"
+            ]
+        );
     }
 
     #[test]
     fn table_off_and_custom() {
         assert!(route_plan(&cfg("Table = off", "0.0.0.0/0"), "cpwg0", &ep(), |_| None).is_empty());
-        let r = route_plan(&cfg("Table = 1234", "0.0.0.0/0"), "cpwg0", &ep(), |_| panic!("no pin with a custom table"));
+        let r = route_plan(&cfg("Table = 1234", "0.0.0.0/0"), "cpwg0", &ep(), |_| {
+            panic!("no pin with a custom table")
+        });
         assert_eq!(r, vec!["route add 0.0.0.0/0 dev cpwg0 table 1234"]);
     }
 

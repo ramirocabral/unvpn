@@ -46,14 +46,21 @@ struct Opts {
 fn usage() {
     eprintln!("usage:");
     eprintln!("  unvpn connect <profile> [--no-dtls] [--killswitch] [--allow-ipv6] [--pin <pin>] [--insecure]");
-    eprintln!("  unvpn connect <profile> --dry-run      # show the engine command, connect nothing");
+    eprintln!(
+        "  unvpn connect <profile> --dry-run      # show the engine command, connect nothing"
+    );
     eprintln!("  unvpn connect --list                   # the saved profiles");
     eprintln!("Run it as your user: it reads your profiles and keyring, and asks for sudo itself.");
 }
 
 /// `tls_flags`: the global `--pin`/`--insecure` flags given, passed on to the engine.
 pub fn cmd_connect(args: &[String], killswitch: bool, allow_ipv6: bool, tls_flags: &[String]) {
-    let mut o = Opts { killswitch, allow_ipv6, tls_flags: tls_flags.to_vec(), ..Default::default() };
+    let mut o = Opts {
+        killswitch,
+        allow_ipv6,
+        tls_flags: tls_flags.to_vec(),
+        ..Default::default()
+    };
     for a in args {
         match a.as_str() {
             "--list" | "-l" => o.list = true,
@@ -69,7 +76,10 @@ pub fn cmd_connect(args: &[String], killswitch: bool, allow_ipv6: bool, tls_flag
                 std::process::exit(2);
             }
             s if o.name.is_some() => {
-                eprintln!("one profile at a time (got “{}” and “{s}”) — quote a name with spaces", o.name.as_deref().unwrap_or(""));
+                eprintln!(
+                    "one profile at a time (got “{}” and “{s}”) — quote a name with spaces",
+                    o.name.as_deref().unwrap_or("")
+                );
                 std::process::exit(2);
             }
             s => o.name = Some(s.to_string()),
@@ -109,10 +119,17 @@ pub fn cmd_connect(args: &[String], killswitch: bool, allow_ipv6: bool, tls_flag
 
 fn list(profs: &[Profile]) {
     if profs.is_empty() {
-        eprintln!("no saved profiles ({}) — create them in unvpn-gui", profiles::profiles_path().display());
+        eprintln!(
+            "no saved profiles ({}) — create them in unvpn-gui",
+            profiles::profiles_path().display()
+        );
         return;
     }
-    let w = profs.iter().map(|p| p.name.chars().count()).max().unwrap_or(0);
+    let w = profs
+        .iter()
+        .map(|p| p.name.chars().count())
+        .max()
+        .unwrap_or(0);
     let mut out = std::io::stdout().lock();
     for p in profs {
         if writeln!(out, "{:<w$}  {}", p.name, p.subtitle()).is_err() {
@@ -128,14 +145,22 @@ fn find<'a>(profs: &'a [Profile], q: &str) -> Result<&'a Profile, String> {
         return Ok(p);
     }
     let ql = q.to_lowercase();
-    let same: Vec<&Profile> = profs.iter().filter(|p| p.name.to_lowercase() == ql).collect();
+    let same: Vec<&Profile> = profs
+        .iter()
+        .filter(|p| p.name.to_lowercase() == ql)
+        .collect();
     if let [p] = same[..] {
         return Ok(p);
     }
-    let pre: Vec<&Profile> = profs.iter().filter(|p| p.name.to_lowercase().starts_with(&ql)).collect();
+    let pre: Vec<&Profile> = profs
+        .iter()
+        .filter(|p| p.name.to_lowercase().starts_with(&ql))
+        .collect();
     match pre[..] {
         [p] => Ok(p),
-        [] => Err(format!("no profile “{q}” — `unvpn connect --list` shows the saved ones")),
+        [] => Err(format!(
+            "no profile “{q}” — `unvpn connect --list` shows the saved ones"
+        )),
         _ => {
             let names: Vec<String> = pre.iter().map(|p| format!("“{}”", p.name)).collect();
             Err(format!("“{q}” matches {} — which one?", names.join(", ")))
@@ -162,12 +187,22 @@ fn drop_sudo() {
             std::process::exit(1);
         }
         let name = std::ffi::CStr::from_ptr((*pw).pw_name).to_owned();
-        let home = std::ffi::CStr::from_ptr((*pw).pw_dir).to_string_lossy().into_owned();
+        let home = std::ffi::CStr::from_ptr((*pw).pw_dir)
+            .to_string_lossy()
+            .into_owned();
         (name, home, (*pw).pw_gid)
     };
-    let ok = unsafe { libc::initgroups(name.as_ptr(), gid) == 0 && libc::setgid(gid) == 0 && libc::setuid(uid) == 0 };
+    let ok = unsafe {
+        libc::initgroups(name.as_ptr(), gid) == 0
+            && libc::setgid(gid) == 0
+            && libc::setuid(uid) == 0
+    };
     if !ok {
-        eprintln!("connect: could not switch back to {}: {}", name.to_string_lossy(), std::io::Error::last_os_error());
+        eprintln!(
+            "connect: could not switch back to {}: {}",
+            name.to_string_lossy(),
+            std::io::Error::last_os_error()
+        );
         std::process::exit(1);
     }
     std::env::set_var("HOME", home);
@@ -176,7 +211,9 @@ fn drop_sudo() {
     if std::path::Path::new(&run).is_dir() {
         std::env::set_var("XDG_RUNTIME_DIR", &run);
         let bus = format!("{run}/bus");
-        if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_none() && std::path::Path::new(&bus).exists() {
+        if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_none()
+            && std::path::Path::new(&bus).exists()
+        {
             std::env::set_var("DBUS_SESSION_BUS_ADDRESS", format!("unix:path={bus}"));
         }
     }
@@ -204,7 +241,10 @@ fn run(p: &Profile, o: &Opts) -> Result<i32, String> {
         if p.backend.uses_dtls() {
             add("--no-dtls");
         } else {
-            say!("# note: {} has no DTLS channel; --no-dtls ignored", p.backend.label());
+            say!(
+                "# note: {} has no DTLS channel; --no-dtls ignored",
+                p.backend.label()
+            );
         }
     }
     if o.allow_ipv6 {
@@ -227,8 +267,16 @@ fn run(p: &Profile, o: &Opts) -> Result<i32, String> {
         say!("# {}: {}", p.name, p.subtitle());
         let _ = writeln!(std::io::stdout(), "{}", shell_line(&argv));
         if profiles::takes_password(p) {
-            let what = if saved_password.is_some() { "from the keyring" } else { "asked on the terminal" };
-            let token = if p.backend == Backend::CheckPoint && !p.cp_cert { " + token code (asked)" } else { "" };
+            let what = if saved_password.is_some() {
+                "from the keyring"
+            } else {
+                "asked on the terminal"
+            };
+            let token = if p.backend == Backend::CheckPoint && !p.cp_cert {
+                " + token code (asked)"
+            } else {
+                ""
+            };
             say!("# stdin: {} ({what}){token}", password_label(p));
         }
         if psk.is_some() {
@@ -327,10 +375,20 @@ fn run(p: &Profile, o: &Opts) -> Result<i32, String> {
                 if kind == "push" {
                     push_since = Some(Instant::now());
                 }
-                let _ = ptx.send(Prompt { kind, message, id: gen.load(Ordering::SeqCst) });
+                let _ = ptx.send(Prompt {
+                    kind,
+                    message,
+                    id: gen.load(Ordering::SeqCst),
+                });
                 continue;
             }
-            Some(Marker::State(_) | Marker::Ip(_) | Marker::Dns(_) | Marker::Iface(_) | Marker::Error { .. }) => continue,
+            Some(
+                Marker::State(_)
+                | Marker::Ip(_)
+                | Marker::Dns(_)
+                | Marker::Iface(_)
+                | Marker::Error { .. },
+            ) => continue,
             Some(m) => sso.on_marker(&m),
             None => (true, None),
         };
@@ -350,7 +408,9 @@ fn run(p: &Profile, o: &Opts) -> Result<i32, String> {
     restore_tty();
     sso.cleanup();
     use std::os::unix::process::ExitStatusExt;
-    Ok(status.code().unwrap_or_else(|| 128 + status.signal().unwrap_or(0)))
+    Ok(status
+        .code()
+        .unwrap_or_else(|| 128 + status.signal().unwrap_or(0)))
 }
 
 fn password_label(p: &Profile) -> String {
@@ -388,7 +448,9 @@ fn shell_line(argv: &[String]) -> String {
 }
 
 fn quote(a: &str) -> String {
-    let plain = !a.is_empty() && a.chars().all(|c| c.is_ascii_alphanumeric() || "-_./:=@,+%".contains(c));
+    let plain = !a.is_empty()
+        && a.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./:=@,+%".contains(c));
     if plain {
         a.to_string()
     } else {
@@ -406,11 +468,21 @@ struct Prompt {
 /// Label, masked, confirm, empty answer allowed.
 fn prompt_spec(kind: &str) -> (&'static str, bool, bool, bool) {
     match kind {
-        "push" => ("Code (or approve the sign-in on your phone)", false, false, false),
+        "push" => (
+            "Code (or approve the sign-in on your phone)",
+            false,
+            false,
+            false,
+        ),
         "code2" => ("Next code", false, false, false),
         "answer" => ("Answer", true, false, false),
         "newpass" => ("New password", true, true, false),
-        "renew" => ("New password (Enter keeps the current one)", true, true, true),
+        "renew" => (
+            "New password (Enter keeps the current one)",
+            true,
+            true,
+            true,
+        ),
         "sso" => ("SSO token", true, false, false),
         "keypass" => ("Private key passphrase", true, false, false),
         "username" => ("Username", false, false, false),
@@ -435,8 +507,14 @@ fn answer_prompts(
     for pr in prompts {
         let cancelled = || done.load(Ordering::SeqCst) || gen.load(Ordering::SeqCst) != pr.id;
         if pr.kind == "trust" {
-            let Some(q) = profiles::TrustQuestion::parse(&pr.message) else { continue };
-            say!("# {} presents a certificate no trusted authority vouches for: {}", q.endpoint, q.details);
+            let Some(q) = profiles::TrustQuestion::parse(&pr.message) else {
+                continue;
+            };
+            say!(
+                "# {} presents a certificate no trusted authority vouches for: {}",
+                q.endpoint,
+                q.details
+            );
             say!("#   {}", q.fingerprint);
             let label = format!("Trust it and remember it for “{profile}”? [y/N]");
             let trust = loop {
@@ -516,7 +594,10 @@ fn answer_prompts(
 /// passes it as `--pin` instead of asking.
 fn remember_pin(name: &str, q: &profiles::TrustQuestion) -> Result<(), String> {
     let mut profs = profiles::load()?;
-    let p = profs.iter_mut().find(|p| p.name == name).ok_or("the profile is gone")?;
+    let p = profs
+        .iter_mut()
+        .find(|p| p.name == name)
+        .ok_or("the profile is gone")?;
     p.pins.insert(q.endpoint.clone(), q.fingerprint.clone());
     profiles::save(&profs)
 }
@@ -562,12 +643,17 @@ impl Term {
                 let _ = writeln!(std::io::stderr());
                 return Answer::Cancelled;
             }
-            let mut pfd = libc::pollfd { fd: libc::STDIN_FILENO, events: libc::POLLIN, revents: 0 };
+            let mut pfd = libc::pollfd {
+                fd: libc::STDIN_FILENO,
+                events: libc::POLLIN,
+                revents: 0,
+            };
             if unsafe { libc::poll(&mut pfd, 1, 200) } <= 0 {
                 continue; // timeout, or a signal
             }
             let mut chunk = [0u8; 4096];
-            let n = unsafe { libc::read(libc::STDIN_FILENO, chunk.as_mut_ptr().cast(), chunk.len()) };
+            let n =
+                unsafe { libc::read(libc::STDIN_FILENO, chunk.as_mut_ptr().cast(), chunk.len()) };
             match n {
                 0 => self.eof = true,
                 n if n > 0 => self.buf.extend_from_slice(&chunk[..n as usize]),
@@ -583,7 +669,9 @@ struct EchoOff(Option<libc::termios>);
 
 impl EchoOff {
     fn new() -> Self {
-        let Ok(t) = tty_mode() else { return EchoOff(None) };
+        let Ok(t) = tty_mode() else {
+            return EchoOff(None);
+        };
         let mut quiet = t;
         quiet.c_lflag &= !libc::ECHO;
         unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &quiet) };
@@ -603,7 +691,8 @@ impl Drop for EchoOff {
 fn tty_mode() -> Result<libc::termios, ()> {
     unsafe {
         let mut t: libc::termios = std::mem::zeroed();
-        if libc::isatty(libc::STDIN_FILENO) == 1 && libc::tcgetattr(libc::STDIN_FILENO, &mut t) == 0 {
+        if libc::isatty(libc::STDIN_FILENO) == 1 && libc::tcgetattr(libc::STDIN_FILENO, &mut t) == 0
+        {
             Ok(t)
         } else {
             Err(())
@@ -661,7 +750,13 @@ impl Sso {
             Backend::AnyConnect => Some(profiles::anyconnect_saml_entry(&p.gateway)),
             _ => None,
         };
-        Sso { backend: p.backend, entry, gp_headers: false, opened: false, page: None }
+        Sso {
+            backend: p.backend,
+            entry,
+            gp_headers: false,
+            opened: false,
+            page: None,
+        }
     }
 
     /// Looks at one SSO marker: whether to print its line as is, and what to open
@@ -670,7 +765,9 @@ impl Sso {
         if matches!(m, Marker::SamlHeaders(_)) {
             self.gp_headers = true;
         }
-        let Marker::SamlUrl(url) = m else { return (true, None) };
+        let Marker::SamlUrl(url) = m else {
+            return (true, None);
+        };
         if self.opened {
             return (true, None);
         }
@@ -704,7 +801,9 @@ impl Sso {
     fn save_page(&mut self, b64: &str) -> Result<PathBuf, String> {
         use std::os::unix::fs::OpenOptionsExt;
         let html = openssl::base64::decode_block(b64).map_err(|e| e.to_string())?;
-        let dir = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
+        let dir = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
         let path = dir.join(format!("unvpn-sso-{}.html", std::process::id()));
         let mut f = std::fs::OpenOptions::new()
             .write(true)
@@ -726,7 +825,13 @@ impl Sso {
 
 fn open_browser(target: &str) {
     say!("# opening the sign-in page in your browser");
-    match Command::new("xdg-open").arg(target).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
+    match Command::new("xdg-open")
+        .arg(target)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
         Ok(mut c) => {
             std::thread::spawn(move || c.wait());
         }
@@ -739,8 +844,15 @@ mod tests {
     use super::*;
 
     fn named(names: &[&str]) -> Vec<Profile> {
-        let body: String = names.iter().map(|n| format!("[[profile]]\nname = \"{n}\"\nbackend = \"f5\"\n\n")).collect();
-        let dir = std::env::temp_dir().join(format!("unvpn-connect-test-{}-{}", std::process::id(), names.len()));
+        let body: String = names
+            .iter()
+            .map(|n| format!("[[profile]]\nname = \"{n}\"\nbackend = \"f5\"\n\n"))
+            .collect();
+        let dir = std::env::temp_dir().join(format!(
+            "unvpn-connect-test-{}-{}",
+            std::process::id(),
+            names.len()
+        ));
         std::fs::create_dir_all(dir.join("unvpn")).unwrap();
         std::fs::write(dir.join("unvpn/profiles.toml"), body).unwrap();
         let profs = profiles::load_from(&dir.join("unvpn/profiles.toml")).unwrap();
@@ -768,23 +880,46 @@ mod tests {
         prof.sso = true;
         let mut sso = Sso::new(&prof);
         let entry = profiles::saml_entry("vpn.example.com");
-        assert_eq!(sso.on_marker(&Marker::SamlUrl("https://evil.example.net/x".into())), (true, None));
-        assert_eq!(sso.on_marker(&Marker::SamlUrl(format!("{entry}x=1"))), (true, Some(format!("{entry}x=1"))));
-        assert_eq!(sso.on_marker(&Marker::SamlUrl(format!("{entry}x=2"))), (true, None));
+        assert_eq!(
+            sso.on_marker(&Marker::SamlUrl("https://evil.example.net/x".into())),
+            (true, None)
+        );
+        assert_eq!(
+            sso.on_marker(&Marker::SamlUrl(format!("{entry}x=1"))),
+            (true, Some(format!("{entry}x=1")))
+        );
+        assert_eq!(
+            sso.on_marker(&Marker::SamlUrl(format!("{entry}x=2"))),
+            (true, None)
+        );
         prof.backend = Backend::GlobalProtect;
         let mut gp = Sso::new(&prof);
-        assert_eq!(gp.on_marker(&Marker::SamlUrl("https://idp.example.com/a".into())), (true, None));
+        assert_eq!(
+            gp.on_marker(&Marker::SamlUrl("https://idp.example.com/a".into())),
+            (true, None)
+        );
         gp.on_marker(&Marker::SamlHeaders("saml-username".into()));
-        assert_eq!(gp.on_marker(&Marker::SamlUrl("https://idp.example.com/a".into())), (true, Some("https://idp.example.com/a".into())));
+        assert_eq!(
+            gp.on_marker(&Marker::SamlUrl("https://idp.example.com/a".into())),
+            (true, Some("https://idp.example.com/a".into()))
+        );
     }
 
     #[test]
     fn dry_run_line_quotes_arguments() {
-        let argv: Vec<String> =
-            ["sudo", "/usr/local/bin/unvpn", "forti-ipsec", "-g", "vpn.example.com", "--psk-stdin", "-u", "o'neil"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect();
+        let argv: Vec<String> = [
+            "sudo",
+            "/usr/local/bin/unvpn",
+            "forti-ipsec",
+            "-g",
+            "vpn.example.com",
+            "--psk-stdin",
+            "-u",
+            "o'neil",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
         assert_eq!(
             shell_line(&argv),
             r"sudo /usr/local/bin/unvpn forti-ipsec -g vpn.example.com --psk-stdin -u 'o'\''neil'"

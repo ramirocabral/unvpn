@@ -49,10 +49,20 @@ pub struct LoginForm {
 
 impl LoginForm {
     pub fn text_fields(&self) -> Vec<usize> {
-        self.fields.iter().enumerate().filter(|(_, f)| f.kind == FieldKind::Text).map(|(i, _)| i).collect()
+        self.fields
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| f.kind == FieldKind::Text)
+            .map(|(i, _)| i)
+            .collect()
     }
     pub fn password_fields(&self) -> Vec<usize> {
-        self.fields.iter().enumerate().filter(|(_, f)| f.kind == FieldKind::Password).map(|(i, _)| i).collect()
+        self.fields
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| f.kind == FieldKind::Password)
+            .map(|(i, _)| i)
+            .collect()
     }
 }
 
@@ -65,7 +75,12 @@ pub enum Outcome {
 
 impl Session {
     pub fn new(host: String, port: u16, timeout: Duration) -> Self {
-        Session { host, port, timeout, cookies: Cookies::new() }
+        Session {
+            host,
+            port,
+            timeout,
+            cookies: Cookies::new(),
+        }
     }
 
     /// Session from a one-time launch token (the webtop "Start" / SSO handoff):
@@ -75,12 +90,23 @@ impl Session {
     ///
     /// The returned session id is the `MRHSession` cookie; the browser already
     /// completed the access policy.
-    pub fn from_handoff(host: String, port: u16, timeout: Duration, token: &str) -> Result<Session, String> {
+    pub fn from_handoff(
+        host: String,
+        port: u16,
+        timeout: Duration,
+        token: &str,
+    ) -> Result<Session, String> {
         let mut cookies = Cookies::new();
         let extra = vec![format!("X-ACCESS-Session-Token: {token}")];
         let resp = http::request(
-            &host, port, "GET", "/vdesk/get_sessid_for_token.php3",
-            &mut cookies, &extra, b"", timeout,
+            &host,
+            port,
+            "GET",
+            "/vdesk/get_sessid_for_token.php3",
+            &mut cookies,
+            &extra,
+            b"",
+            timeout,
         )?;
         if resp.status != 200 {
             return Err(format!(
@@ -100,21 +126,39 @@ impl Session {
     }
 
     pub fn authenticated(&self) -> bool {
-        self.cookies.get("MRHSession").map(|v| !v.is_empty()).unwrap_or(false)
-            && self.cookies.get("F5_ST").map(|v| !v.is_empty()).unwrap_or(false)
+        self.cookies
+            .get("MRHSession")
+            .map(|v| !v.is_empty())
+            .unwrap_or(false)
+            && self
+                .cookies
+                .get("F5_ST")
+                .map(|v| !v.is_empty())
+                .unwrap_or(false)
     }
 
     pub fn start(&mut self) -> Result<LoginForm, String> {
         let resp = http::request_follow(
-            &self.host, self.port, "GET", START_PATH,
-            &mut self.cookies, &[], b"", self.timeout, 5,
+            &self.host,
+            self.port,
+            "GET",
+            START_PATH,
+            &mut self.cookies,
+            &[],
+            b"",
+            self.timeout,
+            5,
         )?;
         let body = resp.body_str();
         Ok(parse_form(&body).unwrap_or_else(fallback_form))
     }
 
     /// `answers` (name → value) override the form's default field values.
-    pub fn submit(&mut self, form: &LoginForm, answers: &[(String, String)]) -> Result<Outcome, String> {
+    pub fn submit(
+        &mut self,
+        form: &LoginForm,
+        answers: &[(String, String)],
+    ) -> Result<Outcome, String> {
         let mut body = String::new();
         for f in &form.fields {
             let val = answers
@@ -130,10 +174,21 @@ impl Session {
             body.push_str(&http::urlencode(&val));
         }
 
-        let action = if form.action.trim().is_empty() { DEFAULT_ACTION } else { form.action.trim() };
+        let action = if form.action.trim().is_empty() {
+            DEFAULT_ACTION
+        } else {
+            form.action.trim()
+        };
         let resp = http::request_follow(
-            &self.host, self.port, "POST", action,
-            &mut self.cookies, &[], body.as_bytes(), self.timeout, 5,
+            &self.host,
+            self.port,
+            "POST",
+            action,
+            &mut self.cookies,
+            &[],
+            body.as_bytes(),
+            self.timeout,
+            5,
         )?;
 
         if self.authenticated() {
@@ -157,8 +212,16 @@ fn fallback_form() -> LoginForm {
     LoginForm {
         action: DEFAULT_ACTION.to_string(),
         fields: vec![
-            Field { name: "username".into(), value: String::new(), kind: FieldKind::Text },
-            Field { name: "password".into(), value: String::new(), kind: FieldKind::Password },
+            Field {
+                name: "username".into(),
+                value: String::new(),
+                kind: FieldKind::Text,
+            },
+            Field {
+                name: "password".into(),
+                value: String::new(),
+                kind: FieldKind::Password,
+            },
         ],
         banner: String::new(),
     }
@@ -186,14 +249,21 @@ fn parse_form(body: &str) -> Option<LoginForm> {
         return None;
     }
     let banner = extract_banner(inner);
-    Some(LoginForm { action, fields, banner })
+    Some(LoginForm {
+        action,
+        fields,
+        banner,
+    })
 }
 
 fn find_auth_form_start(lower: &str) -> Option<usize> {
     let mut i = 0;
     while let Some(rel) = lower[i..].find("<form") {
         let start = i + rel;
-        let end = lower[start..].find('>').map(|e| start + e + 1).unwrap_or(lower.len());
+        let end = lower[start..]
+            .find('>')
+            .map(|e| start + e + 1)
+            .unwrap_or(lower.len());
         if lower[start..end].contains("auth_form") {
             return Some(start);
         }
@@ -208,19 +278,30 @@ fn collect_inputs(inner: &str) -> Vec<Field> {
     let mut i = 0;
     while let Some(rel) = lower[i..].find("<input") {
         let start = i + rel;
-        let end = inner[start..].find('>').map(|e| start + e + 1).unwrap_or(inner.len());
+        let end = inner[start..]
+            .find('>')
+            .map(|e| start + e + 1)
+            .unwrap_or(inner.len());
         let tag = &inner[start..end];
         i = end;
-        let Some(name) = attr_value(tag, "name") else { continue };
+        let Some(name) = attr_value(tag, "name") else {
+            continue;
+        };
         if name.is_empty() {
             continue;
         }
         let value = attr_value(tag, "value").unwrap_or_default();
-        let kind = match attr_value(tag, "type").unwrap_or_default().to_ascii_lowercase().as_str() {
+        let kind = match attr_value(tag, "type")
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str()
+        {
             "password" => FieldKind::Password,
             "hidden" => FieldKind::Hidden,
             "text" | "email" | "tel" | "number" | "" => FieldKind::Text,
-            "submit" | "button" | "image" | "reset" | "checkbox" | "radio" | "file" => FieldKind::Other,
+            "submit" | "button" | "image" | "reset" | "checkbox" | "radio" | "file" => {
+                FieldKind::Other
+            }
             _ => FieldKind::Other,
         };
         out.push(Field { name, value, kind });
@@ -241,7 +322,11 @@ fn extract_banner(inner: &str) -> String {
         }
     }
     let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    line.chars().take(160).collect::<String>().trim().to_string()
+    line.chars()
+        .take(160)
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 fn attr_value(tag: &str, attr: &str) -> Option<String> {
@@ -267,7 +352,9 @@ fn attr_value(tag: &str, attr: &str) -> Option<String> {
             Some(rest[1..end].to_string())
         }
         _ => {
-            let end = rest.find(|c: char| c.is_whitespace() || c == '>' || c == '/').unwrap_or(rest.len());
+            let end = rest
+                .find(|c: char| c.is_whitespace() || c == '>' || c == '/')
+                .unwrap_or(rest.len());
             Some(rest[..end].to_string())
         }
     }
@@ -276,7 +363,13 @@ fn attr_value(tag: &str, attr: &str) -> Option<String> {
 /// Never dump a whole HTML page at the user.
 fn clean_failure(body: &str, status: u16) -> String {
     let bl = body.to_ascii_lowercase();
-    for needle in ["session has expired", "logon denied", "access was denied", "authentication failed", "invalid"] {
+    for needle in [
+        "session has expired",
+        "logon denied",
+        "access was denied",
+        "authentication failed",
+        "invalid",
+    ] {
         if let Some(p) = bl.find(needle) {
             let snippet: String = body[p..].chars().take(80).collect();
             return format!("login rejected: {}", snippet.trim());
@@ -328,7 +421,10 @@ mod tests {
     fn otp_form_has_banner_and_hidden_state() {
         let f = parse_form(OTP).expect("form");
         assert!(f.banner.to_lowercase().contains("one-time"));
-        assert!(f.fields.iter().any(|x| x.name == "reference" && x.value == "abc123"));
+        assert!(f
+            .fields
+            .iter()
+            .any(|x| x.name == "reference" && x.value == "abc123"));
         assert_eq!(f.password_fields().len(), 1);
         assert_eq!(f.text_fields().len(), 0);
     }
@@ -336,13 +432,21 @@ mod tests {
     #[test]
     fn body_submit_overrides_only_named() {
         let f = parse_form(LOGON).unwrap();
-        let answers = vec![("username".to_string(), "alice".to_string()),
-                           ("password".to_string(), "s3cr3t&=x".to_string())];
+        let answers = vec![
+            ("username".to_string(), "alice".to_string()),
+            ("password".to_string(), "s3cr3t&=x".to_string()),
+        ];
         // Reconstruct the body the way submit does, without network.
         let mut body = String::new();
         for fld in &f.fields {
-            let val = answers.iter().find(|(n, _)| n == &fld.name).map(|(_, v)| v.clone()).unwrap_or(fld.value.clone());
-            if !body.is_empty() { body.push('&'); }
+            let val = answers
+                .iter()
+                .find(|(n, _)| n == &fld.name)
+                .map(|(_, v)| v.clone())
+                .unwrap_or(fld.value.clone());
+            if !body.is_empty() {
+                body.push('&');
+            }
             body.push_str(&http::urlencode(&fld.name));
             body.push('=');
             body.push_str(&http::urlencode(&val));

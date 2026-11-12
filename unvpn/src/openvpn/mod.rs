@@ -22,9 +22,9 @@ pub mod tls;
 pub mod tunnel;
 
 use session::Creds;
-use tunnel::Prompter as _;
 use std::io::Write;
 use std::path::PathBuf;
+use tunnel::Prompter as _;
 
 struct Args {
     config: PathBuf,
@@ -58,7 +58,15 @@ pub fn cmd_openvpn(args: &[String]) {
 }
 
 fn parse_args(args: &[String]) -> Result<Args, String> {
-    let mut a = Args { config: PathBuf::new(), user: None, password: None, code: None, key_pass: None, action: Action::Login, no_routes: false };
+    let mut a = Args {
+        config: PathBuf::new(),
+        user: None,
+        password: None,
+        code: None,
+        key_pass: None,
+        action: Action::Login,
+        no_routes: false,
+    };
     let mut config = None;
     let mut it = args.iter();
     while let Some(x) = it.next() {
@@ -83,7 +91,9 @@ fn usage() {
     eprintln!("usage:");
     eprintln!("  unvpn openvpn -c <profile.ovpn> --probe                 # reachability + TLS + server cert, no login");
     eprintln!("  unvpn openvpn -c <profile.ovpn> [-u user] --login       # authenticate, show the pushed config");
-    eprintln!("  unvpn openvpn -c <profile.ovpn> [-u user] --connect     # bring up the tunnel (sudo)");
+    eprintln!(
+        "  unvpn openvpn -c <profile.ovpn> [-u user] --connect     # bring up the tunnel (sudo)"
+    );
     eprintln!("      [--password p]  password (else read from stdin, no echo)");
     eprintln!("      [--code c]      static-challenge / OTP answer (else prompted)");
     eprintln!("      [--key-pass k]  passphrase of an encrypted private key / PKCS#12");
@@ -92,10 +102,16 @@ fn usage() {
 
 fn run(a: &Args) -> Result<(), String> {
     let cfg = config::load(&a.config)?;
-    let mut prompter = CliPrompter { code: a.code.clone() };
+    let mut prompter = CliPrompter {
+        code: a.code.clone(),
+    };
 
     let creds = if cfg.auth_user_pass && a.action != Action::Probe {
-        let user = a.user.clone().or_else(|| cfg.auth_user.clone()).ok_or("this profile uses auth-user-pass: give --user <name>")?;
+        let user = a
+            .user
+            .clone()
+            .or_else(|| cfg.auth_user.clone())
+            .ok_or("this profile uses auth-user-pass: give --user <name>")?;
         let mut pass = match a.password.clone().or_else(|| cfg.auth_pass.clone()) {
             Some(p) => p,
             None => read_secret("Password: ").ok_or("no password provided")?,
@@ -119,7 +135,11 @@ fn run(a: &Args) -> Result<(), String> {
         match tunnel::prepare(cfg.clone(), creds.clone(), key_pass.as_deref()) {
             Err(e) if (e == tls::NEEDS_PASS || e == tls::WRONG_PASS) && retries < 3 => {
                 retries += 1;
-                let msg = if key_pass.is_some() { "Wrong passphrase, try again" } else { "PKCS#12 / private key passphrase" };
+                let msg = if key_pass.is_some() {
+                    "Wrong passphrase, try again"
+                } else {
+                    "PKCS#12 / private key passphrase"
+                };
                 key_pass = Some(prompter.ask("keypass", msg, false).map_err(|_| e.clone())?);
             }
             r => break r?,
@@ -128,8 +148,24 @@ fn run(a: &Args) -> Result<(), String> {
 
     match a.action {
         Action::Probe => tunnel::probe(&prepared),
-        Action::Login => tunnel::run(prepared, &mut prompter, tunnel::RunOpts { no_routes: true, watch_stdin: false, login_only: true }),
-        Action::Connect => tunnel::run(prepared, &mut prompter, tunnel::RunOpts { no_routes: a.no_routes, watch_stdin: true, login_only: false }),
+        Action::Login => tunnel::run(
+            prepared,
+            &mut prompter,
+            tunnel::RunOpts {
+                no_routes: true,
+                watch_stdin: false,
+                login_only: true,
+            },
+        ),
+        Action::Connect => tunnel::run(
+            prepared,
+            &mut prompter,
+            tunnel::RunOpts {
+                no_routes: a.no_routes,
+                watch_stdin: true,
+                login_only: false,
+            },
+        ),
     }
 }
 
@@ -166,7 +202,11 @@ fn read_secret(prompt: &str) -> Option<String> {
         eprint!("{prompt}");
         let _ = std::io::stderr().flush();
     }
-    let _echo = if is_tty { Some(crate::sysnet::EchoOff::new()) } else { None };
+    let _echo = if is_tty {
+        Some(crate::sysnet::EchoOff::new())
+    } else {
+        None
+    };
     match crate::sysnet::stdin_next(None) {
         crate::sysnet::StdinEvent::Line(l) => {
             let t = l.trim_end_matches(['\n', '\r']).to_string();
@@ -182,7 +222,14 @@ mod tests {
 
     #[test]
     fn args() {
-        let a = parse_args(&["-c".into(), "x.ovpn".into(), "-u".into(), "bob".into(), "--connect".into()]).unwrap();
+        let a = parse_args(&[
+            "-c".into(),
+            "x.ovpn".into(),
+            "-u".into(),
+            "bob".into(),
+            "--connect".into(),
+        ])
+        .unwrap();
         assert!(a.action == Action::Connect && a.user.as_deref() == Some("bob"));
         assert!(parse_args(&["--probe".into()]).is_err());
     }

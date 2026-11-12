@@ -85,7 +85,12 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
                     host = Some(v.clone());
                 }
             }
-            "--port" => port = it.next().and_then(|s| s.parse().ok()).ok_or("--port needs a number")?,
+            "--port" => {
+                port = it
+                    .next()
+                    .and_then(|s| s.parse().ok())
+                    .ok_or("--port needs a number")?
+            }
             "--user" | "-u" => user = it.next().cloned().ok_or("--user needs a value")?,
             "--password" | "-p" => password = it.next().cloned(),
             "--code" | "--otp" => code = it.next().cloned(),
@@ -97,7 +102,11 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
             "--watch-stdin" => watch_stdin = true,
             "--launch" => {
                 action = Action::Launch;
-                launch_url = Some(it.next().cloned().ok_or("--launch needs an f5-vpn:// URL")?);
+                launch_url = Some(
+                    it.next()
+                        .cloned()
+                        .ok_or("--launch needs an f5-vpn:// URL")?,
+                );
             }
             // The scheme handler passes the URL as a bare argument.
             other if other.starts_with("f5-vpn:") => {
@@ -110,23 +119,49 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
     if action == Action::Launch {
         // host/user come from the URL.
         let host = host.unwrap_or_default();
-        return Ok(Args { host, port, user, password, code, action, no_dtls, no_routes, launch_url, watch_stdin });
+        return Ok(Args {
+            host,
+            port,
+            user,
+            password,
+            code,
+            action,
+            no_dtls,
+            no_routes,
+            launch_url,
+            watch_stdin,
+        });
     }
     let host = host.ok_or("f5 requires --gateway <host[:port]>")?;
     if action != Action::Probe && user.is_empty() {
         return Err("f5 requires --user <user>".into());
     }
-    Ok(Args { host, port, user, password, code, action, no_dtls, no_routes, launch_url, watch_stdin })
+    Ok(Args {
+        host,
+        port,
+        user,
+        password,
+        code,
+        action,
+        no_dtls,
+        no_routes,
+        launch_url,
+        watch_stdin,
+    })
 }
 
 fn usage() {
     eprintln!("usage:");
     eprintln!("  unvpn f5 -g <host[:port]> --probe");
     eprintln!("  unvpn f5 -g <host[:port]> -u <user> [--password p] [--code otp] --login");
-    eprintln!("  unvpn f5 -g <host[:port]> -u <user> [...] --connect     # brings up the tunnel (sudo)");
+    eprintln!(
+        "  unvpn f5 -g <host[:port]> -u <user> [...] --connect     # brings up the tunnel (sudo)"
+    );
     eprintln!("      [--no-routes]  tunnel up but install no routes/DNS (safe data-plane test;");
     eprintln!("                     verify with: ping -I f5vpn0 <internal-host>)");
-    eprintln!("  unvpn f5 --launch \"f5-vpn://…\"   # webtop 'Start' handoff (SSO token → tunnel, sudo)");
+    eprintln!(
+        "  unvpn f5 --launch \"f5-vpn://…\"   # webtop 'Start' handoff (SSO token → tunnel, sudo)"
+    );
     eprintln!("      --watch-stdin  stop on a `disconnect` line or EOF on stdin (when a front-end runs it)");
     eprintln!("  password/OTP are read from stdin (no echo) when not given with --password/--code");
 }
@@ -139,7 +174,17 @@ fn timeout() -> Duration {
 fn probe(a: &Args) -> Result<(), String> {
     let mut cookies = http::Cookies::new();
     println!("# probing {}:{} …", a.host, a.port);
-    let resp = http::request_follow(&a.host, a.port, "GET", "/", &mut cookies, &[], b"", timeout(), 5)?;
+    let resp = http::request_follow(
+        &a.host,
+        a.port,
+        "GET",
+        "/",
+        &mut cookies,
+        &[],
+        b"",
+        timeout(),
+        5,
+    )?;
     let server = resp.header("server").unwrap_or("(no Server header)");
     println!("# GET / → HTTP {} · Server: {server}", resp.status);
 
@@ -203,7 +248,8 @@ fn do_login(a: &Args) -> Result<Session, String> {
             let secret = if !password_sent {
                 let p = match &a.password {
                     Some(p) => p.clone(),
-                    None => crate::anyconnect::read_secret("Password: ").ok_or("no password provided")?,
+                    None => crate::anyconnect::read_secret("Password: ")
+                        .ok_or("no password provided")?,
                 };
                 password_sent = true;
                 p
@@ -212,9 +258,14 @@ fn do_login(a: &Args) -> Result<Session, String> {
                     Some(c) => c.clone(),
                     None => {
                         // The code is often emailed/SMS and doesn't exist until the password is in.
-                        let msg = if form.banner.is_empty() { "One-time passcode" } else { form.banner.as_str() };
+                        let msg = if form.banner.is_empty() {
+                            "One-time passcode"
+                        } else {
+                            form.banner.as_str()
+                        };
                         crate::report::prompt("code", msg);
-                        crate::anyconnect::read_secret("Token code (OTP): ").ok_or("OTP required but none provided")?
+                        crate::anyconnect::read_secret("Token code (OTP): ")
+                            .ok_or("OTP required but none provided")?
                     }
                 }
             };
@@ -246,7 +297,11 @@ fn connect(a: &Args) -> Result<(), String> {
     let mut session = do_login(a)?;
     tunnel::run(
         &mut session,
-        tunnel::RunOpts { no_dtls: a.no_dtls, no_routes: a.no_routes, watch_stdin: true },
+        tunnel::RunOpts {
+            no_dtls: a.no_dtls,
+            no_routes: a.no_routes,
+            watch_stdin: true,
+        },
     )
 }
 
@@ -254,15 +309,25 @@ fn connect(a: &Args) -> Result<(), String> {
 /// token, so no password is needed. Stdin is watched only with `--watch-stdin`
 /// (the scheme handler launches this detached); otherwise stop with SIGTERM.
 fn launch(a: &Args) -> Result<(), String> {
-    let url = a.launch_url.as_deref().ok_or("launch requires an f5-vpn:// URL")?;
+    let url = a
+        .launch_url
+        .as_deref()
+        .ok_or("launch requires an f5-vpn:// URL")?;
     let p = parse_launch_url(url)?;
-    println!("# f5-vpn launch: server={}:{} resource={:?}", p.host, p.port, p.resource);
+    println!(
+        "# f5-vpn launch: server={}:{} resource={:?}",
+        p.host, p.port, p.resource
+    );
     println!("# exchanging one-time token for a session (get_sessid_for_token.php3) …");
     let mut session = auth::Session::from_handoff(p.host, p.port, timeout(), &p.token)?;
     println!("# session acquired via handoff (MRHSession set)");
     tunnel::run(
         &mut session,
-        tunnel::RunOpts { no_dtls: a.no_dtls, no_routes: a.no_routes, watch_stdin: a.watch_stdin },
+        tunnel::RunOpts {
+            no_dtls: a.no_dtls,
+            no_routes: a.no_routes,
+            watch_stdin: a.watch_stdin,
+        },
     )
 }
 
@@ -302,14 +367,21 @@ fn parse_launch_url(url: &str) -> Result<LaunchUrl, String> {
             _ => {}
         }
     }
-    let host = server.filter(|s| !s.is_empty()).ok_or("launch URL has no server= parameter")?;
+    let host = server
+        .filter(|s| !s.is_empty())
+        .ok_or("launch URL has no server= parameter")?;
     // `otc` is sent as X-ACCESS-Session-Token; fall back to `token`.
     let token = otc
         .filter(|s| !s.is_empty())
         .or(token)
         .filter(|s| !s.is_empty())
         .ok_or("launch URL has no otc=/token= parameter")?;
-    Ok(LaunchUrl { host, port, token, resource })
+    Ok(LaunchUrl {
+        host,
+        port,
+        token,
+        resource,
+    })
 }
 
 fn percent_decode(s: &str) -> String {
@@ -376,7 +448,10 @@ mod tests {
     fn percent_decode_basics() {
         assert_eq!(percent_decode("abc"), "abc");
         assert_eq!(percent_decode("a%2Fb"), "a/b");
-        assert_eq!(percent_decode("%2FCommon%2FNetwork_Access"), "/Common/Network_Access");
+        assert_eq!(
+            percent_decode("%2FCommon%2FNetwork_Access"),
+            "/Common/Network_Access"
+        );
         assert_eq!(percent_decode("a+b"), "a b");
         assert_eq!(percent_decode("%zz"), "%zz");
     }

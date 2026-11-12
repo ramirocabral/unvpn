@@ -23,10 +23,18 @@ pub struct Transform {
 
 impl Transform {
     pub fn new(ttype: TransformType, id: u16) -> Self {
-        Transform { ttype: ttype.into(), id, key_len: None }
+        Transform {
+            ttype: ttype.into(),
+            id,
+            key_len: None,
+        }
     }
     pub fn with_key_len(ttype: TransformType, id: u16, bits: u16) -> Self {
-        Transform { ttype: ttype.into(), id, key_len: Some(bits) }
+        Transform {
+            ttype: ttype.into(),
+            id,
+            key_len: Some(bits),
+        }
     }
 }
 
@@ -78,19 +86,44 @@ pub struct Notify {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Payload {
     Sa(Vec<Proposal>),
-    Ke { group: u16, data: Vec<u8> },
+    Ke {
+        group: u16,
+        data: Vec<u8>,
+    },
     Nonce(Vec<u8>),
-    IdI { kind: u8, data: Vec<u8> },
-    IdR { kind: u8, data: Vec<u8> },
-    Cert { encoding: u8, data: Vec<u8> },
-    CertReq { encoding: u8, data: Vec<u8> },
-    Auth { method: u8, data: Vec<u8> },
+    IdI {
+        kind: u8,
+        data: Vec<u8>,
+    },
+    IdR {
+        kind: u8,
+        data: Vec<u8>,
+    },
+    Cert {
+        encoding: u8,
+        data: Vec<u8>,
+    },
+    CertReq {
+        encoding: u8,
+        data: Vec<u8>,
+    },
+    Auth {
+        method: u8,
+        data: Vec<u8>,
+    },
     Notify(Notify),
-    Delete { protocol: u8, spi_size: u8, spis: Vec<Vec<u8>> },
+    Delete {
+        protocol: u8,
+        spi_size: u8,
+        spis: Vec<Vec<u8>>,
+    },
     VendorId(Vec<u8>),
     Tsi(Vec<TrafficSelector>),
     Tsr(Vec<TrafficSelector>),
-    Cp { cfg_type: u8, attrs: Vec<(u16, Vec<u8>)> },
+    Cp {
+        cfg_type: u8,
+        attrs: Vec<(u16, Vec<u8>)>,
+    },
     Eap(Vec<u8>),
     /// Any payload we don't model structurally; preserved verbatim.
     Raw(u8, Vec<u8>),
@@ -150,7 +183,11 @@ impl Payload {
                 b.extend_from_slice(&n.spi);
                 b.extend_from_slice(&n.data);
             }
-            Payload::Delete { protocol, spi_size, spis } => {
+            Payload::Delete {
+                protocol,
+                spi_size,
+                spis,
+            } => {
                 b.push(*protocol);
                 b.push(*spi_size);
                 b.extend_from_slice(&(spis.len() as u16).to_be_bytes());
@@ -346,38 +383,56 @@ fn parse_body(ptype: u8, body: &[u8]) -> Result<Payload, String> {
             if body.len() < 4 {
                 return err("short KE payload");
             }
-            Payload::Ke { group: u16::from_be_bytes([body[0], body[1]]), data: body[4..].to_vec() }
+            Payload::Ke {
+                group: u16::from_be_bytes([body[0], body[1]]),
+                data: body[4..].to_vec(),
+            }
         }
         PayloadType::Nonce => Payload::Nonce(body.to_vec()),
         PayloadType::IdInitiator => {
             if body.is_empty() {
                 return err("short IDi");
             }
-            Payload::IdI { kind: body[0], data: body[4.min(body.len())..].to_vec() }
+            Payload::IdI {
+                kind: body[0],
+                data: body[4.min(body.len())..].to_vec(),
+            }
         }
         PayloadType::IdResponder => {
             if body.is_empty() {
                 return err("short IDr");
             }
-            Payload::IdR { kind: body[0], data: body[4.min(body.len())..].to_vec() }
+            Payload::IdR {
+                kind: body[0],
+                data: body[4.min(body.len())..].to_vec(),
+            }
         }
         PayloadType::Certificate => {
             if body.is_empty() {
                 return err("short CERT");
             }
-            Payload::Cert { encoding: body[0], data: body[1..].to_vec() }
+            Payload::Cert {
+                encoding: body[0],
+                data: body[1..].to_vec(),
+            }
         }
         PayloadType::CertRequest => {
             if body.is_empty() {
                 return err("short CERTREQ");
             }
-            Payload::CertReq { encoding: body[0], data: body[1..].to_vec() }
+            Payload::CertReq {
+                encoding: body[0],
+                data: body[1..].to_vec(),
+            }
         }
         PayloadType::Authentication => {
             if body.len() < 4 {
                 return err("short AUTH");
             }
-            Payload::Auth { method: body[0], data: body[4..].to_vec() }
+            Payload::Auth {
+                method: body[0],
+                data: body[4..].to_vec(),
+            }
         }
         PayloadType::Notify => {
             if body.len() < 4 {
@@ -409,7 +464,11 @@ fn parse_body(ptype: u8, body: &[u8]) -> Result<Payload, String> {
                 spis.push(body[off..off + spi_size].to_vec());
                 off += spi_size;
             }
-            Payload::Delete { protocol: body[0], spi_size: body[1], spis }
+            Payload::Delete {
+                protocol: body[0],
+                spi_size: body[1],
+                spis,
+            }
         }
         PayloadType::VendorId => Payload::VendorId(body.to_vec()),
         PayloadType::TrafficSelectorI => Payload::Tsi(parse_traffic_selectors(body)?),
@@ -418,7 +477,10 @@ fn parse_body(ptype: u8, body: &[u8]) -> Result<Payload, String> {
             if body.len() < 4 {
                 return err("short CP");
             }
-            Payload::Cp { cfg_type: body[0], attrs: parse_cfg_attrs(&body[4..])? }
+            Payload::Cp {
+                cfg_type: body[0],
+                attrs: parse_cfg_attrs(&body[4..])?,
+            }
         }
         PayloadType::Eap => Payload::Eap(body.to_vec()),
         _ => Payload::Raw(ptype, body.to_vec()),
@@ -474,7 +536,12 @@ fn parse_proposals(mut data: &[u8]) -> Result<Vec<Proposal>, String> {
             transforms.push(Transform { ttype, id, key_len });
             toff += tlen;
         }
-        out.push(Proposal { num, protocol, spi, transforms });
+        out.push(Proposal {
+            num,
+            protocol,
+            spi,
+            transforms,
+        });
         data = &data[plen..];
     }
     Ok(out)
@@ -620,7 +687,10 @@ mod tests {
             attrs: vec![
                 (CfgAttr::InternalIp4Address.into(), vec![10, 1, 2, 3]),
                 (CfgAttr::InternalIp4Dns.into(), vec![10, 0, 0, 53]),
-                (CfgAttr::InternalIp4Subnet.into(), vec![10, 0, 0, 0, 255, 0, 0, 0]),
+                (
+                    CfgAttr::InternalIp4Subnet.into(),
+                    vec![10, 0, 0, 0, 255, 0, 0, 0],
+                ),
             ],
         };
         let (first, bytes) = encode_payloads(&[cp.clone()]);
@@ -630,8 +700,14 @@ mod tests {
     #[test]
     fn multi_payload_chain_links_next() {
         let chain = vec![
-            Payload::IdI { kind: IdType::Rfc822Addr.into(), data: b"user@example.com".to_vec() },
-            Payload::Auth { method: AUTH_PSK, data: vec![0x22; 20] },
+            Payload::IdI {
+                kind: IdType::Rfc822Addr.into(),
+                data: b"user@example.com".to_vec(),
+            },
+            Payload::Auth {
+                method: AUTH_PSK,
+                data: vec![0x22; 20],
+            },
             Payload::Nonce(vec![0x33; 16]),
         ];
         let (first, bytes) = encode_payloads(&chain);

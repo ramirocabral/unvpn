@@ -61,7 +61,13 @@ impl Ikev1Session {
     }
 
     /// Set up the negotiated Phase-1 suite and generate our DH keypair.
-    pub fn set_suite(&mut self, group: u16, hash: u16, enc: u16, key_bits: usize) -> Result<(), String> {
+    pub fn set_suite(
+        &mut self,
+        group: u16,
+        hash: u16,
+        enc: u16,
+        key_bits: usize,
+    ) -> Result<(), String> {
         let c = IkeCrypto::new(group, hash, enc, key_bits)?;
         self.initiator_pubkey = c.public_key();
         self.crypto = Some(c);
@@ -80,7 +86,11 @@ impl Ikev1Session {
         self.crypto().hash_len()
     }
 
-    pub fn compute_keys(&mut self, responder_pubkey: &[u8], responder_nonce: &[u8]) -> Result<(), String> {
+    pub fn compute_keys(
+        &mut self,
+        responder_pubkey: &[u8],
+        responder_nonce: &[u8],
+    ) -> Result<(), String> {
         self.responder_pubkey = responder_pubkey.to_vec();
         self.responder_nonce = responder_nonce.to_vec();
 
@@ -205,7 +215,12 @@ impl Ikev1Session {
         self.crypto().hash(data)
     }
 
-    pub fn verify_rsa_signature(&self, hash: &[u8], sig: &[u8], cert_der: &[u8]) -> Result<(), String> {
+    pub fn verify_rsa_signature(
+        &self,
+        hash: &[u8],
+        sig: &[u8],
+        cert_der: &[u8],
+    ) -> Result<(), String> {
         self.crypto().verify_rsa_signature(hash, sig, cert_der)
     }
 
@@ -237,7 +252,8 @@ mod tests {
         s.set_suite(IKE_GROUP_MODP1024, IKE_HASH_SHA256, IKE_ENC_AES_CBC, 256)
             .unwrap();
         s.set_sa_bytes(&[0xde, 0xad, 0xbe, 0xef]);
-        let peer = IkeCrypto::new(IKE_GROUP_MODP1024, IKE_HASH_SHA256, IKE_ENC_AES_CBC, 256).unwrap();
+        let peer =
+            IkeCrypto::new(IKE_GROUP_MODP1024, IKE_HASH_SHA256, IKE_ENC_AES_CBC, 256).unwrap();
         s.compute_keys(&peer.public_key(), &random(32)).unwrap();
         s
     }
@@ -259,7 +275,8 @@ mod tests {
         let mut enc_s = derived_session();
         let mut dec_s = Ikev1Session::new();
         dec_s.responder_spi = enc_s.responder_spi;
-        dec_s.set_suite(IKE_GROUP_MODP1024, IKE_HASH_SHA256, IKE_ENC_AES_CBC, 256)
+        dec_s
+            .set_suite(IKE_GROUP_MODP1024, IKE_HASH_SHA256, IKE_ENC_AES_CBC, 256)
             .unwrap();
         dec_s.skeyid_e = enc_s.skeyid_e.clone();
         dec_s.iv.insert(0, enc_s.iv.get(&0).unwrap().clone());

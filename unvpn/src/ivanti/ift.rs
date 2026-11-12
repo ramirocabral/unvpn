@@ -41,7 +41,12 @@ pub struct IftMessage {
 
 impl IftMessage {
     pub fn new(vendor: u32, msg_type: u32, msg_id: u32, payload: Vec<u8>) -> Self {
-        IftMessage { vendor, msg_type, msg_id, payload }
+        IftMessage {
+            vendor,
+            msg_type,
+            msg_id,
+            payload,
+        }
     }
 
     /// Serialize header + payload. `message length` is the total wire size.
@@ -72,7 +77,15 @@ impl IftMessage {
             return None;
         }
         let payload = buf[HEADER_LEN..len].to_vec();
-        Some((IftMessage { vendor, msg_type, msg_id, payload }, len))
+        Some((
+            IftMessage {
+                vendor,
+                msg_type,
+                msg_id,
+                payload,
+            },
+            len,
+        ))
     }
 }
 

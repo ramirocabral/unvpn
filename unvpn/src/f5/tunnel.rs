@@ -80,15 +80,26 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
     // A valid MRHSession is enough to drive the tunnel: the form-login path only
     // returns here once F5_ST is also set, and the `--launch` handoff path obtains
     // a session that has already cleared the access policy in the browser.
-    if session.cookies.get("MRHSession").map(|v| v.is_empty()).unwrap_or(true) {
+    if session
+        .cookies
+        .get("MRHSession")
+        .map(|v| v.is_empty())
+        .unwrap_or(true)
+    {
         return Err("not authenticated (no MRHSession)".into());
     }
     let no_routes = opts.no_routes;
 
     println!("# fetching VPN profile ({PROFILE_PATH}) …");
     let resp = http::request(
-        &session.host, session.port, "GET", PROFILE_PATH,
-        &mut session.cookies, &[], b"", session.timeout,
+        &session.host,
+        session.port,
+        "GET",
+        PROFILE_PATH,
+        &mut session.cookies,
+        &[],
+        b"",
+        session.timeout,
     )?;
     if resp.status != 200 {
         return Err(format!("profile request failed: HTTP {}", resp.status));
@@ -99,8 +110,14 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
 
     let opt_path = format!("/vdesk/vpn/connect.php3?{params}&outform=xml&client_version=2.0");
     let resp = http::request(
-        &session.host, session.port, "GET", &opt_path,
-        &mut session.cookies, &[], b"", session.timeout,
+        &session.host,
+        session.port,
+        "GET",
+        &opt_path,
+        &mut session.cookies,
+        &[],
+        b"",
+        session.timeout,
     )?;
     if resp.status != 200 {
         return Err(format!("options request failed: HTTP {}", resp.status));
@@ -128,16 +145,34 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
         println!("# gateway offers DTLS but also requires HDLC framing — staying on TLS");
         want_dtls = false;
     }
-    let Channel { mut conn, fd: mut sock_fd, ip: mut assigned, dns, gw: gw_peer, mtu, dtls: mut on_dtls } =
-        open_channel(session, &cfg, want_dtls)?;
+    let Channel {
+        mut conn,
+        fd: mut sock_fd,
+        ip: mut assigned,
+        dns,
+        gw: gw_peer,
+        mtu,
+        dtls: mut on_dtls,
+    } = open_channel(session, &cfg, want_dtls)?;
 
     // The tun and its routes/DNS persist across reconnects — only the TLS/PPP channel
     // is rebuilt when the tunnel drops.
     let (mut tun_file, tun_name) = tun::open_tun(TUN_NAME)?;
     tun::ip(&["addr", "add", &format!("{assigned}/32"), "dev", &tun_name])?;
-    tun::ip(&["link", "set", "dev", &tun_name, "up", "mtu", &mtu.to_string()])?;
+    tun::ip(&[
+        "link",
+        "set",
+        "dev",
+        &tun_name,
+        "up",
+        "mtu",
+        &mtu.to_string(),
+    ])?;
     crate::netmon::ignore_iface(&tun_name);
-    println!("# tun {tun_name} up — {assigned}/32, mtu {mtu} (over {})", path(on_dtls));
+    println!(
+        "# tun {tun_name} up — {assigned}/32, mtu {mtu} (over {})",
+        path(on_dtls)
+    );
     let mut cur_mtu = mtu;
 
     // From here on every exit path must undo what we change: signals (incl. SIGHUP
@@ -152,7 +187,12 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
     let mut restore = sysnet::NetRestore::default();
     if no_routes {
         out!("# --no-routes: NOT installing routes or DNS.");
-        out!("#   test the data plane with:  ping -I {tun_name} {}", dns.first().map(|d| d.to_string()).unwrap_or_else(|| "<internal-host>".into()));
+        out!(
+            "#   test the data plane with:  ping -I {tun_name} {}",
+            dns.first()
+                .map(|d| d.to_string())
+                .unwrap_or_else(|| "<internal-host>".into())
+        );
     } else {
         let gw = match gw_peer {
             Some(IpAddr::V4(v4)) => Some(v4),
@@ -172,7 +212,11 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
     }
     // Keepalive/DPD interval: a fraction of the gateway's idle timeout, bounded so it
     // stays frequent even when the gateway sets a long (or no) idle timeout.
-    let lcp_secs = if cfg.idle_timeout > 0 { (cfg.idle_timeout as u64 / 3).clamp(15, 30) } else { 20 };
+    let lcp_secs = if cfg.idle_timeout > 0 {
+        (cfg.idle_timeout as u64 / 3).clamp(15, 30)
+    } else {
+        20
+    };
     let mut ka = Keepalive {
         lcp_secs,
         dpd_dead_secs: (lcp_secs * 3).max(90),
@@ -183,12 +227,18 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
     };
     if ka.data_secs > 0 {
         match ka.target {
-            Some(t) => out!("# data-plane keepalive: ICMP → {t} every {}s (keeps F5's idle timer reset)", ka.data_secs),
+            Some(t) => out!(
+                "# data-plane keepalive: ICMP → {t} every {}s (keeps F5's idle timer reset)",
+                ka.data_secs
+            ),
             None => out!("# data-plane keepalive disabled (gateway pushed no DNS target)"),
         }
     }
 
-    out!("# TUNNEL UP over {}. (send 'disconnect' on stdin or SIGTERM to stop)", path(on_dtls));
+    out!(
+        "# TUNNEL UP over {}. (send 'disconnect' on stdin or SIGTERM to stop)",
+        path(on_dtls)
+    );
     crate::report::up(&tun_name, Some(assigned.into()));
     tun::set_nonblocking(&tun_file);
 
@@ -209,7 +259,9 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
             want_dtls = false;
         }
         if !cfg.autoreconnect {
-            break 'session Err(format!("tunnel dropped ({reason}); auto-reconnect disabled by gateway"));
+            break 'session Err(format!(
+                "tunnel dropped ({reason}); auto-reconnect disabled by gateway"
+            ));
         }
 
         let mut reconnected = false;
@@ -224,22 +276,41 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
                 break 'session Ok(());
             }
             match open_channel(session, &cfg, want_dtls) {
-                Ok(Channel { conn: c, fd, ip: new_ip, mtu: new_mtu, dtls: d, .. }) => {
+                Ok(Channel {
+                    conn: c,
+                    fd,
+                    ip: new_ip,
+                    mtu: new_mtu,
+                    dtls: d,
+                    ..
+                }) => {
                     conn = c;
                     sock_fd = fd;
                     on_dtls = d;
                     if new_mtu < cur_mtu {
-                        let _ = tun::ip(&["link", "set", "dev", &tun_name, "mtu", &new_mtu.to_string()]);
+                        let _ = tun::ip(&[
+                            "link",
+                            "set",
+                            "dev",
+                            &tun_name,
+                            "mtu",
+                            &new_mtu.to_string(),
+                        ]);
                         cur_mtu = new_mtu;
                     }
                     if new_ip != assigned {
                         out!("# gateway reassigned IP {assigned} → {new_ip}");
-                        let _ = tun::ip(&["addr", "del", &format!("{assigned}/32"), "dev", &tun_name]);
-                        let _ = tun::ip(&["addr", "add", &format!("{new_ip}/32"), "dev", &tun_name]);
+                        let _ =
+                            tun::ip(&["addr", "del", &format!("{assigned}/32"), "dev", &tun_name]);
+                        let _ =
+                            tun::ip(&["addr", "add", &format!("{new_ip}/32"), "dev", &tun_name]);
                         assigned = new_ip;
                         ka.src = new_ip; // keepalive ICMP must use the current tunnel IP
                     }
-                    out!("# reconnected — tunnel back up over {} (IP {assigned})", path(on_dtls));
+                    out!(
+                        "# reconnected — tunnel back up over {} (IP {assigned})",
+                        path(on_dtls)
+                    );
                     crate::report::recovered(Some(assigned.into()));
                     reconnected = true;
                     break;
@@ -259,10 +330,16 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
     out!("# disconnecting — terminating PPP, restoring DNS/routes …");
     let _ = conn.send(ppp::PPP_LCP, &ppp::terminate_request(0xfe));
     drop(conn); // close the tunnel socket before asking the gateway to hang up
-    // Tell the gateway to drop the session server-side via /vdesk/hangup.php3.
+                // Tell the gateway to drop the session server-side via /vdesk/hangup.php3.
     let _ = http::request(
-        &session.host, session.port, "GET", "/vdesk/hangup.php3?hangup_error=1",
-        &mut session.cookies, &[], b"", session.timeout,
+        &session.host,
+        session.port,
+        "GET",
+        "/vdesk/hangup.php3?hangup_error=1",
+        &mut session.cookies,
+        &[],
+        b"",
+        session.timeout,
     );
     drop(restore);
     final_result
@@ -297,7 +374,15 @@ fn open_channel(session: &Session, cfg: &F5Options, try_dtls: bool) -> Result<Ch
 /// aren't needed.
 fn myvpn_request(session: &Session, cfg: &F5Options) -> Vec<u8> {
     let empty = http::Cookies::new();
-    http::build_request("GET", &session.host, &build_myvpn_path(cfg), &empty, &[], b"", true)
+    http::build_request(
+        "GET",
+        &session.host,
+        &build_myvpn_path(cfg),
+        &empty,
+        &[],
+        b"",
+        true,
+    )
 }
 
 fn header_ip(headers: &[(String, String)]) -> Option<Ipv4Addr> {
@@ -310,8 +395,18 @@ fn header_ip(headers: &[(String, String)]) -> Option<Ipv4Addr> {
 /// PPP over DTLS on `tunnel_port_dtls`.
 fn open_dtls(session: &Session, cfg: &F5Options) -> Result<Channel, String> {
     let gw = resolve_v4(&session.host, session.port)?;
-    println!("# trying DTLS (UDP {gw}:{}, {}) …", cfg.dtls_port, if cfg.dtls12 { "DTLSv1.2" } else { "DTLSv1.0" });
-    let dtls = gnutls::DtlsSession::connect_cert(IpAddr::V4(gw), cfg.dtls_port, cfg.dtls12, Duration::from_secs(4), &session.host)?;
+    println!(
+        "# trying DTLS (UDP {gw}:{}, {}) …",
+        cfg.dtls_port,
+        if cfg.dtls12 { "DTLSv1.2" } else { "DTLSv1.0" }
+    );
+    let dtls = gnutls::DtlsSession::connect_cert(
+        IpAddr::V4(gw),
+        cfg.dtls_port,
+        cfg.dtls12,
+        Duration::from_secs(4),
+        &session.host,
+    )?;
     let record_mtu = dtls.data_mtu();
     let mut st = gnutls::DtlsStream::new(dtls);
 
@@ -329,7 +424,9 @@ fn open_dtls(session: &Session, cfg: &F5Options) -> Result<Channel, String> {
         }
         let resend_at = Instant::now() + Duration::from_secs(1);
         loop {
-            let wait = resend_at.saturating_duration_since(Instant::now()).min(left);
+            let wait = resend_at
+                .saturating_duration_since(Instant::now())
+                .min(left);
             if wait.is_zero() {
                 break;
             }
@@ -337,10 +434,16 @@ fn open_dtls(session: &Session, cfg: &F5Options) -> Result<Channel, String> {
             match st.read(&mut buf) {
                 Ok(n) => match parse_dtls_probe(&buf[..n]) {
                     Probe::Accepted(h) => break 'probe h,
-                    Probe::Refused(status) => return Err(format!("/myvpn over DTLS refused: HTTP {status}")),
+                    Probe::Refused(status) => {
+                        return Err(format!("/myvpn over DTLS refused: HTTP {status}"))
+                    }
                     Probe::Other => {} // e.g. an early PPP frame — keep waiting
                 },
-                Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {}
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) => {}
                 Err(e) => return Err(format!("DTLS: {e}")),
             }
         }
@@ -355,10 +458,15 @@ fn open_dtls(session: &Session, cfg: &F5Options) -> Result<Channel, String> {
     let ipc = ppp::negotiate(&mut conn, hip)?;
     conn.get_mut().set_read_timeout(None);
     conn.set_poll_fd(fd);
-    let link = Link { fd, hip, gw: Some(IpAddr::V4(gw)), mtu: link_mtu(None, Some(record_mtu)), dtls: true };
+    let link = Link {
+        fd,
+        hip,
+        gw: Some(IpAddr::V4(gw)),
+        mtu: link_mtu(None, Some(record_mtu)),
+        dtls: true,
+    };
     Ok(finish(conn.boxed(), ipc, cfg, link))
 }
-
 
 #[derive(Debug, PartialEq)]
 enum Probe {
@@ -373,13 +481,20 @@ fn parse_dtls_probe(rec: &[u8]) -> Probe {
     }
     let text = String::from_utf8_lossy(rec);
     let mut lines = text.split("\r\n");
-    let status = lines.next().and_then(|l| l.split_whitespace().nth(1)).and_then(|s| s.parse::<u16>().ok()).unwrap_or(0);
+    let status = lines
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or(0);
     if status != 200 {
         return Probe::Refused(status);
     }
     let headers = lines
         .take_while(|l| !l.is_empty())
-        .filter_map(|l| l.split_once(':').map(|(k, v)| (k.trim().to_string(), v.trim().to_string())))
+        .filter_map(|l| {
+            l.split_once(':')
+                .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+        })
         .collect();
     Probe::Accepted(headers)
 }
@@ -390,10 +505,13 @@ fn open_tls(session: &Session, cfg: &F5Options) -> Result<Channel, String> {
     let mut tls = http::connect_tls(&session.host, session.port, session.timeout)?;
     // Pin the address this very socket reached (not a second DNS answer).
     let gw_peer = tls.get_ref().peer_addr().ok().map(|a| a.ip());
-    tls.write_all(&myvpn_request(session, cfg)).map_err(|e| format!("tunnel request: {e}"))?;
+    tls.write_all(&myvpn_request(session, cfg))
+        .map_err(|e| format!("tunnel request: {e}"))?;
     tls.flush().ok();
 
-    tls.get_ref().set_read_timeout(Some(Duration::from_secs(20))).ok();
+    tls.get_ref()
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .ok();
     let (status, headers, leftover) = read_http_response(&mut tls)?;
     if status != 200 && status != 201 {
         return Err(format!("tunnel setup failed: HTTP {status}"));
@@ -402,17 +520,28 @@ fn open_tls(session: &Session, cfg: &F5Options) -> Result<Channel, String> {
     println!("# tunnel accepted (HTTP {status}); gateway-assigned IP {hip:?}");
 
     let framing = if cfg.hdlc { Framing::Hdlc } else { Framing::F5 };
-    tls.get_ref().set_read_timeout(Some(Duration::from_secs(5))).ok();
+    tls.get_ref()
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .ok();
     let sock_fd = tls.get_ref().as_raw_fd();
     let mut conn = ppp::PppConn::new(tls, framing);
     conn.feed(&leftover);
 
-    println!("# negotiating PPP (LCP/IPCP, framing {}) …", if cfg.hdlc { "HDLC" } else { "F5" });
+    println!(
+        "# negotiating PPP (LCP/IPCP, framing {}) …",
+        if cfg.hdlc { "HDLC" } else { "F5" }
+    );
     let ipc = ppp::negotiate(&mut conn, hip)?;
     // Non-blocking for the poll loop; sends wait for POLLOUT when the buffer is full.
     conn.get_ref().get_ref().set_nonblocking(true).ok();
     conn.set_poll_fd(sock_fd);
-    let link = Link { fd: sock_fd, hip, gw: gw_peer, mtu: link_mtu(None, None), dtls: false };
+    let link = Link {
+        fd: sock_fd,
+        hip,
+        gw: gw_peer,
+        mtu: link_mtu(None, None),
+        dtls: false,
+    };
     Ok(finish(conn.boxed(), ipc, cfg, link))
 }
 
@@ -432,8 +561,20 @@ fn finish(conn: F5Conn, ipc: ppp::IpConfig, cfg: &F5Options, l: Link) -> Channel
         dns = ipc.dns.clone();
     }
     let mtu = l.mtu.min(link_mtu(ipc.peer_mru, None));
-    println!("# PPP up over {} — IP {ip}  DNS {dns:?}  (IPCP gave {})", path(l.dtls), ipc.addr);
-    Channel { conn, fd: l.fd, ip, dns, gw: l.gw, mtu, dtls: l.dtls }
+    println!(
+        "# PPP up over {} — IP {ip}  DNS {dns:?}  (IPCP gave {})",
+        path(l.dtls),
+        ipc.addr
+    );
+    Channel {
+        conn,
+        fd: l.fd,
+        ip,
+        dns,
+        gw: l.gw,
+        mtu,
+        dtls: l.dtls,
+    }
 }
 
 /// tun MTU for a channel: our default, capped by the gateway's MRU (it drops larger
@@ -541,12 +682,27 @@ fn data_loop(
             return Ok(());
         }
         if dtls && tin == 0 && tout >= 8 && started.elapsed() >= DTLS_TRIAL {
-            return Err(format!("DTLS up but no data forwarded in {}s (gateway DTLS data plane broken)", DTLS_TRIAL.as_secs()));
+            return Err(format!(
+                "DTLS up but no data forwarded in {}s (gateway DTLS data plane broken)",
+                DTLS_TRIAL.as_secs()
+            ));
         }
         let mut fds = [
-            libc::pollfd { fd: tun_fd, events: libc::POLLIN, revents: 0 },
-            libc::pollfd { fd: sock_fd, events: libc::POLLIN, revents: 0 },
-            libc::pollfd { fd: kick_fd, events: libc::POLLIN, revents: 0 },
+            libc::pollfd {
+                fd: tun_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: sock_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: kick_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
         ];
         let n = unsafe { libc::poll(fds.as_mut_ptr(), 3, 1000) };
         if n < 0 {
@@ -631,10 +787,16 @@ fn data_loop(
         }
         // Don't wait for the TCP reset, which can lag well behind the gateway going silent.
         if last_rx.elapsed().as_secs() >= dpd_dead {
-            return Err(format!("no data from gateway for {}s (dead peer)", last_rx.elapsed().as_secs()));
+            return Err(format!(
+                "no data from gateway for {}s (dead peer)",
+                last_rx.elapsed().as_secs()
+            ));
         }
         if last_stats.elapsed().as_secs() >= 10 {
-            out!("#  stats[{}]: rx_frames={rx} tun_in={tin} tun_out={tout} frame_err={perr}", path(dtls));
+            out!(
+                "#  stats[{}]: rx_frames={rx} tun_in={tin} tun_out={tout} frame_err={perr}",
+                path(dtls)
+            );
             last_stats = Instant::now();
         }
     }
@@ -729,7 +891,12 @@ fn setup_routes(gw: Option<Ipv4Addr>, tun: &str, cfg: &F5Options) -> Vec<String>
                 Some(v) => format!("via {v} dev {dev}"),
                 None => format!("dev {dev}"),
             };
-            pair(format!("{}/{}", ex.net, prefix), &suffix, &mut add_lines, &mut del_lines);
+            pair(
+                format!("{}/{}", ex.net, prefix),
+                &suffix,
+                &mut add_lines,
+                &mut del_lines,
+            );
         }
     }
 
@@ -742,10 +909,18 @@ fn setup_routes(gw: Option<Ipv4Addr>, tun: &str, cfg: &F5Options) -> Vec<String>
     }
     for r in &cfg.routes {
         let prefix = tun::mask_to_prefix(r.mask);
-        pair(format!("{}/{}", r.net, prefix), &dev_suffix, &mut add_lines, &mut del_lines);
+        pair(
+            format!("{}/{}", r.net, prefix),
+            &dev_suffix,
+            &mut add_lines,
+            &mut del_lines,
+        );
     }
     if !cfg.routes.is_empty() {
-        out!("# split tunnel: {} include route(s) via {tun}", cfg.routes.len());
+        out!(
+            "# split tunnel: {} include route(s) via {tun}",
+            cfg.routes.len()
+        );
     }
     if !cfg.default_route && cfg.routes.is_empty() {
         out!("# WARNING: no default route and no split includes — tunnel has no routes");
@@ -761,22 +936,39 @@ fn setup_routes(gw: Option<Ipv4Addr>, tun: &str, cfg: &F5Options) -> Vec<String>
         }
     }
     if !failed.is_empty() {
-        out!("# {} route(s) already existed — not ours, kept on disconnect", failed.len());
+        out!(
+            "# {} route(s) already existed — not ours, kept on disconnect",
+            failed.len()
+        );
     }
-    del_lines.into_iter().enumerate().filter(|(i, _)| !failed.contains(i)).map(|(_, d)| d).collect()
+    del_lines
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| !failed.contains(i))
+        .map(|(_, d)| d)
+        .collect()
 }
 
 /// Current `via`/`dev` for a destination, from `ip route get`.
 fn original_path(dst: Ipv4Addr) -> Option<(Option<String>, String)> {
-    let out = std::process::Command::new("ip").args(["route", "get", &dst.to_string()]).output().ok()?;
+    let out = std::process::Command::new("ip")
+        .args(["route", "get", &dst.to_string()])
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }
     let text = String::from_utf8_lossy(&out.stdout);
     let first = text.lines().next().unwrap_or("");
     let toks: Vec<&str> = first.split_whitespace().collect();
-    let via = toks.windows(2).find(|w| w[0] == "via").map(|w| w[1].to_string());
-    let dev = toks.windows(2).find(|w| w[0] == "dev").map(|w| w[1].to_string())?;
+    let via = toks
+        .windows(2)
+        .find(|w| w[0] == "via")
+        .map(|w| w[1].to_string());
+    let dev = toks
+        .windows(2)
+        .find(|w| w[0] == "dev")
+        .map(|w| w[1].to_string())?;
     Some((via, dev))
 }
 
@@ -793,12 +985,24 @@ fn base64(data: &[u8]) -> String {
     const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
-        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
         let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
         out.push(A[((n >> 18) & 63) as usize] as char);
         out.push(A[((n >> 12) & 63) as usize] as char);
-        out.push(if chunk.len() > 1 { A[((n >> 6) & 63) as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { A[(n & 63) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            A[((n >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            A[(n & 63) as usize] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -819,7 +1023,12 @@ mod tests {
 
     #[test]
     fn myvpn_path_includes_client_keepalive() {
-        let cfg = F5Options { session_id: "S".into(), ur_z: "Z".into(), ipv4: true, ..Default::default() };
+        let cfg = F5Options {
+            session_id: "S".into(),
+            ur_z: "Z".into(),
+            ipv4: true,
+            ..Default::default()
+        };
         assert!(build_myvpn_path(&cfg).contains("&client_keepalive=yes"));
     }
 
@@ -862,7 +1071,10 @@ mod tests {
         let (status, headers, leftover) = read_http_response(&mut stream).unwrap();
         assert_eq!(status, 200);
         assert_eq!(
-            headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("x-vpn-client-ip")).map(|(_, v)| v.as_str()),
+            headers
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("x-vpn-client-ip"))
+                .map(|(_, v)| v.as_str()),
             Some("10.1.2.3")
         );
         assert_eq!(leftover, vec![0xf5, 0x00, 0x00, 0x06]);
@@ -880,8 +1092,14 @@ mod dtls_tests {
             Probe::Accepted(h) => assert_eq!(header_ip(&h), Some(Ipv4Addr::new(10, 1, 2, 3))),
             other => panic!("{other:?}"),
         }
-        assert_eq!(parse_dtls_probe(b"HTTP/1.1 403 Forbidden\r\n\r\n"), Probe::Refused(403));
-        assert_eq!(parse_dtls_probe(&[0xf5, 0x00, 0x00, 0x04, 0xff, 0x03, 0xc0, 0x21]), Probe::Other);
+        assert_eq!(
+            parse_dtls_probe(b"HTTP/1.1 403 Forbidden\r\n\r\n"),
+            Probe::Refused(403)
+        );
+        assert_eq!(
+            parse_dtls_probe(&[0xf5, 0x00, 0x00, 0x04, 0xff, 0x03, 0xc0, 0x21]),
+            Probe::Other
+        );
     }
 
     #[test]

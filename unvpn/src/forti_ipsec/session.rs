@@ -15,9 +15,18 @@ use std::net::Ipv4Addr;
 /// FortiClient IKE_SA_INIT vendor-ID payloads (constant per build). A managed
 /// FortiGate needs these to treat the peer as a FortiClient.
 const FORTINET_VENDOR_IDS: [[u8; 16]; 3] = [
-    [0x4c, 0x53, 0x42, 0x7b, 0x6d, 0x46, 0x5d, 0x1b, 0x33, 0x7b, 0xb7, 0x55, 0xa3, 0x7a, 0x7f, 0xef],
-    [0xb4, 0xf0, 0x1c, 0xa9, 0x51, 0xe9, 0xda, 0x8d, 0x0b, 0xaf, 0xbb, 0xd3, 0x4a, 0xd3, 0x04, 0x4e],
-    [0xc1, 0xdc, 0x43, 0x50, 0x47, 0x6b, 0x98, 0xa4, 0x29, 0xb9, 0x17, 0x81, 0x91, 0x4c, 0xa4, 0x3e],
+    [
+        0x4c, 0x53, 0x42, 0x7b, 0x6d, 0x46, 0x5d, 0x1b, 0x33, 0x7b, 0xb7, 0x55, 0xa3, 0x7a, 0x7f,
+        0xef,
+    ],
+    [
+        0xb4, 0xf0, 0x1c, 0xa9, 0x51, 0xe9, 0xda, 0x8d, 0x0b, 0xaf, 0xbb, 0xd3, 0x4a, 0xd3, 0x04,
+        0x4e,
+    ],
+    [
+        0xc1, 0xdc, 0x43, 0x50, 0x47, 0x6b, 0x98, 0xa4, 0x29, 0xb9, 0x17, 0x81, 0x91, 0x4c, 0xa4,
+        0x3e,
+    ],
 ];
 
 /// The IKE SA transforms we offer and, once chosen, run with.
@@ -33,7 +42,13 @@ pub struct IkeSuite {
 impl IkeSuite {
     /// FortiGate's common dialup default.
     pub fn default_fgt() -> Self {
-        IkeSuite { encr: ENCR_AES_CBC, encr_key_bits: 256, prf: PRF_HMAC_SHA256, integ: INTEG_HMAC_SHA256_128, dh: DH_MODP2048 }
+        IkeSuite {
+            encr: ENCR_AES_CBC,
+            encr_key_bits: 256,
+            prf: PRF_HMAC_SHA256,
+            integ: INTEG_HMAC_SHA256_128,
+            dh: DH_MODP2048,
+        }
     }
 }
 
@@ -47,7 +62,11 @@ pub struct EspSuite {
 
 impl EspSuite {
     pub fn default_fgt() -> Self {
-        EspSuite { encr: ENCR_AES_CBC, encr_key_bits: 256, integ: INTEG_HMAC_SHA256_128 }
+        EspSuite {
+            encr: ENCR_AES_CBC,
+            encr_key_bits: 256,
+            integ: INTEG_HMAC_SHA256_128,
+        }
     }
     /// ESP key material per direction = enc_key || integ_key.
     pub fn key_bytes(&self) -> usize {
@@ -121,31 +140,64 @@ impl Ikev2Session {
     }
 
     fn ike_proposal(&self) -> Proposal {
-        let mut transforms = vec![Transform::with_key_len(TransformType::Encryption, self.suite.encr, self.suite.encr_key_bits as u16)];
+        let mut transforms = vec![Transform::with_key_len(
+            TransformType::Encryption,
+            self.suite.encr,
+            self.suite.encr_key_bits as u16,
+        )];
         transforms.push(Transform::new(TransformType::Prf, self.suite.prf));
         transforms.push(Transform::new(TransformType::Integrity, self.suite.integ));
         transforms.push(Transform::new(TransformType::DiffieHellman, self.suite.dh));
-        Proposal { num: 1, protocol: PROTO_IKE, spi: vec![], transforms }
+        Proposal {
+            num: 1,
+            protocol: PROTO_IKE,
+            spi: vec![],
+            transforms,
+        }
     }
 
     /// The ESP proposal carried in IKE_AUTH's SA payload (CHILD SA).
     pub fn esp_proposal(&self) -> Proposal {
         let transforms = vec![
-            Transform::with_key_len(TransformType::Encryption, self.esp.encr, self.esp.encr_key_bits as u16),
+            Transform::with_key_len(
+                TransformType::Encryption,
+                self.esp.encr,
+                self.esp.encr_key_bits as u16,
+            ),
             Transform::new(TransformType::Integrity, self.esp.integ),
             Transform::new(TransformType::Esn, ESN_NONE),
         ];
-        Proposal { num: 1, protocol: PROTO_ESP, spi: self.esp_spi_i.to_be_bytes().to_vec(), transforms }
+        Proposal {
+            num: 1,
+            protocol: PROTO_ESP,
+            spi: self.esp_spi_i.to_be_bytes().to_vec(),
+            transforms,
+        }
     }
 
     /// Build the IKE_SA_INIT request (SA, KEi, Ni, NAT-D), storing it as RealMessage1.
-    pub fn build_sa_init(&mut self, local: Ipv4Addr, local_port: u16, gw: Ipv4Addr, gw_port: u16, cookie: Option<Vec<u8>>) -> Vec<u8> {
+    pub fn build_sa_init(
+        &mut self,
+        local: Ipv4Addr,
+        local_port: u16,
+        gw: Ipv4Addr,
+        gw_port: u16,
+        cookie: Option<Vec<u8>>,
+    ) -> Vec<u8> {
         let mut payloads: Vec<Payload> = Vec::new();
         if let Some(c) = cookie {
-            payloads.push(Payload::Notify(Notify { protocol: 0, spi: vec![], ntype: NotifyType::Cookie.into(), data: c }));
+            payloads.push(Payload::Notify(Notify {
+                protocol: 0,
+                spi: vec![],
+                ntype: NotifyType::Cookie.into(),
+                data: c,
+            }));
         }
         payloads.push(Payload::Sa(vec![self.ike_proposal()]));
-        payloads.push(Payload::Ke { group: self.suite.dh, data: self.dh.public_key() });
+        payloads.push(Payload::Ke {
+            group: self.suite.dh,
+            data: self.dh.public_key(),
+        });
         payloads.push(Payload::Nonce(self.ni.clone()));
         // A managed FortiGate requires these to accept the peer as a FortiClient.
         for vid in FORTINET_VENDOR_IDS {
@@ -153,9 +205,24 @@ impl Ikev2Session {
         }
         let src = nat_hash(&self.spi_i, &self.spi_r, local, local_port);
         let dst = nat_hash(&self.spi_i, &self.spi_r, gw, gw_port);
-        payloads.push(Payload::Notify(Notify { protocol: 0, spi: vec![], ntype: NotifyType::NatDetectionSourceIp.into(), data: src }));
-        payloads.push(Payload::Notify(Notify { protocol: 0, spi: vec![], ntype: NotifyType::NatDetectionDestinationIp.into(), data: dst }));
-        payloads.push(Payload::Notify(Notify { protocol: 0, spi: vec![], ntype: N_FORTINET_VPN_NETWORK_ID, data: vec![0] }));
+        payloads.push(Payload::Notify(Notify {
+            protocol: 0,
+            spi: vec![],
+            ntype: NotifyType::NatDetectionSourceIp.into(),
+            data: src,
+        }));
+        payloads.push(Payload::Notify(Notify {
+            protocol: 0,
+            spi: vec![],
+            ntype: NotifyType::NatDetectionDestinationIp.into(),
+            data: dst,
+        }));
+        payloads.push(Payload::Notify(Notify {
+            protocol: 0,
+            spi: vec![],
+            ntype: N_FORTINET_VPN_NETWORK_ID,
+            data: vec![0],
+        }));
 
         let msg = Message {
             init_spi: self.spi_i,
@@ -173,7 +240,14 @@ impl Ikev2Session {
     /// Process the IKE_SA_INIT response: learn the responder SPI, DH, nonce, chosen
     /// transforms, NAT state; derive the SA keys. Returns `Retry` signals for COOKIE
     /// and INVALID_KE, else `Ok`.
-    pub fn process_sa_init(&mut self, raw: &[u8], local: Ipv4Addr, local_port: u16, gw: Ipv4Addr, gw_port: u16) -> Result<SaInitOutcome, String> {
+    pub fn process_sa_init(
+        &mut self,
+        raw: &[u8],
+        local: Ipv4Addr,
+        local_port: u16,
+        gw: Ipv4Addr,
+        gw_port: u16,
+    ) -> Result<SaInitOutcome, String> {
         let (hdr, rest) = wire::parse_header(raw)?;
         let payloads = wire::parse_payloads(hdr.first_payload, rest)?;
 
@@ -186,7 +260,11 @@ impl Ikev2Session {
             return Ok(SaInitOutcome::Cookie(c.to_vec()));
         }
         if let Some(d) = find_notify(&payloads, NotifyType::InvalidKePayload.into()) {
-            let group = if d.len() >= 2 { u16::from_be_bytes([d[0], d[1]]) } else { 0 };
+            let group = if d.len() >= 2 {
+                u16::from_be_bytes([d[0], d[1]])
+            } else {
+                0
+            };
             return Ok(SaInitOutcome::InvalidKe(group));
         }
         if find_notify(&payloads, NotifyType::NoProposalChosen.into()).is_some() {
@@ -198,20 +276,31 @@ impl Ikev2Session {
         self.real_msg2 = raw.to_vec();
 
         self.spi_r = hdr.resp_spi;
-        let ker = payloads.iter().find_map(|p| match p {
-            Payload::Ke { data, .. } => Some(data.clone()),
-            _ => None,
-        }).ok_or("IKE_SA_INIT response without KE")?;
-        self.nr = payloads.iter().find_map(|p| match p {
-            Payload::Nonce(n) => Some(n.clone()),
-            _ => None,
-        }).ok_or("IKE_SA_INIT response without Nonce")?;
+        let ker = payloads
+            .iter()
+            .find_map(|p| match p {
+                Payload::Ke { data, .. } => Some(data.clone()),
+                _ => None,
+            })
+            .ok_or("IKE_SA_INIT response without KE")?;
+        self.nr = payloads
+            .iter()
+            .find_map(|p| match p {
+                Payload::Nonce(n) => Some(n.clone()),
+                _ => None,
+            })
+            .ok_or("IKE_SA_INIT response without Nonce")?;
 
         // Confirm the responder echoed a usable suite (we offered exactly one).
         verify_chosen_suite(&payloads, &self.suite)?;
 
         let shared = self.dh.shared_secret(&ker)?;
-        let c = Ikev2Crypto::new(self.suite.prf, self.suite.integ, self.suite.encr, self.suite.encr_key_bits)?;
+        let c = Ikev2Crypto::new(
+            self.suite.prf,
+            self.suite.integ,
+            self.suite.encr,
+            self.suite.encr_key_bits,
+        )?;
         let keys = c.derive_sa_keys(&shared, &self.ni, &self.nr, self.spi_i, self.spi_r);
         self.keys = Some(keys);
         self.crypto = Some(c);
@@ -260,13 +349,23 @@ impl Ikev2Session {
 
     /// Initiator's signed octets for the AUTH payload.
     pub fn initiator_signed_octets(&self, idi_body: &[u8]) -> Vec<u8> {
-        self.crypto().initiator_signed_octets(&self.real_msg1, &self.nr, &self.keys().sk_pi, idi_body)
+        self.crypto().initiator_signed_octets(
+            &self.real_msg1,
+            &self.nr,
+            &self.keys().sk_pi,
+            idi_body,
+        )
     }
 
     /// The responder's signed octets (`RealMessage2 | Ni | prf(SK_pr, IDr')`),
     /// which the gateway's AUTH payload is computed over.
     pub fn responder_signed_octets(&self, idr_body: &[u8]) -> Vec<u8> {
-        self.crypto().responder_signed_octets(&self.real_msg2, &self.ni, &self.keys().sk_pr, idr_body)
+        self.crypto().responder_signed_octets(
+            &self.real_msg2,
+            &self.ni,
+            &self.keys().sk_pr,
+            idr_body,
+        )
     }
 
     /// Whether the gateway's shared-key (PSK) AUTH payload verifies against the
@@ -294,7 +393,9 @@ impl Ikev2Session {
     /// Build the ESP SA from the CHILD SA key material (RFC 7296 §2.17).
     pub fn make_esp_sa(&self) -> Result<crate::ike::esp::EspSa, String> {
         let per_dir = self.esp.key_bytes();
-        let (i2r, r2i) = self.crypto().child_keymat(&self.keys().sk_d, &self.ni, &self.nr, per_dir);
+        let (i2r, r2i) = self
+            .crypto()
+            .child_keymat(&self.keys().sk_d, &self.ni, &self.nr, per_dir);
         let transform_id = u8::from(crate::ike::model::TransformId::EspAesCbc);
         let esp_auth = esp_auth_alg(self.esp.integ);
         // A packet's SPI names the SA at its receiver: inbound carries our SPI with the
@@ -315,14 +416,23 @@ impl Ikev2Session {
     /// D-H group transform when PFS is used.
     fn esp_proposal_with_spi(&self, spi: u32, pfs_group: Option<u16>) -> Proposal {
         let mut transforms = vec![
-            Transform::with_key_len(TransformType::Encryption, self.esp.encr, self.esp.encr_key_bits as u16),
+            Transform::with_key_len(
+                TransformType::Encryption,
+                self.esp.encr,
+                self.esp.encr_key_bits as u16,
+            ),
             Transform::new(TransformType::Integrity, self.esp.integ),
         ];
         if let Some(g) = pfs_group {
             transforms.push(Transform::new(TransformType::DiffieHellman, g));
         }
         transforms.push(Transform::new(TransformType::Esn, ESN_NONE));
-        Proposal { num: 1, protocol: PROTO_ESP, spi: spi.to_be_bytes().to_vec(), transforms }
+        Proposal {
+            num: 1,
+            protocol: PROTO_ESP,
+            spi: spi.to_be_bytes().to_vec(),
+            transforms,
+        }
     }
 
     /// Inner payloads for a CREATE_CHILD_SA that rekeys the current ESP CHILD SA
@@ -330,7 +440,12 @@ impl Ikev2Session {
     /// inbound SPI, Nonce seeds the new key material, the TS mirror the originals.
     /// `pfs` adds a D-H group + KE payload for Perfect Forward Secrecy (FortiGate's
     /// phase-2 default; without it the rekey is refused with NO_PROPOSAL_CHOSEN).
-    pub fn rekey_child_payloads(&self, new_spi_i: u32, ni_new: &[u8], pfs: Option<(u16, Vec<u8>)>) -> Vec<Payload> {
+    pub fn rekey_child_payloads(
+        &self,
+        new_spi_i: u32,
+        ni_new: &[u8],
+        pfs: Option<(u16, Vec<u8>)>,
+    ) -> Vec<Payload> {
         let group = pfs.as_ref().map(|(g, _)| *g);
         let mut ps = vec![
             Payload::Notify(Notify {
@@ -343,7 +458,10 @@ impl Ikev2Session {
             Payload::Nonce(ni_new.to_vec()),
         ];
         if let Some((g, pubkey)) = pfs {
-            ps.push(Payload::Ke { group: g, data: pubkey });
+            ps.push(Payload::Ke {
+                group: g,
+                data: pubkey,
+            });
         }
         ps.push(Payload::Tsi(vec![TrafficSelector::ipv4_any()]));
         ps.push(Payload::Tsr(vec![TrafficSelector::ipv4_any()]));
@@ -352,7 +470,10 @@ impl Ikev2Session {
 
     /// Read a CREATE_CHILD_SA response: the gateway's new ESP SPI, its nonce, and its
     /// KE payload (present only under PFS).
-    pub fn parse_child_response(&self, payloads: &[Payload]) -> Result<(u32, Vec<u8>, Option<Vec<u8>>), String> {
+    pub fn parse_child_response(
+        &self,
+        payloads: &[Payload],
+    ) -> Result<(u32, Vec<u8>, Option<Vec<u8>>), String> {
         if let Some(t) = payloads.iter().find_map(|p| match p {
             Payload::Notify(n) if n.ntype < 16384 => Some(n.ntype),
             _ => None,
@@ -362,9 +483,15 @@ impl Ikev2Session {
         let spi = payloads
             .iter()
             .find_map(|p| match p {
-                Payload::Sa(props) => props.iter().find(|p| p.protocol == PROTO_ESP).and_then(|pr| {
-                    (pr.spi.len() == 4).then(|| u32::from_be_bytes(pr.spi[..4].try_into().unwrap()))
-                }),
+                Payload::Sa(props) => {
+                    props
+                        .iter()
+                        .find(|p| p.protocol == PROTO_ESP)
+                        .and_then(|pr| {
+                            (pr.spi.len() == 4)
+                                .then(|| u32::from_be_bytes(pr.spi[..4].try_into().unwrap()))
+                        })
+                }
                 _ => None,
             })
             .ok_or("CREATE_CHILD_SA reply without an ESP SPI")?;
@@ -384,7 +511,14 @@ impl Ikev2Session {
 
     /// Build the rekeyed ESP SA from the fresh SPIs and nonces. With PFS the D-H
     /// shared secret prefixes the seed: KEYMAT = prf+(SK_d, [g^ir |] Ni | Nr).
-    pub fn rekeyed_esp_sa(&self, new_spi_i: u32, new_spi_r: u32, dh_shared: Option<&[u8]>, ni_new: &[u8], nr_new: &[u8]) -> Result<crate::ike::esp::EspSa, String> {
+    pub fn rekeyed_esp_sa(
+        &self,
+        new_spi_i: u32,
+        new_spi_r: u32,
+        dh_shared: Option<&[u8]>,
+        ni_new: &[u8],
+        nr_new: &[u8],
+    ) -> Result<crate::ike::esp::EspSa, String> {
         let per_dir = self.esp.key_bytes();
         let mut seed = Vec::new();
         if let Some(g) = dh_shared {
@@ -392,22 +526,43 @@ impl Ikev2Session {
         }
         seed.extend_from_slice(ni_new);
         seed.extend_from_slice(nr_new);
-        let km = self.crypto().prf_plus(&self.keys().sk_d, &seed, 2 * per_dir);
+        let km = self
+            .crypto()
+            .prf_plus(&self.keys().sk_d, &seed, 2 * per_dir);
         // prf+ yields the i→r key first, then r→i. Inbound (gateway→us) uses r2i with
         // our SPI; outbound (us→gateway) uses i2r with the gateway's SPI — same split
         // as the initial CHILD SA in make_esp_sa.
         let (i2r, r2i) = (&km[..per_dir], &km[per_dir..2 * per_dir]);
         let transform_id = u8::from(crate::ike::model::TransformId::EspAesCbc);
         let esp_auth = esp_auth_alg(self.esp.integ);
-        crate::ike::esp::EspSa::new(transform_id, esp_auth, self.esp.encr_key_bits, new_spi_i, r2i, new_spi_r, i2r)
+        crate::ike::esp::EspSa::new(
+            transform_id,
+            esp_auth,
+            self.esp.encr_key_bits,
+            new_spi_i,
+            r2i,
+            new_spi_r,
+            i2r,
+        )
     }
 
     /// Payloads for a MOBIKE address update (RFC 4555 §3.5): UPDATE_SA_ADDRESSES and
     /// fresh NAT-D hashes for the new source/destination, so the responder re-homes
     /// the SA to the address this INFORMATIONAL arrives from.
-    pub fn mobike_update_payloads(&self, gw: Ipv4Addr, gw_port: u16, local: Ipv4Addr, local_port: u16) -> Vec<Payload> {
+    pub fn mobike_update_payloads(
+        &self,
+        gw: Ipv4Addr,
+        gw_port: u16,
+        local: Ipv4Addr,
+        local_port: u16,
+    ) -> Vec<Payload> {
         vec![
-            Payload::Notify(Notify { protocol: 0, spi: vec![], ntype: NotifyType::UpdateSaAddresses.into(), data: vec![] }),
+            Payload::Notify(Notify {
+                protocol: 0,
+                spi: vec![],
+                ntype: NotifyType::UpdateSaAddresses.into(),
+                data: vec![],
+            }),
             Payload::Notify(Notify {
                 protocol: 0,
                 spi: vec![],
@@ -466,12 +621,19 @@ fn find_notify<'a>(payloads: &'a [Payload], ntype: u16) -> Option<&'a [u8]> {
 
 /// Confirm the responder's SA payload names the suite we offered.
 fn verify_chosen_suite(payloads: &[Payload], suite: &IkeSuite) -> Result<(), String> {
-    let sa = payloads.iter().find_map(|p| match p {
-        Payload::Sa(props) => Some(props),
-        _ => None,
-    }).ok_or("IKE_SA_INIT response without SA")?;
+    let sa = payloads
+        .iter()
+        .find_map(|p| match p {
+            Payload::Sa(props) => Some(props),
+            _ => None,
+        })
+        .ok_or("IKE_SA_INIT response without SA")?;
     let prop = sa.first().ok_or("empty SA proposal")?;
-    let has = |tt: TransformType, id: u16| prop.transforms.iter().any(|t| t.ttype == u8::from(tt) && t.id == id);
+    let has = |tt: TransformType, id: u16| {
+        prop.transforms
+            .iter()
+            .any(|t| t.ttype == u8::from(tt) && t.id == id)
+    };
     if has(TransformType::Encryption, suite.encr)
         && has(TransformType::Prf, suite.prf)
         && has(TransformType::Integrity, suite.integ)
@@ -502,40 +664,82 @@ pub fn dump_payloads(label: &str, payloads: &[Payload]) {
         match p {
             Payload::Sa(props) => {
                 for pr in props {
-                    let proto = match pr.protocol { 1 => "IKE", 2 => "AH", 3 => "ESP", o => return_proto(o) };
-                    eprintln!("#   SA proposal #{} proto={proto} spi={}", pr.num, hex(&pr.spi));
+                    let proto = match pr.protocol {
+                        1 => "IKE",
+                        2 => "AH",
+                        3 => "ESP",
+                        o => return_proto(o),
+                    };
+                    eprintln!(
+                        "#   SA proposal #{} proto={proto} spi={}",
+                        pr.num,
+                        hex(&pr.spi)
+                    );
                     for t in &pr.transforms {
-                        eprintln!("#     transform {} = {}", xf_type(t.ttype), xf_name(t.ttype, t.id, t.key_len));
+                        eprintln!(
+                            "#     transform {} = {}",
+                            xf_type(t.ttype),
+                            xf_name(t.ttype, t.id, t.key_len)
+                        );
                     }
                 }
             }
             Payload::Ke { group, data } => eprintln!("#   KE group={group} ({} bytes)", data.len()),
             Payload::Nonce(n) => eprintln!("#   Nonce ({} bytes)", n.len()),
-            Payload::IdI { kind, data } => eprintln!("#   IDi kind={kind} {}", String::from_utf8_lossy(data)),
-            Payload::IdR { kind, data } => eprintln!("#   IDr kind={kind} {}", String::from_utf8_lossy(data)),
-            Payload::Cert { encoding, data } => eprintln!("#   CERT enc={encoding} ({} bytes)", data.len()),
-            Payload::CertReq { encoding, data } => eprintln!("#   CERTREQ enc={encoding} ({} bytes)", data.len()),
-            Payload::Auth { method, data } => eprintln!("#   AUTH method={method} ({} bytes)", data.len()),
+            Payload::IdI { kind, data } => {
+                eprintln!("#   IDi kind={kind} {}", String::from_utf8_lossy(data))
+            }
+            Payload::IdR { kind, data } => {
+                eprintln!("#   IDr kind={kind} {}", String::from_utf8_lossy(data))
+            }
+            Payload::Cert { encoding, data } => {
+                eprintln!("#   CERT enc={encoding} ({} bytes)", data.len())
+            }
+            Payload::CertReq { encoding, data } => {
+                eprintln!("#   CERTREQ enc={encoding} ({} bytes)", data.len())
+            }
+            Payload::Auth { method, data } => {
+                eprintln!("#   AUTH method={method} ({} bytes)", data.len())
+            }
             Payload::Notify(n) => {
                 let name = notify_name(n.ntype);
                 eprintln!(
                     "#   Notify {} (0x{:04x}){} proto={} spi={} data[{}]={}",
-                    name, n.ntype,
-                    if n.ntype >= 16384 { " status" } else { " ERROR" },
-                    n.protocol, hex(&n.spi), n.data.len(), preview(&n.data),
+                    name,
+                    n.ntype,
+                    if n.ntype >= 16384 {
+                        " status"
+                    } else {
+                        " ERROR"
+                    },
+                    n.protocol,
+                    hex(&n.spi),
+                    n.data.len(),
+                    preview(&n.data),
                 );
             }
-            Payload::Delete { protocol, spi_size, spis } => {
-                eprintln!("#   Delete proto={protocol} spi_size={spi_size} count={}", spis.len())
+            Payload::Delete {
+                protocol,
+                spi_size,
+                spis,
+            } => {
+                eprintln!(
+                    "#   Delete proto={protocol} spi_size={spi_size} count={}",
+                    spis.len()
+                )
             }
             Payload::VendorId(v) => eprintln!("#   VendorID ({} bytes) {}", v.len(), hex(v)),
             Payload::Tsi(ts) | Payload::Tsr(ts) => {
                 eprintln!("#   TS ({} selector(s))", ts.len());
-                for s in ts { eprintln!("#     {}", ts_str(s)); }
+                for s in ts {
+                    eprintln!("#     {}", ts_str(s));
+                }
             }
             Payload::Cp { cfg_type, attrs } => {
                 eprintln!("#   CP type={cfg_type} ({} attr(s))", attrs.len());
-                for (a, v) in attrs { eprintln!("#     attr 0x{a:04x} ({} bytes) {}", v.len(), hex(v)); }
+                for (a, v) in attrs {
+                    eprintln!("#     attr 0x{a:04x} ({} bytes) {}", v.len(), hex(v));
+                }
             }
             Payload::Eap(d) => eprintln!("#   EAP ({} bytes) {}", d.len(), hex(d)),
             Payload::Raw(t, d) => eprintln!("#   Raw type={t} ({} bytes) {}", d.len(), hex(d)),
@@ -543,41 +747,91 @@ pub fn dump_payloads(label: &str, payloads: &[Payload]) {
     }
 }
 
-fn return_proto(o: u8) -> &'static str { Box::leak(format!("proto{o}").into_boxed_str()) }
+fn return_proto(o: u8) -> &'static str {
+    Box::leak(format!("proto{o}").into_boxed_str())
+}
 fn xf_type(t: u8) -> &'static str {
-    match t { 1 => "ENCR", 2 => "PRF", 3 => "INTEG", 4 => "DH", 5 => "ESN", _ => "?" }
+    match t {
+        1 => "ENCR",
+        2 => "PRF",
+        3 => "INTEG",
+        4 => "DH",
+        5 => "ESN",
+        _ => "?",
+    }
 }
 fn xf_name(ttype: u8, id: u16, kl: Option<u16>) -> String {
     let base = match (ttype, id) {
-        (1, 3) => "3DES".into(), (1, 12) => "AES-CBC".into(), (1, 20) => "AES-GCM-16".into(),
-        (1, 18) => "AES-GCM-8".into(), (1, 28) => "CHACHA20POLY1305".into(),
-        (2, 2) => "HMAC-SHA1".into(), (2, 5) => "HMAC-SHA256".into(), (2, 6) => "HMAC-SHA384".into(), (2, 7) => "HMAC-SHA512".into(),
-        (3, 2) => "HMAC-SHA1-96".into(), (3, 12) => "HMAC-SHA256-128".into(), (3, 13) => "HMAC-SHA384-192".into(), (3, 14) => "HMAC-SHA512-256".into(),
+        (1, 3) => "3DES".into(),
+        (1, 12) => "AES-CBC".into(),
+        (1, 20) => "AES-GCM-16".into(),
+        (1, 18) => "AES-GCM-8".into(),
+        (1, 28) => "CHACHA20POLY1305".into(),
+        (2, 2) => "HMAC-SHA1".into(),
+        (2, 5) => "HMAC-SHA256".into(),
+        (2, 6) => "HMAC-SHA384".into(),
+        (2, 7) => "HMAC-SHA512".into(),
+        (3, 2) => "HMAC-SHA1-96".into(),
+        (3, 12) => "HMAC-SHA256-128".into(),
+        (3, 13) => "HMAC-SHA384-192".into(),
+        (3, 14) => "HMAC-SHA512-256".into(),
         (4, g) => format!("MODP/ECP group {g}"),
-        (5, 0) => "ESN=no".into(), (5, 1) => "ESN=yes".into(),
+        (5, 0) => "ESN=no".into(),
+        (5, 1) => "ESN=yes".into(),
         _ => format!("id {id}"),
     };
-    match kl { Some(b) => format!("{base}/{b}"), None => base }
+    match kl {
+        Some(b) => format!("{base}/{b}"),
+        None => base,
+    }
 }
 fn notify_name(t: u16) -> &'static str {
     match t {
-        14 => "NO_PROPOSAL_CHOSEN", 17 => "INVALID_KE_PAYLOAD", 24 => "AUTHENTICATION_FAILED",
-        16388 => "NAT_DETECTION_SOURCE_IP", 16389 => "NAT_DETECTION_DESTINATION_IP", 16390 => "COOKIE",
-        16391 => "USE_TRANSPORT_MODE", 16393 => "REKEY_SA", 16396 => "MOBIKE_SUPPORTED",
-        16417 => "EAP_ONLY_AUTHENTICATION", 16406 => "REDIRECT_SUPPORTED",
-        0xF050 => "FORTI_VPN_NETWORK_ID", 0xF100 => "FORTI_FORTICLIENT_CONNECT",
-        0xF103 => "FORTI_DEV_ID_NOTIFY", 0xF118 => "FORTI_CLIENT_RESUME",
+        14 => "NO_PROPOSAL_CHOSEN",
+        17 => "INVALID_KE_PAYLOAD",
+        24 => "AUTHENTICATION_FAILED",
+        16388 => "NAT_DETECTION_SOURCE_IP",
+        16389 => "NAT_DETECTION_DESTINATION_IP",
+        16390 => "COOKIE",
+        16391 => "USE_TRANSPORT_MODE",
+        16393 => "REKEY_SA",
+        16396 => "MOBIKE_SUPPORTED",
+        16417 => "EAP_ONLY_AUTHENTICATION",
+        16406 => "REDIRECT_SUPPORTED",
+        0xF050 => "FORTI_VPN_NETWORK_ID",
+        0xF100 => "FORTI_FORTICLIENT_CONNECT",
+        0xF103 => "FORTI_DEV_ID_NOTIFY",
+        0xF118 => "FORTI_CLIENT_RESUME",
         _ => "?",
     }
 }
 fn ts_str(s: &wire::TrafficSelector) -> String {
-    let a = |v: &[u8]| v.iter().map(|b| b.to_string()).collect::<Vec<_>>().join(".");
-    format!("type={} proto={} ports {}-{} addr {}-{}", s.ts_type, s.ip_protocol, s.start_port, s.end_port, a(&s.start_addr), a(&s.end_addr))
+    let a = |v: &[u8]| {
+        v.iter()
+            .map(|b| b.to_string())
+            .collect::<Vec<_>>()
+            .join(".")
+    };
+    format!(
+        "type={} proto={} ports {}-{} addr {}-{}",
+        s.ts_type,
+        s.ip_protocol,
+        s.start_port,
+        s.end_port,
+        a(&s.start_addr),
+        a(&s.end_addr)
+    )
 }
-fn hex(b: &[u8]) -> String { b.iter().map(|x| format!("{x:02x}")).collect() }
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
 fn preview(d: &[u8]) -> String {
     let printable = d.iter().all(|&b| b == b'\n' || (0x20..0x7f).contains(&b));
-    if printable && !d.is_empty() { format!("{:?}", String::from_utf8_lossy(d)) } else { hex(d) }
+    if printable && !d.is_empty() {
+        format!("{:?}", String::from_utf8_lossy(d))
+    } else {
+        hex(d)
+    }
 }
 
 /// Encode header + SK payload (IV | ciphertext | ICV) for `inner` payloads.
@@ -617,10 +871,18 @@ pub fn encrypt_message(
 }
 
 /// Verify + decrypt an SK-protected message, returning the header and inner payloads.
-pub fn decrypt_message(crypto: &Ikev2Crypto, sk_e: &[u8], sk_a: &[u8], raw: &[u8]) -> Result<(wire::Header, Vec<Payload>), String> {
+pub fn decrypt_message(
+    crypto: &Ikev2Crypto,
+    sk_e: &[u8],
+    sk_a: &[u8],
+    raw: &[u8],
+) -> Result<(wire::Header, Vec<Payload>), String> {
     let (hdr, rest) = wire::parse_header(raw)?;
     if PayloadType::from(hdr.first_payload) != PayloadType::Encrypted {
-        return Err(format!("expected SK payload, got type {}", hdr.first_payload));
+        return Err(format!(
+            "expected SK payload, got type {}",
+            hdr.first_payload
+        ));
     }
     if rest.len() < 4 {
         return Err("truncated SK payload".into());
@@ -666,31 +928,66 @@ mod tests {
     #[test]
     fn sa_init_request_parses_back() {
         let mut s = Ikev2Session::new(IkeSuite::default_fgt(), EspSuite::default_fgt()).unwrap();
-        let b = s.build_sa_init(Ipv4Addr::new(192, 168, 1, 10), 500, Ipv4Addr::new(203, 0, 113, 2), 500, None);
+        let b = s.build_sa_init(
+            Ipv4Addr::new(192, 168, 1, 10),
+            500,
+            Ipv4Addr::new(203, 0, 113, 2),
+            500,
+            None,
+        );
         let (hdr, rest) = wire::parse_header(&b).unwrap();
         assert_eq!(hdr.exchange, u8::from(ExchangeType::IkeSaInit));
         assert_eq!(hdr.flags, FLAG_INITIATOR);
         let ps = wire::parse_payloads(hdr.first_payload, rest).unwrap();
         assert!(matches!(ps[0], Payload::Sa(_)));
         assert!(ps.iter().any(|p| matches!(p, Payload::Ke { .. })));
-        assert_eq!(ps.iter().filter(|p| matches!(p, Payload::VendorId(_))).count(), 3);
+        assert_eq!(
+            ps.iter()
+                .filter(|p| matches!(p, Payload::VendorId(_)))
+                .count(),
+            3
+        );
         // NAT-D source, NAT-D destination, overlay id.
-        assert_eq!(ps.iter().filter(|p| matches!(p, Payload::Notify(_))).count(), 3);
+        assert_eq!(
+            ps.iter()
+                .filter(|p| matches!(p, Payload::Notify(_)))
+                .count(),
+            3
+        );
     }
 
     #[test]
     fn sk_message_roundtrips_with_matching_keys() {
         // Framing self-check: encrypt as initiator, decrypt with the same keys read
         // as the initiator direction (sk_ei/sk_ai), proving header+SK+IV+ICV layout.
-        let crypto = Ikev2Crypto::new(PRF_HMAC_SHA256, INTEG_HMAC_SHA256_128, ENCR_AES_CBC, 256).unwrap();
+        let crypto =
+            Ikev2Crypto::new(PRF_HMAC_SHA256, INTEG_HMAC_SHA256_128, ENCR_AES_CBC, 256).unwrap();
         let sk_e = [0x11u8; 32];
         let sk_a = [0x22u8; 32];
         let inner = vec![
-            Payload::IdI { kind: IdType::Rfc822Addr.into(), data: b"user@example.com".to_vec() },
+            Payload::IdI {
+                kind: IdType::Rfc822Addr.into(),
+                data: b"user@example.com".to_vec(),
+            },
             Payload::Nonce(vec![0x33; 24]),
-            Payload::Notify(Notify { protocol: 0, spi: vec![], ntype: NotifyType::InitialContact.into(), data: vec![] }),
+            Payload::Notify(Notify {
+                protocol: 0,
+                spi: vec![],
+                ntype: NotifyType::InitialContact.into(),
+                data: vec![],
+            }),
         ];
-        let msg = encrypt_message(&crypto, &sk_e, &sk_a, [1; 8], [2; 8], ExchangeType::IkeAuth.into(), FLAG_INITIATOR, 1, &inner);
+        let msg = encrypt_message(
+            &crypto,
+            &sk_e,
+            &sk_a,
+            [1; 8],
+            [2; 8],
+            ExchangeType::IkeAuth.into(),
+            FLAG_INITIATOR,
+            1,
+            &inner,
+        );
         let (hdr, out) = decrypt_message(&crypto, &sk_e, &sk_a, &msg).unwrap();
         assert_eq!(hdr.exchange, u8::from(ExchangeType::IkeAuth));
         assert_eq!(out, inner);
@@ -698,10 +995,21 @@ mod tests {
 
     #[test]
     fn sk_message_rejects_tampered_icv() {
-        let crypto = Ikev2Crypto::new(PRF_HMAC_SHA256, INTEG_HMAC_SHA256_128, ENCR_AES_CBC, 256).unwrap();
+        let crypto =
+            Ikev2Crypto::new(PRF_HMAC_SHA256, INTEG_HMAC_SHA256_128, ENCR_AES_CBC, 256).unwrap();
         let (sk_e, sk_a) = ([0x11u8; 32], [0x22u8; 32]);
         let inner = vec![Payload::Nonce(vec![0x33; 24])];
-        let mut msg = encrypt_message(&crypto, &sk_e, &sk_a, [1; 8], [2; 8], ExchangeType::IkeAuth.into(), FLAG_INITIATOR, 1, &inner);
+        let mut msg = encrypt_message(
+            &crypto,
+            &sk_e,
+            &sk_a,
+            [1; 8],
+            [2; 8],
+            ExchangeType::IkeAuth.into(),
+            FLAG_INITIATOR,
+            1,
+            &inner,
+        );
         let n = msg.len();
         msg[n - 1] ^= 0xff;
         assert!(decrypt_message(&crypto, &sk_e, &sk_a, &msg).is_err());
@@ -714,17 +1022,23 @@ mod tests {
         let new_spi = 0x11223344u32;
         let ps = s.rekey_child_payloads(new_spi, &[0x5a; 32], None);
         // REKEY_SA notify over ESP, pointing at the old inbound SPI.
-        let notify = ps.iter().find_map(|p| match p {
-            Payload::Notify(n) if n.ntype == NotifyType::RekeySa.into() => Some(n),
-            _ => None,
-        }).expect("REKEY_SA notify");
+        let notify = ps
+            .iter()
+            .find_map(|p| match p {
+                Payload::Notify(n) if n.ntype == NotifyType::RekeySa.into() => Some(n),
+                _ => None,
+            })
+            .expect("REKEY_SA notify");
         assert_eq!(notify.protocol, PROTO_ESP);
         assert_eq!(notify.spi, 0x0a0b0c0du32.to_be_bytes());
         // SA proposal carries the fresh inbound SPI.
-        let sa_spi = ps.iter().find_map(|p| match p {
-            Payload::Sa(props) => Some(props[0].spi.clone()),
-            _ => None,
-        }).expect("SA proposal");
+        let sa_spi = ps
+            .iter()
+            .find_map(|p| match p {
+                Payload::Sa(props) => Some(props[0].spi.clone()),
+                _ => None,
+            })
+            .expect("SA proposal");
         assert_eq!(sa_spi, new_spi.to_be_bytes());
         assert!(ps.iter().any(|p| matches!(p, Payload::Nonce(_))));
         assert!(ps.iter().any(|p| matches!(p, Payload::Tsi(_))));
@@ -739,7 +1053,10 @@ mod tests {
             num: 1,
             protocol: PROTO_ESP,
             spi: gw_spi.to_be_bytes().to_vec(),
-            transforms: vec![Transform::new(TransformType::Integrity, INTEG_HMAC_SHA256_128)],
+            transforms: vec![Transform::new(
+                TransformType::Integrity,
+                INTEG_HMAC_SHA256_128,
+            )],
         };
         let ok = vec![Payload::Sa(vec![prop]), Payload::Nonce(vec![0x7c; 32])];
         let (spi, nr, ke) = s.parse_child_response(&ok).unwrap();
@@ -764,10 +1081,17 @@ mod tests {
         let mut s = Ikev2Session::new(IkeSuite::default_fgt(), EspSuite::default_fgt()).unwrap();
         s.real_msg2 = b"IKE_SA_INIT response bytes".to_vec();
         s.ni = vec![0x5a; 32];
-        s.crypto = Some(Ikev2Crypto::new(PRF_HMAC_SHA256, INTEG_HMAC_SHA256_128, ENCR_AES_CBC, 256).unwrap());
+        s.crypto = Some(
+            Ikev2Crypto::new(PRF_HMAC_SHA256, INTEG_HMAC_SHA256_128, ENCR_AES_CBC, 256).unwrap(),
+        );
         s.keys = Some(SaKeys {
-            sk_d: vec![], sk_ai: vec![], sk_ar: vec![], sk_ei: vec![], sk_er: vec![],
-            sk_pi: vec![0x11; 32], sk_pr: vec![0x22; 32],
+            sk_d: vec![],
+            sk_ai: vec![],
+            sk_ar: vec![],
+            sk_ei: vec![],
+            sk_er: vec![],
+            sk_pi: vec![0x11; 32],
+            sk_pr: vec![0x22; 32],
         });
 
         let fqdn: u8 = IdType::Fqdn.into();

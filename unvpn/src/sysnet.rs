@@ -44,7 +44,10 @@ pub struct DnsBackup {
 /// never restored), we must NOT back that up — we'd "restore" the corp DNS and
 /// leave the host unable to resolve. In that case we recover the real original
 /// from the sidecar and leave the sidecar untouched.
-pub fn set_dns<A: std::fmt::Display + std::fmt::Debug>(dns: &[A], domains: &str) -> Option<DnsBackup> {
+pub fn set_dns<A: std::fmt::Display + std::fmt::Debug>(
+    dns: &[A],
+    domains: &str,
+) -> Option<DnsBackup> {
     if dns.is_empty() {
         crate::report::dns(dns);
         return None;
@@ -53,14 +56,23 @@ pub fn set_dns<A: std::fmt::Display + std::fmt::Debug>(dns: &[A], domains: &str)
         .map(|m| m.file_type().is_symlink())
         .unwrap_or(false);
     let current = std::fs::read_to_string(RESOLV_CONF).ok(); // follows the symlink
-    let already_ours = current.as_deref().is_some_and(|c| c.starts_with(DNS_MARKER));
+    let already_ours = current
+        .as_deref()
+        .is_some_and(|c| c.starts_with(DNS_MARKER));
 
     let backup = if already_ours {
         out!("# (resolv.conf was already unvpn's — recovering the original from {DNS_SIDECAR})");
-        read_dns_sidecar().unwrap_or(DnsBackup { symlink_target: None, content: None })
+        read_dns_sidecar().unwrap_or(DnsBackup {
+            symlink_target: None,
+            content: None,
+        })
     } else {
         let b = DnsBackup {
-            symlink_target: if is_symlink { std::fs::read_link(RESOLV_CONF).ok() } else { None },
+            symlink_target: if is_symlink {
+                std::fs::read_link(RESOLV_CONF).ok()
+            } else {
+                None
+            },
             content: current,
         };
         write_dns_sidecar(&b);
@@ -102,7 +114,8 @@ fn search_domains(domains: &str) -> Vec<&str> {
         .filter(|d| {
             !d.is_empty()
                 && d.len() <= 253
-                && d.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+                && d.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
         })
         .collect()
 }
@@ -113,9 +126,14 @@ fn search_domains(domains: &str) -> Vec<&str> {
 /// queries leave via the LAN, where the corporate one just times out — and every
 /// lookup that reads resolv.conf stalls ~5 s per try on it before the next server —
 /// while the public one only displaces the LAN resolver. Logs what it leaves out.
-pub fn tunnelled_dns<A: std::fmt::Display + std::fmt::Debug + Clone>(dns: &[A], tun: &str) -> Vec<A> {
-    let (keep, outside): (Vec<A>, Vec<A>) =
-        dns.iter().cloned().partition(|d| route_dev(&d.to_string()).as_deref() == Some(tun));
+pub fn tunnelled_dns<A: std::fmt::Display + std::fmt::Debug + Clone>(
+    dns: &[A],
+    tun: &str,
+) -> Vec<A> {
+    let (keep, outside): (Vec<A>, Vec<A>) = dns
+        .iter()
+        .cloned()
+        .partition(|d| route_dev(&d.to_string()).as_deref() == Some(tun));
     if !outside.is_empty() {
         out!("# DNS {outside:?} not routed through the tunnel — not used");
         if keep.is_empty() {
@@ -127,20 +145,37 @@ pub fn tunnelled_dns<A: std::fmt::Display + std::fmt::Debug + Clone>(dns: &[A], 
 
 /// The pre-VPN `(via, dev)` the kernel picks for `dst` (`ip route get`).
 pub fn original_path(dst: std::net::Ipv4Addr) -> Option<(Option<String>, String)> {
-    let out = std::process::Command::new("ip").args(["route", "get", &dst.to_string()]).output().ok()?;
+    let out = std::process::Command::new("ip")
+        .args(["route", "get", &dst.to_string()])
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }
     let text = String::from_utf8_lossy(&out.stdout);
-    let toks: Vec<&str> = text.lines().next().unwrap_or("").split_whitespace().collect();
-    let via = toks.windows(2).find(|w| w[0] == "via").map(|w| w[1].to_string());
-    let dev = toks.windows(2).find(|w| w[0] == "dev").map(|w| w[1].to_string())?;
+    let toks: Vec<&str> = text
+        .lines()
+        .next()
+        .unwrap_or("")
+        .split_whitespace()
+        .collect();
+    let via = toks
+        .windows(2)
+        .find(|w| w[0] == "via")
+        .map(|w| w[1].to_string());
+    let dev = toks
+        .windows(2)
+        .find(|w| w[0] == "dev")
+        .map(|w| w[1].to_string())?;
     Some((via, dev))
 }
 
 /// The `dev` the kernel picks for `dst` (`ip route get`).
 fn route_dev(dst: &str) -> Option<String> {
-    let out = std::process::Command::new("ip").args(["route", "get", dst]).output().ok()?;
+    let out = std::process::Command::new("ip")
+        .args(["route", "get", dst])
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -149,7 +184,9 @@ fn route_dev(dst: &str) -> Option<String> {
 
 fn dev_of(route_get: &str) -> Option<String> {
     let toks: Vec<&str> = route_get.lines().next()?.split_whitespace().collect();
-    toks.windows(2).find(|w| w[0] == "dev").map(|w| w[1].to_string())
+    toks.windows(2)
+        .find(|w| w[0] == "dev")
+        .map(|w| w[1].to_string())
 }
 
 /// Undo [`set_dns`], restoring the original file or symlink and clearing the sidecar.
@@ -166,7 +203,9 @@ pub fn restore_dns(backup: Option<DnsBackup>) {
 }
 
 fn write_dns_sidecar(b: &DnsBackup) {
-    let Some(body) = encode_sidecar(b) else { return };
+    let Some(body) = encode_sidecar(b) else {
+        return;
+    };
     if let Some(dir) = std::path::Path::new(DNS_SIDECAR).parent() {
         let _ = std::fs::create_dir_all(dir);
     }
@@ -206,9 +245,15 @@ fn encode_sidecar(b: &DnsBackup) -> Option<String> {
 fn decode_sidecar(raw: &str) -> Option<DnsBackup> {
     if let Some(rest) = raw.strip_prefix("SYMLINK ") {
         let target = rest.lines().next().unwrap_or("").trim();
-        Some(DnsBackup { symlink_target: Some(PathBuf::from(target)), content: None })
+        Some(DnsBackup {
+            symlink_target: Some(PathBuf::from(target)),
+            content: None,
+        })
     } else if let Some(rest) = raw.strip_prefix("FILE\n") {
-        Some(DnsBackup { symlink_target: None, content: Some(rest.to_string()) })
+        Some(DnsBackup {
+            symlink_target: None,
+            content: Some(rest.to_string()),
+        })
     } else {
         None
     }
@@ -231,7 +276,12 @@ pub struct NetRestore {
 impl NetRestore {
     /// Record what this holds for `unvpn recover`, in case we are killed before it drops.
     pub fn commit(&self, iface: &str) {
-        crate::control::save_undo(iface, &self.routes, self.leak.as_ref().map(|l| l.table()), self.dns.is_some());
+        crate::control::save_undo(
+            iface,
+            &self.routes,
+            self.leak.as_ref().map(|l| l.table()),
+            self.dns.is_some(),
+        );
     }
 }
 
@@ -261,7 +311,10 @@ extern "C" fn on_stop_signal(_sig: libc::c_int) {
 /// teardown. `flag` must be `'static` (a module-level static in the caller); the
 /// handler reads it after we return.
 pub fn install_stop_signals(flag: &'static AtomicBool) {
-    STOP_FLAG.store(flag as *const AtomicBool as *mut AtomicBool, Ordering::SeqCst);
+    STOP_FLAG.store(
+        flag as *const AtomicBool as *mut AtomicBool,
+        Ordering::SeqCst,
+    );
     unsafe {
         let h = on_stop_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
         for sig in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP, libc::SIGQUIT] {
@@ -405,7 +458,11 @@ static STDIN_HELD: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
 /// Next stdin line, waiting at most `timeout` (`None` = until a line or EOF). Code
 /// that mixes this with direct `stdin.read_line` must do its direct reads first.
 pub fn stdin_next(timeout: Option<Duration>) -> StdinEvent {
-    if let Some(l) = STDIN_HELD.lock().unwrap_or_else(|e| e.into_inner()).pop_front() {
+    if let Some(l) = STDIN_HELD
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .pop_front()
+    {
         return StdinEvent::Line(l);
     }
     let rx = stdin_rx().lock().unwrap_or_else(|e| e.into_inner());
@@ -426,11 +483,16 @@ fn recv_until(
     loop {
         let step = match deadline {
             None => STOP_POLL,
-            Some(d) => d.checked_duration_since(Instant::now()).ok_or(RecvTimeoutError::Timeout)?.min(STOP_POLL),
+            Some(d) => d
+                .checked_duration_since(Instant::now())
+                .ok_or(RecvTimeoutError::Timeout)?
+                .min(STOP_POLL),
         };
         match rx.recv_timeout(step) {
             Ok(l) => return Ok(l),
-            Err(RecvTimeoutError::Timeout) if stopped() => return Err(RecvTimeoutError::Disconnected),
+            Err(RecvTimeoutError::Timeout) if stopped() => {
+                return Err(RecvTimeoutError::Disconnected)
+            }
             Err(RecvTimeoutError::Timeout) if deadline.is_some_and(|d| Instant::now() >= d) => {
                 return Err(RecvTimeoutError::Timeout)
             }
@@ -470,7 +532,10 @@ fn ask_from<T>(
         }
         match pick(&line) {
             Some(v) => return Some(v),
-            None => held.lock().unwrap_or_else(|e| e.into_inner()).push_back(line),
+            None => held
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push_back(line),
         }
     }
 }
@@ -479,19 +544,29 @@ fn ask_from<T>(
 /// `fd` to become writable and retry the SAME remaining bytes — OpenSSL requires
 /// an interrupted `SSL_write` to be retried with the same data, and a full send
 /// buffer under a big upload is normal, not a reason to drop the tunnel.
-pub fn write_all_polling<W: std::io::Write>(w: &mut W, fd: Option<i32>, mut buf: &[u8]) -> Result<(), String> {
+pub fn write_all_polling<W: std::io::Write>(
+    w: &mut W,
+    fd: Option<i32>,
+    mut buf: &[u8],
+) -> Result<(), String> {
     while !buf.is_empty() {
         match w.write(buf) {
             Ok(0) => return Err("write: connection closed".into()),
             Ok(n) => buf = &buf[n..],
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && fd.is_some() => {
-                let mut p = libc::pollfd { fd: fd.unwrap_or(-1), events: libc::POLLOUT, revents: 0 };
+                let mut p = libc::pollfd {
+                    fd: fd.unwrap_or(-1),
+                    events: libc::POLLOUT,
+                    revents: 0,
+                };
                 let r = unsafe { libc::poll(&mut p, 1, 20_000) };
                 if r == 0 {
                     return Err("write: socket not writable for 20 s".into());
                 }
-                if r < 0 && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+                if r < 0
+                    && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
+                {
                     return Err(format!("poll: {}", std::io::Error::last_os_error()));
                 }
             }
@@ -517,7 +592,11 @@ fn invoker() -> Option<(u32, u32, Vec<libc::gid_t>)> {
     if unsafe { libc::geteuid() } != 0 {
         return None;
     }
-    let uid: u32 = std::env::var("SUDO_UID").or_else(|_| std::env::var("PKEXEC_UID")).ok()?.parse().ok()?;
+    let uid: u32 = std::env::var("SUDO_UID")
+        .or_else(|_| std::env::var("PKEXEC_UID"))
+        .ok()?
+        .parse()
+        .ok()?;
     if uid == 0 {
         return None;
     }
@@ -526,7 +605,10 @@ fn invoker() -> Option<(u32, u32, Vec<libc::gid_t>)> {
     let mut res: *mut libc::passwd = ptr::null_mut();
     unsafe { libc::getpwuid_r(uid, &mut pw, buf.as_mut_ptr(), buf.len(), &mut res) };
     if res.is_null() {
-        let gid = std::env::var("SUDO_GID").ok().and_then(|g| g.parse().ok()).unwrap_or(65534);
+        let gid = std::env::var("SUDO_GID")
+            .ok()
+            .and_then(|g| g.parse().ok())
+            .unwrap_or(65534);
         return Some((uid, gid, vec![gid]));
     }
     let gid = pw.pw_gid;
@@ -563,7 +645,9 @@ impl Drop for FsIdentity {
 /// permissions, not root's. Applies to the calling thread only; runs `f` as is
 /// when we were not started that way.
 pub fn as_invoker<T>(f: impl FnOnce() -> T) -> T {
-    let Some((uid, gid, groups)) = invoker() else { return f() };
+    let Some((uid, gid, groups)) = invoker() else {
+        return f();
+    };
     let saved = unsafe {
         let n = libc::getgroups(0, ptr::null_mut());
         let mut cur = vec![0 as libc::gid_t; n.max(0) as usize];
@@ -572,7 +656,11 @@ pub fn as_invoker<T>(f: impl FnOnce() -> T) -> T {
         let gid0 = libc::setfsgid(u32::MAX);
         libc::syscall(libc::SYS_setgroups, groups.len(), groups.as_ptr());
         libc::setfsgid(gid);
-        FsIdentity { uid: libc::setfsuid(uid) as u32, gid: gid0 as u32, groups: cur }
+        FsIdentity {
+            uid: libc::setfsuid(uid) as u32,
+            gid: gid0 as u32,
+            groups: cur,
+        }
     };
     let r = f();
     drop(saved);
@@ -599,7 +687,8 @@ pub fn read_user_file(path: impl AsRef<Path>) -> std::io::Result<Vec<u8>> {
 }
 
 pub fn read_user_string(path: impl AsRef<Path>) -> std::io::Result<String> {
-    String::from_utf8(read_user_file(path)?).map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "not UTF-8"))
+    String::from_utf8(read_user_file(path)?)
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "not UTF-8"))
 }
 
 /// Write a private (0600) file where the user asked, with their permissions and
@@ -610,7 +699,12 @@ pub fn write_user_file(path: impl AsRef<Path>, data: &[u8]) -> std::io::Result<(
     as_invoker(|| {
         let mut f = open_user_regular(
             path.as_ref(),
-            std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).custom_flags(libc::O_NOFOLLOW),
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW),
         )?;
         f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
         f.write_all(data)
@@ -662,15 +756,33 @@ mod tests {
         }
         let pick = |l: &str| l.strip_prefix("tag ").map(str::to_string);
         let go_on = || false;
-        assert_eq!(ask_from(&rx, &held, None, &go_on, pick).as_deref(), Some("yes"));
-        assert_eq!(held.lock().unwrap().iter().collect::<Vec<_>>(), ["the password", "a second secret"]);
+        assert_eq!(
+            ask_from(&rx, &held, None, &go_on, pick).as_deref(),
+            Some("yes")
+        );
+        assert_eq!(
+            held.lock().unwrap().iter().collect::<Vec<_>>(),
+            ["the password", "a second secret"]
+        );
         assert_eq!(rx.recv().unwrap(), "later");
 
         tx.send("disconnect".into()).unwrap();
         assert_eq!(ask_from(&rx, &held, None, &go_on, pick), None);
-        assert_eq!(ask_from(&rx, &held, Some(Duration::from_millis(20)), &go_on, pick), None);
+        assert_eq!(
+            ask_from(&rx, &held, Some(Duration::from_millis(20)), &go_on, pick),
+            None
+        );
         let t = Instant::now();
-        assert_eq!(ask_from(&rx, &held, None, &|| t.elapsed() > Duration::from_millis(50), pick), None);
+        assert_eq!(
+            ask_from(
+                &rx,
+                &held,
+                None,
+                &|| t.elapsed() > Duration::from_millis(50),
+                pick
+            ),
+            None
+        );
         drop(tx);
         assert_eq!(ask_from(&rx, &held, None, &go_on, pick), None);
     }
@@ -679,11 +791,17 @@ mod tests {
     fn a_wait_ends_at_its_deadline_or_on_a_stop() {
         let (tx, rx) = mpsc::channel::<String>();
         let t = Instant::now();
-        assert_eq!(recv_until(&rx, Some(t + Duration::from_millis(30)), &|| false), Err(RecvTimeoutError::Timeout));
+        assert_eq!(
+            recv_until(&rx, Some(t + Duration::from_millis(30)), &|| false),
+            Err(RecvTimeoutError::Timeout)
+        );
         assert!(t.elapsed() < Duration::from_millis(150));
         let t = Instant::now();
         let stop_at = Duration::from_millis(250);
-        assert_eq!(recv_until(&rx, None, &|| t.elapsed() > stop_at), Err(RecvTimeoutError::Disconnected));
+        assert_eq!(
+            recv_until(&rx, None, &|| t.elapsed() > stop_at),
+            Err(RecvTimeoutError::Disconnected)
+        );
         tx.send("x".into()).unwrap();
         assert_eq!(recv_until(&rx, None, &|| true).as_deref(), Ok("x"));
     }
@@ -712,20 +830,28 @@ mod tests {
 
     #[test]
     fn search_domains_drops_anything_that_could_add_a_line() {
-        assert_eq!(search_domains("corp.example.com, b.example.org;c-1.example.net"), [
-            "corp.example.com",
-            "b.example.org",
-            "c-1.example.net"
-        ]);
-        assert_eq!(search_domains("a.example.com\nnameserver 203.0.113.9"), ["a.example.com", "nameserver", "203.0.113.9"]);
-        assert_eq!(search_domains("ok.example.com bad$name x\u{0}y"), ["ok.example.com"]);
+        assert_eq!(
+            search_domains("corp.example.com, b.example.org;c-1.example.net"),
+            ["corp.example.com", "b.example.org", "c-1.example.net"]
+        );
+        assert_eq!(
+            search_domains("a.example.com\nnameserver 203.0.113.9"),
+            ["a.example.com", "nameserver", "203.0.113.9"]
+        );
+        assert_eq!(
+            search_domains("ok.example.com bad$name x\u{0}y"),
+            ["ok.example.com"]
+        );
         assert!(search_domains(&"a".repeat(254)).is_empty());
         assert!(search_domains("").is_empty());
     }
 
     #[test]
     fn dev_of_route_get() {
-        assert_eq!(dev_of("10.1.2.3 dev cpfg0 src 10.0.0.5 uid 0 \n    cache \n").as_deref(), Some("cpfg0"));
+        assert_eq!(
+            dev_of("10.1.2.3 dev cpfg0 src 10.0.0.5 uid 0 \n    cache \n").as_deref(),
+            Some("cpfg0")
+        );
         assert_eq!(
             dev_of("192.168.50.25 via 192.168.1.1 dev eth0 src 192.168.1.2 uid 1000 \n").as_deref(),
             Some("eth0")
@@ -742,7 +868,10 @@ mod tests {
         let enc = encode_sidecar(&b).unwrap();
         let dec = decode_sidecar(&enc).unwrap();
         assert!(dec.symlink_target.is_none());
-        assert_eq!(dec.content.as_deref(), Some("# Generated by NetworkManager\nnameserver 192.168.9.53\n"));
+        assert_eq!(
+            dec.content.as_deref(),
+            Some("# Generated by NetworkManager\nnameserver 192.168.9.53\n")
+        );
     }
 
     #[test]
@@ -754,13 +883,22 @@ mod tests {
         let enc = encode_sidecar(&b).unwrap();
         assert!(enc.starts_with("SYMLINK /run/systemd/resolve/stub-resolv.conf"));
         let dec = decode_sidecar(&enc).unwrap();
-        assert_eq!(dec.symlink_target.as_deref(), Some(std::path::Path::new("/run/systemd/resolve/stub-resolv.conf")));
+        assert_eq!(
+            dec.symlink_target.as_deref(),
+            Some(std::path::Path::new(
+                "/run/systemd/resolve/stub-resolv.conf"
+            ))
+        );
         assert!(dec.content.is_none());
     }
 
     #[test]
     fn sidecar_empty_backup_not_persisted() {
-        assert!(encode_sidecar(&DnsBackup { symlink_target: None, content: None }).is_none());
+        assert!(encode_sidecar(&DnsBackup {
+            symlink_target: None,
+            content: None
+        })
+        .is_none());
     }
 
     #[test]

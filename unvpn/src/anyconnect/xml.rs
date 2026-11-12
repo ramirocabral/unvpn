@@ -23,7 +23,10 @@ pub struct Element {
 
 impl Element {
     pub fn attr(&self, name: &str) -> Option<&str> {
-        self.attrs.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
+        self.attrs
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
     }
 
     pub fn child(&self, name: &str) -> Option<&Element> {
@@ -35,7 +38,9 @@ impl Element {
     }
 
     pub fn child_text(&self, name: &str) -> Option<String> {
-        self.child(name).map(|c| c.text.trim().to_string()).filter(|s| !s.is_empty())
+        self.child(name)
+            .map(|c| c.text.trim().to_string())
+            .filter(|s| !s.is_empty())
     }
 
     /// One-line structure for diagnostics — element names, `id`/`type`/`name`
@@ -124,7 +129,12 @@ pub fn parse(src: &str) -> Result<Element, String> {
             let (end, self_closing) = scan_tag_end(b, i + 1).ok_or("unterminated start tag")?;
             let inner = &src[i + 1..if self_closing { end - 1 } else { end }];
             let (name, attrs) = parse_tag(inner);
-            let el = Element { name, attrs, span: (i, end + 1), ..Default::default() };
+            let el = Element {
+                name,
+                attrs,
+                span: (i, end + 1),
+                ..Default::default()
+            };
             if self_closing {
                 if let Some(parent) = stack.last_mut() {
                     parent.children.push(el);
@@ -143,7 +153,10 @@ pub fn parse(src: &str) -> Result<Element, String> {
         }
     }
     let doc = stack.pop().unwrap_or_default();
-    doc.children.into_iter().next().ok_or_else(|| "no root element".to_string())
+    doc.children
+        .into_iter()
+        .next()
+        .ok_or_else(|| "no root element".to_string())
 }
 
 pub fn escape(s: &str) -> String {
@@ -183,7 +196,9 @@ pub fn decode_entities(s: &str) -> String {
             "quot" => Some('"'),
             "apos" => Some('\''),
             _ if ent.starts_with("#x") || ent.starts_with("#X") => {
-                u32::from_str_radix(&ent[2..], 16).ok().and_then(char::from_u32)
+                u32::from_str_radix(&ent[2..], 16)
+                    .ok()
+                    .and_then(char::from_u32)
             }
             _ if ent.starts_with('#') => ent[1..].parse::<u32>().ok().and_then(char::from_u32),
             _ => None,
@@ -211,7 +226,10 @@ fn find(b: &[u8], from: usize, pat: &[u8]) -> Option<usize> {
     if from > b.len() {
         return None;
     }
-    b[from..].windows(pat.len()).position(|w| w == pat).map(|p| p + from)
+    b[from..]
+        .windows(pat.len())
+        .position(|w| w == pat)
+        .map(|p| p + from)
 }
 
 /// Index of the `>` closing a start tag that begins at `from` (just after `<`),
@@ -236,7 +254,9 @@ fn scan_tag_end(b: &[u8], from: usize) -> Option<(usize, bool)> {
 /// Split a start tag's inside (`name a="1" b='2'`) into name + attributes.
 fn parse_tag(inner: &str) -> (String, Vec<(String, String)>) {
     let inner = inner.trim();
-    let name_end = inner.find(|c: char| c.is_whitespace()).unwrap_or(inner.len());
+    let name_end = inner
+        .find(|c: char| c.is_whitespace())
+        .unwrap_or(inner.len());
     let name = inner[..name_end].to_string();
     let mut attrs = Vec::new();
     let b = inner.as_bytes();
@@ -266,7 +286,11 @@ fn parse_tag(inner: &str) -> (String, Vec<(String, String)>) {
         let value = if i < b.len() && (b[i] == b'"' || b[i] == b'\'') {
             let q = b[i];
             let v_start = i + 1;
-            let v_end = inner[v_start..].bytes().position(|c| c == q).map(|p| p + v_start).unwrap_or(b.len());
+            let v_end = inner[v_start..]
+                .bytes()
+                .position(|c| c == q)
+                .map(|p| p + v_start)
+                .unwrap_or(b.len());
             i = (v_end + 1).min(b.len());
             &inner[v_start..v_end]
         } else {
@@ -337,7 +361,10 @@ mod tests {
     fn decodes_entities_in_text_and_attrs() {
         let root = parse(r#"<a href="x?a=1&#x26;b=2"><u>https://h/p?ctx=1&#x26;acsamlcap=v2 &amp; &lt;ok&gt;</u></a>"#).unwrap();
         assert_eq!(root.attr("href"), Some("x?a=1&b=2"));
-        assert_eq!(root.child_text("u").unwrap(), "https://h/p?ctx=1&acsamlcap=v2 & <ok>");
+        assert_eq!(
+            root.child_text("u").unwrap(),
+            "https://h/p?ctx=1&acsamlcap=v2 & <ok>"
+        );
     }
 
     #[test]
@@ -371,7 +398,10 @@ mod tests {
         )
         .unwrap();
         let o = root.outline();
-        assert_eq!(o, r#"config-auth[type=complete]{session-token(text:9) auth[id=success]{message="Welcome"}}"#);
+        assert_eq!(
+            o,
+            r#"config-auth[type=complete]{session-token(text:9) auth[id=success]{message="Welcome"}}"#
+        );
         assert!(!o.contains("SECRET"));
     }
 }

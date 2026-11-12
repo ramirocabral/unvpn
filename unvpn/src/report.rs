@@ -20,7 +20,10 @@ pub fn was_up() -> bool {
 }
 
 pub fn prompt(kind: &str, message: &str) {
-    emit(Marker::Prompt { kind: kind.to_string(), message: message.to_string() });
+    emit(Marker::Prompt {
+        kind: kind.to_string(),
+        message: message.to_string(),
+    });
 }
 
 pub fn saml_url(url: &str) {
@@ -90,7 +93,10 @@ pub fn ip(ip: IpAddr) {
 
 /// The resolvers now in use.
 pub fn dns<A: std::fmt::Display>(servers: &[A]) {
-    let list: Vec<IpAddr> = servers.iter().filter_map(|d| d.to_string().parse().ok()).collect();
+    let list: Vec<IpAddr> = servers
+        .iter()
+        .filter_map(|d| d.to_string().parse().ok())
+        .collect();
     control::update(|s| s.dns = list.iter().map(|d| d.to_string()).collect());
     emit(Marker::Dns(list));
 }
@@ -117,9 +123,16 @@ pub fn down() {
 pub fn fail(what: &str, err: &str) -> ! {
     use std::io::Write as _;
     let _ = writeln!(std::io::stderr(), "{what} failed: {err}");
-    let kind = if was_up() { ERROR_TUNNEL } else { ERROR_CONNECT };
+    let kind = if was_up() {
+        ERROR_TUNNEL
+    } else {
+        ERROR_CONNECT
+    };
     control::update(|s| s.error = marker::one_line(err));
-    emit(Marker::Error { kind: kind.to_string(), message: err.to_string() });
+    emit(Marker::Error {
+        kind: kind.to_string(),
+        message: err.to_string(),
+    });
     down();
     std::process::exit(1);
 }

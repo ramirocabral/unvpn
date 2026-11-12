@@ -54,12 +54,19 @@ pub enum EngineEvent {
     /// SAML: show `login` in the embedded SSO window and answer the pending
     /// `sso` prompt with what `watch` captures. `user_agent`, when set, overrides
     /// the sign-in window's User-Agent (e.g. to present as Windows).
-    SsoBrowser { login: String, watch: SsoWatch, user_agent: Option<String> },
+    SsoBrowser {
+        login: String,
+        watch: SsoWatch,
+        user_agent: Option<String>,
+    },
     /// The tunnel device, so the UI can read its byte counters from /sys and time
     /// the session.
     Iface(String),
     /// Attached to a tunnel this app didn't start: its name and when it came up.
-    Attached { name: String, since: u64 },
+    Attached {
+        name: String,
+        since: u64,
+    },
     StateChanged,
 }
 
@@ -197,7 +204,9 @@ impl Vpn {
     }
 
     fn log(&self, line: impl Into<String>) {
-        let _ = self.tx.try_send(UiMsg::Engine(EngineEvent::Log(line.into())));
+        let _ = self
+            .tx
+            .try_send(UiMsg::Engine(EngineEvent::Log(line.into())));
     }
 
     pub fn is_busy(&self) -> bool {
@@ -258,8 +267,20 @@ impl Vpn {
         }
 
         for (reader, is_err) in [
-            (child.stdout.take().map(|o| Box::new(o) as Box<dyn std::io::Read + Send>), false),
-            (child.stderr.take().map(|o| Box::new(o) as Box<dyn std::io::Read + Send>), true),
+            (
+                child
+                    .stdout
+                    .take()
+                    .map(|o| Box::new(o) as Box<dyn std::io::Read + Send>),
+                false,
+            ),
+            (
+                child
+                    .stderr
+                    .take()
+                    .map(|o| Box::new(o) as Box<dyn std::io::Read + Send>),
+                true,
+            ),
         ] {
             let Some(r) = reader else { continue };
             let state = self.state.clone();
@@ -285,7 +306,10 @@ impl Vpn {
                     };
                     let set_state = |to: State, only_from: &[State]| {
                         let mut st = state.lock().unwrap();
-                        if *st != State::Disconnecting && (only_from.is_empty() || only_from.contains(&st)) && *st != to {
+                        if *st != State::Disconnecting
+                            && (only_from.is_empty() || only_from.contains(&st))
+                            && *st != to
+                        {
                             *st = to;
                             drop(st);
                             let _ = tx.try_send(UiMsg::Engine(EngineEvent::StateChanged));
@@ -311,7 +335,11 @@ impl Vpn {
                             // `data:` page; the latter only ever goes to the embedded view.
                             let gp_https = url.starts_with("https://");
                             let gp_form = url.starts_with("data:text/html");
-                            if !saml_opened && saml_headers && saml_entry.is_some() && (gp_https || gp_form) {
+                            if !saml_opened
+                                && saml_headers
+                                && saml_entry.is_some()
+                                && (gp_https || gp_form)
+                            {
                                 saml_opened = true;
                                 if cfg!(feature = "webview") {
                                     send(EngineEvent::SsoBrowser {
@@ -322,16 +350,25 @@ impl Vpn {
                                 } else if gp_https {
                                     let _ = Command::new("xdg-open").arg(&url).spawn();
                                 }
-                            } else if !saml_opened && saml_entry.as_deref().is_some_and(|e| url.starts_with(e)) {
+                            } else if !saml_opened
+                                && saml_entry.as_deref().is_some_and(|e| url.starts_with(e))
+                            {
                                 saml_opened = true;
                                 // Embedded window when the engine told us where the flow
                                 // ends (and that page is on the same gateway host).
-                                let same_host = |u: &str| saml_entry.as_deref().and_then(sso_origin) == sso_origin(u);
+                                let same_host = |u: &str| {
+                                    saml_entry.as_deref().and_then(sso_origin) == sso_origin(u)
+                                };
                                 match (&saml_final, &saml_cookie) {
-                                    (Some(f), Some(c)) if cfg!(feature = "webview") && same_host(f) => {
+                                    (Some(f), Some(c))
+                                        if cfg!(feature = "webview") && same_host(f) =>
+                                    {
                                         send(EngineEvent::SsoBrowser {
                                             login: url.clone(),
-                                            watch: SsoWatch::Cookie { final_url: f.clone(), cookie: c.clone() },
+                                            watch: SsoWatch::Cookie {
+                                                final_url: f.clone(),
+                                                cookie: c.clone(),
+                                            },
                                             user_agent: sso_user_agent.clone(),
                                         });
                                     }
@@ -363,7 +400,9 @@ impl Vpn {
                         Marker::State(marker::State::Up) => {
                             set_state(State::Connected, &[State::Connecting, State::Reconnecting])
                         }
-                        Marker::State(marker::State::Reconnecting) => set_state(State::Reconnecting, &[State::Connected]),
+                        Marker::State(marker::State::Reconnecting) => {
+                            set_state(State::Reconnecting, &[State::Connected])
+                        }
                         Marker::State(_) => {}
                         Marker::Ip(ip) => send(EngineEvent::Ip(ip.to_string())),
                         Marker::Dns(d) => send(EngineEvent::Dns(dns_text(&d))),
@@ -499,11 +538,17 @@ impl Vpn {
     /// Take over the display of a tunnel this app isn't running (started from the
     /// command line, by the browser, or by this app before it restarted).
     fn try_attach(&mut self) {
-        let Some((socket, status)) = ctl::running().into_iter().find(|(_, s)| s.state != marker::State::Down) else {
+        let Some((socket, status)) = ctl::running()
+            .into_iter()
+            .find(|(_, s)| s.state != marker::State::Down)
+        else {
             return;
         };
         self.gen.fetch_add(1, Ordering::SeqCst);
-        self.send(EngineEvent::Attached { name: status.name().to_string(), since: status.since });
+        self.send(EngineEvent::Attached {
+            name: status.name().to_string(),
+            since: status.since,
+        });
         let mut log_seen = 0;
         if let Ok((next, lines)) = ctl::log(&socket, 0) {
             log_seen = next;
@@ -519,12 +564,18 @@ impl Vpn {
         ));
         self.announce(&status, &Status::default());
         *self.state.lock().unwrap() = state_of(status.state, &State::Disconnected);
-        self.attached = Some(Attached { socket, status, log_seen });
+        self.attached = Some(Attached {
+            socket,
+            status,
+            log_seen,
+        });
         self.send(EngineEvent::StateChanged);
     }
 
     fn poll_attached(&mut self) {
-        let Some(a) = self.attached.as_mut() else { return };
+        let Some(a) = self.attached.as_mut() else {
+            return;
+        };
         let mut lines = Vec::new();
         if let Ok((next, l)) = ctl::log(&a.socket, a.log_seen) {
             a.log_seen = next;
@@ -540,7 +591,9 @@ impl Vpn {
         }
         let mut st = self.state.lock().unwrap();
         let next = match &now {
-            Ok(s) if !s.error.is_empty() && *st != State::Disconnecting => State::Error(s.error.clone()),
+            Ok(s) if !s.error.is_empty() && *st != State::Disconnecting => {
+                State::Error(s.error.clone())
+            }
             Ok(s) => state_of(s.state, &st),
             Err(_) => match &*st {
                 State::Error(e) => State::Error(e.clone()),
@@ -590,11 +643,16 @@ fn state_of(s: marker::State, current: &State) -> State {
 
 /// A line of an engine's log as the log view shows it; markers are not shown.
 fn shown(line: &str) -> Option<String> {
-    marker::parse(line).is_none().then(|| line.trim_start_matches(['#', ' ']).to_string())
+    marker::parse(line)
+        .is_none()
+        .then(|| line.trim_start_matches(['#', ' ']).to_string())
 }
 
 fn dns_text(d: &[std::net::IpAddr]) -> String {
-    d.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", ")
+    d.iter()
+        .map(|a| a.to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 #[cfg(test)]
@@ -603,17 +661,38 @@ mod tests {
 
     #[test]
     fn an_attached_engines_state_maps_to_the_apps() {
-        assert_eq!(state_of(marker::State::Up, &State::Disconnected), State::Connected);
-        assert_eq!(state_of(marker::State::Reconnecting, &State::Connected), State::Reconnecting);
-        assert_eq!(state_of(marker::State::Connecting, &State::Disconnected), State::Connecting);
-        assert_eq!(state_of(marker::State::Down, &State::Connected), State::Disconnecting);
-        assert_eq!(state_of(marker::State::Up, &State::Disconnecting), State::Disconnecting);
+        assert_eq!(
+            state_of(marker::State::Up, &State::Disconnected),
+            State::Connected
+        );
+        assert_eq!(
+            state_of(marker::State::Reconnecting, &State::Connected),
+            State::Reconnecting
+        );
+        assert_eq!(
+            state_of(marker::State::Connecting, &State::Disconnected),
+            State::Connecting
+        );
+        assert_eq!(
+            state_of(marker::State::Down, &State::Connected),
+            State::Disconnecting
+        );
+        assert_eq!(
+            state_of(marker::State::Up, &State::Disconnecting),
+            State::Disconnecting
+        );
     }
 
     #[test]
     fn the_log_view_leaves_markers_out() {
-        assert_eq!(shown("# TUNNEL UP. (send 'disconnect' on stdin or SIGTERM to stop)").as_deref(), Some("TUNNEL UP. (send 'disconnect' on stdin or SIGTERM to stop)"));
-        assert_eq!(shown("f5 failed: tunnel dropped"), Some("f5 failed: tunnel dropped".into()));
+        assert_eq!(
+            shown("# TUNNEL UP. (send 'disconnect' on stdin or SIGTERM to stop)").as_deref(),
+            Some("TUNNEL UP. (send 'disconnect' on stdin or SIGTERM to stop)")
+        );
+        assert_eq!(
+            shown("f5 failed: tunnel dropped"),
+            Some("f5 failed: tunnel dropped".into())
+        );
         assert_eq!(shown("# STATE: up"), None);
         assert_eq!(shown("# AUTH-PROMPT: code: Enter the code"), None);
         assert_eq!(shown("# IP: 198.51.100.7"), None);
@@ -621,7 +700,10 @@ mod tests {
 
     #[test]
     fn dns_reads_as_a_list() {
-        let d: Vec<std::net::IpAddr> = vec!["203.0.113.53".parse().unwrap(), "203.0.113.54".parse().unwrap()];
+        let d: Vec<std::net::IpAddr> = vec![
+            "203.0.113.53".parse().unwrap(),
+            "203.0.113.54".parse().unwrap(),
+        ];
         assert_eq!(dns_text(&d), "203.0.113.53, 203.0.113.54");
         assert_eq!(dns_text(&[]), "");
     }

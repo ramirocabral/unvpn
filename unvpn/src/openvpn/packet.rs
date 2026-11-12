@@ -49,7 +49,12 @@ pub struct Control {
 }
 
 /// Encode the post-sid part of a control packet.
-pub fn encode_rest(acks: &[u32], remote_sid: &[u8; 8], msg_id: Option<u32>, payload: &[u8]) -> Vec<u8> {
+pub fn encode_rest(
+    acks: &[u32],
+    remote_sid: &[u8; 8],
+    msg_id: Option<u32>,
+    payload: &[u8],
+) -> Vec<u8> {
     let mut v = Vec::with_capacity(1 + acks.len() * 4 + 8 + 4 + payload.len());
     v.push(acks.len() as u8);
     for a in acks {
@@ -91,7 +96,12 @@ pub fn decode_rest(op: u8, rest: &[u8]) -> Result<Control, String> {
         let b = take(&mut p, 4)?;
         Some(u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
     };
-    Ok(Control { acks, remote_sid, msg_id, payload: rest[p..].to_vec() })
+    Ok(Control {
+        acks,
+        remote_sid,
+        msg_id,
+        payload: rest[p..].to_vec(),
+    })
 }
 
 /// Initial retransmit timeout (OpenVPN's `tls-timeout` default is 2 s).
@@ -126,7 +136,13 @@ impl Reliable {
     pub fn queue(&mut self, op: u8, payload: Vec<u8>) {
         let id = self.next_id;
         self.next_id += 1;
-        self.out.push(Outgoing { id, op, payload, sent_at: None, rto: RTO_INITIAL });
+        self.out.push(Outgoing {
+            id,
+            op,
+            payload,
+            sent_at: None,
+            rto: RTO_INITIAL,
+        });
     }
 
     /// Returns true if any of ours got acknowledged.
@@ -188,7 +204,11 @@ impl Reliable {
         if self.no_retransmit {
             return None;
         }
-        self.out.iter().take(SEND_WINDOW).filter_map(|o| o.sent_at.map(|t| t + o.rto)).min()
+        self.out
+            .iter()
+            .take(SEND_WINDOW)
+            .filter_map(|o| o.sent_at.map(|t| t + o.rto))
+            .min()
     }
 }
 
@@ -201,7 +221,15 @@ mod tests {
         let sid = [1, 2, 3, 4, 5, 6, 7, 8];
         let r = encode_rest(&[0, 3], &sid, Some(5), b"tls");
         let c = decode_rest(P_CONTROL_V1, &r).unwrap();
-        assert_eq!(c, Control { acks: vec![0, 3], remote_sid: Some(sid), msg_id: Some(5), payload: b"tls".to_vec() });
+        assert_eq!(
+            c,
+            Control {
+                acks: vec![0, 3],
+                remote_sid: Some(sid),
+                msg_id: Some(5),
+                payload: b"tls".to_vec()
+            }
+        );
         // Pure ACK: no message id.
         let r = encode_rest(&[9], &sid, None, b"");
         let c = decode_rest(P_ACK_V1, &r).unwrap();

@@ -117,13 +117,20 @@ pub struct Config {
 }
 
 pub fn load(path: &Path) -> Result<Config, String> {
-    let text = crate::sysnet::read_user_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
-    let dir = path.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+    let text = crate::sysnet::read_user_string(path)
+        .map_err(|e| format!("read {}: {e}", path.display()))?;
+    let dir = path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
     parse(&text, &dir)
 }
 
 pub fn parse(text: &str, dir: &Path) -> Result<Config, String> {
-    let mut cfg = Config { auth: "SHA1".into(), ..Default::default() };
+    let mut cfg = Config {
+        auth: "SHA1".into(),
+        ..Default::default()
+    };
     let mut default_port: u16 = 1194;
     let mut default_proto = Proto::Udp;
     // Remotes as written, with optional per-remote port/proto; defaults are
@@ -175,7 +182,9 @@ pub fn parse(text: &str, dir: &Path) -> Result<Config, String> {
                 let proto = arg(3).and_then(Proto::parse);
                 pending.push((host, port, proto));
             }
-            "port" | "rport" => default_port = arg(1).and_then(|p| p.parse().ok()).unwrap_or(default_port),
+            "port" | "rport" => {
+                default_port = arg(1).and_then(|p| p.parse().ok()).unwrap_or(default_port)
+            }
             "proto" => default_proto = arg(1).and_then(Proto::parse).unwrap_or(default_proto),
             "remote-random" => cfg.remote_random = true,
             "dev" | "dev-type" => {
@@ -198,9 +207,16 @@ pub fn parse(text: &str, dir: &Path) -> Result<Config, String> {
             "tls-crypt-v2" => cfg.tls_crypt_v2 = true,
             "cipher" => cfg.cipher = arg(1).map(|c| c.to_ascii_uppercase()),
             "data-ciphers" | "ncp-ciphers" => {
-                cfg.data_ciphers = arg(1).unwrap_or("").split(':').map(|c| c.to_ascii_uppercase()).filter(|c| !c.is_empty()).collect()
+                cfg.data_ciphers = arg(1)
+                    .unwrap_or("")
+                    .split(':')
+                    .map(|c| c.to_ascii_uppercase())
+                    .filter(|c| !c.is_empty())
+                    .collect()
             }
-            "data-ciphers-fallback" => cfg.data_ciphers_fallback = arg(1).map(|c| c.to_ascii_uppercase()),
+            "data-ciphers-fallback" => {
+                cfg.data_ciphers_fallback = arg(1).map(|c| c.to_ascii_uppercase())
+            }
             "auth" => cfg.auth = arg(1).unwrap_or("SHA1").to_ascii_uppercase(),
             "auth-user-pass" => {
                 cfg.auth_user_pass = true;
@@ -242,16 +258,27 @@ pub fn parse(text: &str, dir: &Path) -> Result<Config, String> {
             "dhcp-option" => cfg.dhcp_options.push(w[1..].to_vec()),
             "explicit-exit-notify" => cfg.explicit_exit_notify = true,
             "tun-mtu" => cfg.tun_mtu = arg(1).and_then(|s| s.parse().ok()),
-            "secret" => return Err("static-key (--secret) mode is not supported — only TLS client profiles".into()),
-            "http-proxy" | "socks-proxy" | "fragment" | "pkcs11-providers" | "cryptoapicert" | "management-external-key" => {
-                cfg.unsupported.push(name.to_string())
+            "secret" => {
+                return Err(
+                    "static-key (--secret) mode is not supported — only TLS client profiles".into(),
+                )
             }
+            "http-proxy"
+            | "socks-proxy"
+            | "fragment"
+            | "pkcs11-providers"
+            | "cryptoapicert"
+            | "management-external-key" => cfg.unsupported.push(name.to_string()),
             _ => {}
         }
     }
 
     for (host, port, proto) in pending {
-        cfg.remotes.push(Remote { host, port: port.unwrap_or(default_port), proto: proto.unwrap_or(default_proto) });
+        cfg.remotes.push(Remote {
+            host,
+            port: port.unwrap_or(default_port),
+            proto: proto.unwrap_or(default_proto),
+        });
     }
     if cfg.remotes.is_empty() {
         return Err("config has no `remote`".into());
@@ -272,7 +299,9 @@ fn apply_inline(cfg: &mut Config, tag: &str, body: String) -> Result<(), String>
         "tls-crypt-v2" => cfg.tls_crypt_v2 = true,
         "pkcs12" => {
             let b64: String = body.split_whitespace().collect();
-            cfg.pkcs12 = Some(openssl::base64::decode_block(&b64).map_err(|e| format!("inline pkcs12: {e}"))?);
+            cfg.pkcs12 = Some(
+                openssl::base64::decode_block(&b64).map_err(|e| format!("inline pkcs12: {e}"))?,
+            );
         }
         "auth-user-pass" => {
             cfg.auth_user_pass = true;
@@ -372,17 +401,44 @@ mod tests {
 
     #[test]
     fn words_quotes_and_comments() {
-        assert_eq!(split_words(r#"verify-x509-name "C=AR, CN=x y" subject"#), vec!["verify-x509-name", "C=AR, CN=x y", "subject"]);
-        assert_eq!(split_words("remote a.b 1194 udp # comment"), vec!["remote", "a.b", "1194", "udp"]);
-        assert_eq!(split_words(r"auth-user-pass a\ b"), vec!["auth-user-pass", "a b"]);
+        assert_eq!(
+            split_words(r#"verify-x509-name "C=AR, CN=x y" subject"#),
+            vec!["verify-x509-name", "C=AR, CN=x y", "subject"]
+        );
+        assert_eq!(
+            split_words("remote a.b 1194 udp # comment"),
+            vec!["remote", "a.b", "1194", "udp"]
+        );
+        assert_eq!(
+            split_words(r"auth-user-pass a\ b"),
+            vec!["auth-user-pass", "a b"]
+        );
         assert!(split_words("  ").is_empty());
     }
 
     #[test]
     fn remotes_inherit_defaults() {
-        let c = parse("client\nproto tcp\nport 443\nremote a.example\nremote b.example 1194 udp\n", Path::new(".")).unwrap();
-        assert_eq!(c.remotes[0], Remote { host: "a.example".into(), port: 443, proto: Proto::Tcp });
-        assert_eq!(c.remotes[1], Remote { host: "b.example".into(), port: 1194, proto: Proto::Udp });
+        let c = parse(
+            "client\nproto tcp\nport 443\nremote a.example\nremote b.example 1194 udp\n",
+            Path::new("."),
+        )
+        .unwrap();
+        assert_eq!(
+            c.remotes[0],
+            Remote {
+                host: "a.example".into(),
+                port: 443,
+                proto: Proto::Tcp
+            }
+        );
+        assert_eq!(
+            c.remotes[1],
+            Remote {
+                host: "b.example".into(),
+                port: 1194,
+                proto: Proto::Udp
+            }
+        );
     }
 
     #[test]
@@ -410,7 +466,11 @@ mod tests {
 
     #[test]
     fn subject_default_type() {
-        let c = parse("remote a\nverify-x509-name \"C=AR, CN=v\"\n", Path::new(".")).unwrap();
+        let c = parse(
+            "remote a\nverify-x509-name \"C=AR, CN=v\"\n",
+            Path::new("."),
+        )
+        .unwrap();
         assert_eq!(c.verify_x509, Some(X509Name::Subject("C=AR, CN=v".into())));
     }
 }

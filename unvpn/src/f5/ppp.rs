@@ -85,7 +85,14 @@ pub const WOULDBLOCK: &str = "__wouldblock__";
 
 impl<S: Read + Write> PppConn<S> {
     pub fn new(stream: S, framing: Framing) -> Self {
-        PppConn { stream, rbuf: Vec::with_capacity(4096), framing, poll_fd: None, txbuf: Vec::new(), coalesce: true }
+        PppConn {
+            stream,
+            rbuf: Vec::with_capacity(4096),
+            framing,
+            poll_fd: None,
+            txbuf: Vec::new(),
+            coalesce: true,
+        }
     }
 
     pub fn set_record_mode(&mut self) {
@@ -161,7 +168,8 @@ impl<S: Read + Write> PppConn<S> {
     }
 
     fn write_out(&mut self, out: &[u8]) -> Result<(), String> {
-        crate::sysnet::write_all_polling(&mut self.stream, self.poll_fd, out).map_err(|e| format!("ppp {e}"))?;
+        crate::sysnet::write_all_polling(&mut self.stream, self.poll_fd, out)
+            .map_err(|e| format!("ppp {e}"))?;
         self.stream.flush().ok();
         Ok(())
     }
@@ -194,11 +202,20 @@ impl<S: Read + Write> PppConn<S> {
     pub fn take_frame(&mut self) -> Result<Option<(u16, Vec<u8>)>, String> {
         // A mid-stream HTTP status means the gateway refused the tunnel.
         if self.rbuf.len() >= 4 && &self.rbuf[0..4] == b"HTTP" {
-            let Some(end) = self.rbuf.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4) else {
+            let Some(end) = self
+                .rbuf
+                .windows(4)
+                .position(|w| w == b"\r\n\r\n")
+                .map(|i| i + 4)
+            else {
                 return Ok(None);
             };
             let head = String::from_utf8_lossy(&self.rbuf[..end]);
-            let status = head.split_whitespace().nth(1).and_then(|s| s.parse::<u16>().ok()).unwrap_or(0);
+            let status = head
+                .split_whitespace()
+                .nth(1)
+                .and_then(|s| s.parse::<u16>().ok())
+                .unwrap_or(0);
             if status == 200 || status == 201 {
                 self.rbuf.drain(..end);
             } else {
@@ -276,7 +293,10 @@ impl<S: Read + Write> PppConn<S> {
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::WouldBlock
+                        || e.kind() == std::io::ErrorKind::TimedOut =>
+                {
                     return Ok(total)
                 }
                 Err(e) => return Err(format!("tunnel read: {e}")),
@@ -407,7 +427,11 @@ fn parse_ctrl(payload: &[u8]) -> Option<Ctrl> {
         return None;
     }
     let end = len.min(payload.len());
-    Some(Ctrl { code: payload[0], id: payload[1], body: payload[4..end].to_vec() })
+    Some(Ctrl {
+        code: payload[0],
+        id: payload[1],
+        body: payload[4..end].to_vec(),
+    })
 }
 
 fn iter_opts(body: &[u8]) -> Vec<(u8, Vec<u8>)> {
@@ -427,8 +451,13 @@ fn iter_opts(body: &[u8]) -> Vec<(u8, Vec<u8>)> {
 
 /// `seed_ip` (from the `X-VPN-client-IP` response header) is requested first; the
 /// gateway normally ACKs it. The socket must have a read timeout set.
-pub fn negotiate<S: Read + Write>(conn: &mut PppConn<S>, seed_ip: Option<Ipv4Addr>) -> Result<IpConfig, String> {
-    let magic: [u8; 4] = crate::ike::crypto::random(4).try_into().unwrap_or([1, 2, 3, 4]);
+pub fn negotiate<S: Read + Write>(
+    conn: &mut PppConn<S>,
+    seed_ip: Option<Ipv4Addr>,
+) -> Result<IpConfig, String> {
+    let magic: [u8; 4] = crate::ike::crypto::random(4)
+        .try_into()
+        .unwrap_or([1, 2, 3, 4]);
     let peer_mru = lcp_phase(conn, &magic)?;
     let mut ipc = ipcp_phase(conn, seed_ip.unwrap_or(Ipv4Addr::UNSPECIFIED))?;
     ipc.peer_mru = peer_mru;
@@ -436,11 +465,17 @@ pub fn negotiate<S: Read + Write>(conn: &mut PppConn<S>, seed_ip: Option<Ipv4Add
 }
 
 fn mru_option(body: &[u8]) -> Option<u16> {
-    iter_opts(body).into_iter().find(|(t, v)| *t == LCP_OPT_MRU && v.len() == 2).map(|(_, v)| u16::from_be_bytes([v[0], v[1]]))
+    iter_opts(body)
+        .into_iter()
+        .find(|(t, v)| *t == LCP_OPT_MRU && v.len() == 2)
+        .map(|(_, v)| u16::from_be_bytes([v[0], v[1]]))
 }
 
 /// Returns the gateway's MRU (from its Configure-Request).
-fn lcp_phase<S: Read + Write>(conn: &mut PppConn<S>, magic: &[u8; 4]) -> Result<Option<u16>, String> {
+fn lcp_phase<S: Read + Write>(
+    conn: &mut PppConn<S>,
+    magic: &[u8; 4],
+) -> Result<Option<u16>, String> {
     let mut our_opts = Vec::new();
     our_opts.extend_from_slice(&opt(LCP_OPT_MRU, &DEFAULT_MRU.to_be_bytes()));
     our_opts.extend_from_slice(&opt(LCP_OPT_MAGIC, magic));
@@ -455,7 +490,9 @@ fn lcp_phase<S: Read + Write>(conn: &mut PppConn<S>, magic: &[u8; 4]) -> Result<
     while !(our_acked && peer_acked) {
         match conn.recv_blocking() {
             Ok((PPP_LCP, payload)) => {
-                let Some(c) = parse_ctrl(&payload) else { continue };
+                let Some(c) = parse_ctrl(&payload) else {
+                    continue;
+                };
                 match c.code {
                     CONF_REQ => {
                         peer_mru = mru_option(&c.body).or(peer_mru);
@@ -492,7 +529,10 @@ fn lcp_phase<S: Read + Write>(conn: &mut PppConn<S>, magic: &[u8; 4]) -> Result<
     Ok(peer_mru)
 }
 
-fn ipcp_phase<S: Read + Write>(conn: &mut PppConn<S>, seed_ip: Ipv4Addr) -> Result<IpConfig, String> {
+fn ipcp_phase<S: Read + Write>(
+    conn: &mut PppConn<S>,
+    seed_ip: Ipv4Addr,
+) -> Result<IpConfig, String> {
     let mut want_ip = seed_ip;
     let mut dns1 = Ipv4Addr::UNSPECIFIED;
     let mut dns2 = Ipv4Addr::UNSPECIFIED;
@@ -508,13 +548,18 @@ fn ipcp_phase<S: Read + Write>(conn: &mut PppConn<S>, seed_ip: Ipv4Addr) -> Resu
     let mut id = 1u8;
     let mut our_acked = false;
     let mut peer_acked = false;
-    conn.send(PPP_IPCP, &ctrl(CONF_REQ, id, &build_req(want_ip, dns1, dns2)))?;
+    conn.send(
+        PPP_IPCP,
+        &ctrl(CONF_REQ, id, &build_req(want_ip, dns1, dns2)),
+    )?;
 
     let mut tries = 0;
     while !(our_acked && peer_acked) {
         match conn.recv_blocking() {
             Ok((PPP_IPCP, payload)) => {
-                let Some(c) = parse_ctrl(&payload) else { continue };
+                let Some(c) = parse_ctrl(&payload) else {
+                    continue;
+                };
                 match c.code {
                     CONF_REQ => {
                         conn.send(PPP_IPCP, &ctrl(CONF_ACK, c.id, &c.body))?;
@@ -534,11 +579,17 @@ fn ipcp_phase<S: Read + Write>(conn: &mut PppConn<S>, seed_ip: Ipv4Addr) -> Resu
                             }
                         }
                         id = id.wrapping_add(1);
-                        conn.send(PPP_IPCP, &ctrl(CONF_REQ, id, &build_req(want_ip, dns1, dns2)))?;
+                        conn.send(
+                            PPP_IPCP,
+                            &ctrl(CONF_REQ, id, &build_req(want_ip, dns1, dns2)),
+                        )?;
                     }
                     CONF_REJ => {
                         id = id.wrapping_add(1);
-                        conn.send(PPP_IPCP, &ctrl(CONF_REQ, id, &opt(IPCP_OPT_IP, &want_ip.octets())))?;
+                        conn.send(
+                            PPP_IPCP,
+                            &ctrl(CONF_REQ, id, &opt(IPCP_OPT_IP, &want_ip.octets())),
+                        )?;
                     }
                     TERM_REQ => {
                         conn.send(PPP_IPCP, &ctrl(TERM_ACK, c.id, &[]))?;
@@ -566,7 +617,10 @@ fn ipcp_phase<S: Read + Write>(conn: &mut PppConn<S>, seed_ip: Ipv4Addr) -> Resu
                     return Err("IPCP negotiation timed out".into());
                 }
                 if !our_acked {
-                    conn.send(PPP_IPCP, &ctrl(CONF_REQ, id, &build_req(want_ip, dns1, dns2)))?;
+                    conn.send(
+                        PPP_IPCP,
+                        &ctrl(CONF_REQ, id, &build_req(want_ip, dns1, dns2)),
+                    )?;
                 }
             }
             Err(e) => return Err(e),
@@ -583,7 +637,11 @@ fn ipcp_phase<S: Read + Write>(conn: &mut PppConn<S>, seed_ip: Ipv4Addr) -> Resu
     if !dns2.is_unspecified() {
         dns.push(dns2);
     }
-    Ok(IpConfig { addr: want_ip, dns, peer_mru: None })
+    Ok(IpConfig {
+        addr: want_ip,
+        dns,
+        peer_mru: None,
+    })
 }
 
 /// Dead-peer detection.
@@ -603,7 +661,10 @@ pub fn terminate_request(id: u8) -> Vec<u8> {
 }
 
 /// Data-phase LCP handling. Returns `Ok(true)` if the peer asked to terminate.
-pub fn handle_lcp_in<S: Read + Write>(conn: &mut PppConn<S>, payload: &[u8]) -> Result<bool, String> {
+pub fn handle_lcp_in<S: Read + Write>(
+    conn: &mut PppConn<S>,
+    payload: &[u8],
+) -> Result<bool, String> {
     if let Some(c) = parse_ctrl(payload) {
         match c.code {
             ECHO_REQ => conn.send(PPP_LCP, &ctrl(ECHO_REP, c.id, &c.body))?,
@@ -647,14 +708,16 @@ mod tests {
     #[test]
     fn f5_bad_magic() {
         let mut r = PppConn::new(Cursor::new(Vec::<u8>::new()), Framing::F5);
-        r.rbuf.extend_from_slice(&[0x12, 0x34, 0x00, 0x02, 0xff, 0x03]);
+        r.rbuf
+            .extend_from_slice(&[0x12, 0x34, 0x00, 0x02, 0xff, 0x03]);
         assert!(r.take_frame().is_err());
     }
 
     #[test]
     fn f5_partial_waits() {
         let mut r = PppConn::new(Cursor::new(Vec::<u8>::new()), Framing::F5);
-        r.rbuf.extend_from_slice(&[0xf5, 0x00, 0x00, 100, 0xff, 0x03]);
+        r.rbuf
+            .extend_from_slice(&[0xf5, 0x00, 0x00, 100, 0xff, 0x03]);
         assert!(r.take_frame().unwrap().is_none());
     }
 

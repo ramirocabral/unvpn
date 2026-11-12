@@ -41,17 +41,28 @@ impl Net {
             Some((a, p)) => (a, Some(p)),
             None => (s, None),
         };
-        let addr: IpAddr = a.trim().parse().map_err(|_| format!("bad IP address `{a}`"))?;
+        let addr: IpAddr = a
+            .trim()
+            .parse()
+            .map_err(|_| format!("bad IP address `{a}`"))?;
         let max = if addr.is_ipv4() { 32 } else { 128 };
         let prefix = match p {
-            Some(p) => p.trim().parse::<u8>().ok().filter(|&n| n <= max).ok_or_else(|| format!("bad prefix length in `{s}`"))?,
+            Some(p) => p
+                .trim()
+                .parse::<u8>()
+                .ok()
+                .filter(|&n| n <= max)
+                .ok_or_else(|| format!("bad prefix length in `{s}`"))?,
             None => max,
         };
         Ok(Net { addr, prefix })
     }
 
     pub fn network(&self) -> Net {
-        Net { addr: mask(self.addr, self.prefix), prefix: self.prefix }
+        Net {
+            addr: mask(self.addr, self.prefix),
+            prefix: self.prefix,
+        }
     }
 
     pub fn contains(&self, ip: IpAddr) -> bool {
@@ -72,11 +83,19 @@ impl std::fmt::Display for Net {
 fn mask(ip: IpAddr, prefix: u8) -> IpAddr {
     match ip {
         IpAddr::V4(v) => {
-            let m = if prefix == 0 { 0 } else { u32::MAX << (32 - prefix as u32) };
+            let m = if prefix == 0 {
+                0
+            } else {
+                u32::MAX << (32 - prefix as u32)
+            };
             IpAddr::V4((u32::from(v) & m).into())
         }
         IpAddr::V6(v) => {
-            let m = if prefix == 0 { 0 } else { u128::MAX << (128 - prefix as u32) };
+            let m = if prefix == 0 {
+                0
+            } else {
+                u128::MAX << (128 - prefix as u32)
+            };
             IpAddr::V6((u128::from(v) & m).into())
         }
     }
@@ -124,7 +143,8 @@ pub struct Config {
 }
 
 pub fn load(path: &Path) -> Result<Config, String> {
-    let text = crate::sysnet::read_user_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let text = crate::sysnet::read_user_string(path)
+        .map_err(|e| format!("read {}: {e}", path.display()))?;
     parse(&text)
 }
 
@@ -181,14 +201,18 @@ pub fn parse(text: &str) -> Result<Config, String> {
             }
             continue;
         }
-        let (key, val) = line.split_once('=').ok_or_else(|| at(format!("expected `Key = Value`, got `{line}`")))?;
+        let (key, val) = line
+            .split_once('=')
+            .ok_or_else(|| at(format!("expected `Key = Value`, got `{line}`")))?;
         let key = key.trim().to_ascii_lowercase();
         let val = val.trim();
         let list = || val.split(',').map(str::trim).filter(|s| !s.is_empty());
         match sec {
             Section::None => return Err(at("setting outside of [Interface]/[Peer]".into())),
             Section::Interface => match key.as_str() {
-                "privatekey" => private_key = Some(b64_key(val).map_err(|e| at(format!("PrivateKey: {e}")))?),
+                "privatekey" => {
+                    private_key = Some(b64_key(val).map_err(|e| at(format!("PrivateKey: {e}")))?)
+                }
                 "address" => {
                     for a in list() {
                         iface.addresses.push(Net::parse(a).map_err(at)?);
@@ -203,7 +227,12 @@ pub fn parse(text: &str) -> Result<Config, String> {
                     }
                 }
                 "mtu" => iface.mtu = Some(val.parse().map_err(|_| at(format!("bad MTU `{val}`")))?),
-                "listenport" => iface.listen_port = Some(val.parse().map_err(|_| at(format!("bad ListenPort `{val}`")))?),
+                "listenport" => {
+                    iface.listen_port = Some(
+                        val.parse()
+                            .map_err(|_| at(format!("bad ListenPort `{val}`")))?,
+                    )
+                }
                 "table" => {
                     iface.table = match val.to_ascii_lowercase().as_str() {
                         "auto" => Table::Auto,
@@ -226,7 +255,10 @@ pub fn parse(text: &str) -> Result<Config, String> {
                         p.public_key = b64_key(val).map_err(|e| at(format!("PublicKey: {e}")))?;
                         peer_has_key[i] = true;
                     }
-                    "presharedkey" => p.preshared_key = Some(b64_key(val).map_err(|e| at(format!("PresharedKey: {e}")))?),
+                    "presharedkey" => {
+                        p.preshared_key =
+                            Some(b64_key(val).map_err(|e| at(format!("PresharedKey: {e}")))?)
+                    }
                     "endpoint" => p.endpoint = Some(val.to_string()),
                     "allowedips" => {
                         for a in list() {
@@ -236,7 +268,10 @@ pub fn parse(text: &str) -> Result<Config, String> {
                     "persistentkeepalive" => {
                         p.persistent_keepalive = match val.to_ascii_lowercase().as_str() {
                             "off" | "0" => None,
-                            v => Some(v.parse().map_err(|_| at(format!("bad PersistentKeepalive `{val}`")))?),
+                            v => Some(
+                                v.parse()
+                                    .map_err(|_| at(format!("bad PersistentKeepalive `{val}`")))?,
+                            ),
                         }
                     }
                     _ => unsupported.push(format!("[Peer] {key}")),
@@ -259,7 +294,12 @@ pub fn parse(text: &str) -> Result<Config, String> {
         return Err("[Interface] has no Address".into());
     }
     unsupported.dedup();
-    Ok(Config { interface: iface, peers, ignored_hooks, unsupported })
+    Ok(Config {
+        interface: iface,
+        peers,
+        ignored_hooks,
+        unsupported,
+    })
 }
 
 fn parse_fwmark(v: &str) -> Result<Option<u32>, String> {
@@ -292,26 +332,52 @@ mod tests {
         let c = parse(&text).unwrap();
         let i = &c.interface;
         assert_eq!(i.addresses.len(), 2);
-        assert_eq!(i.addresses[0].to_string(), "10.8.0.2/24", "Address keeps the host part");
+        assert_eq!(
+            i.addresses[0].to_string(),
+            "10.8.0.2/24",
+            "Address keeps the host part"
+        );
         assert_eq!(i.dns.len(), 2);
         assert_eq!(i.search, vec!["corp.example.com"]);
-        assert_eq!((i.mtu, i.listen_port, i.table, i.fwmark), (Some(1380), Some(51821), Table::Off, Some(0xca6c)));
+        assert_eq!(
+            (i.mtu, i.listen_port, i.table, i.fwmark),
+            (Some(1380), Some(51821), Table::Off, Some(0xca6c))
+        );
         assert_eq!(c.ignored_hooks.len(), 1);
         let p = &c.peers[0];
         assert!(p.preshared_key.is_some());
         assert_eq!(p.endpoint.as_deref(), Some("vpn.example.com:51820"));
         let ips: Vec<String> = p.allowed_ips.iter().map(|n| n.to_string()).collect();
-        assert_eq!(ips, vec!["0.0.0.0/0", "::/0", "192.0.2.0/24"], "AllowedIPs are normalised");
+        assert_eq!(
+            ips,
+            vec!["0.0.0.0/0", "::/0", "192.0.2.0/24"],
+            "AllowedIPs are normalised"
+        );
         assert_eq!(p.persistent_keepalive, Some(25));
     }
 
     #[test]
     fn errors() {
         assert!(parse("[Peer]\nPublicKey = x\n").is_err());
-        assert!(parse(&format!("[Interface]\nPrivateKey = {K1}\nAddress = 10.0.0.2/32\n")).is_err(), "needs a peer");
-        assert!(parse(&format!("[Interface]\nPrivateKey = {K1}\nAddress = 10.0.0.2/33\n[Peer]\nPublicKey = {K2}\n")).is_err());
-        assert!(parse(&format!("[Interface]\nAddress = 10.0.0.2\n[Peer]\nPublicKey = {K2}\n")).is_err());
-        assert!(parse(&format!("[Interface]\nPrivateKey = {K1}\nAddress = 10.0.0.2\n[Peer]\nEndpoint = a:1\n")).is_err());
+        assert!(
+            parse(&format!(
+                "[Interface]\nPrivateKey = {K1}\nAddress = 10.0.0.2/32\n"
+            ))
+            .is_err(),
+            "needs a peer"
+        );
+        assert!(parse(&format!(
+            "[Interface]\nPrivateKey = {K1}\nAddress = 10.0.0.2/33\n[Peer]\nPublicKey = {K2}\n"
+        ))
+        .is_err());
+        assert!(parse(&format!(
+            "[Interface]\nAddress = 10.0.0.2\n[Peer]\nPublicKey = {K2}\n"
+        ))
+        .is_err());
+        assert!(parse(&format!(
+            "[Interface]\nPrivateKey = {K1}\nAddress = 10.0.0.2\n[Peer]\nEndpoint = a:1\n"
+        ))
+        .is_err());
     }
 
     #[test]
@@ -321,7 +387,9 @@ mod tests {
         assert!(n.contains("10.1.255.1".parse().unwrap()));
         assert!(!n.contains("10.2.0.1".parse().unwrap()));
         assert!(!n.contains("::1".parse().unwrap()));
-        assert!(Net::parse("::/0").unwrap().contains("2001:db8::1".parse().unwrap()));
+        assert!(Net::parse("::/0")
+            .unwrap()
+            .contains("2001:db8::1".parse().unwrap()));
         assert_eq!(Net::parse("2001:db8::1").unwrap().prefix, 128);
         assert!(Net::parse("0.0.0.0/0").unwrap().is_default());
     }

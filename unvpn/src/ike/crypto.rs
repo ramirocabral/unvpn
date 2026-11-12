@@ -63,7 +63,12 @@ pub struct IkeCrypto {
 }
 
 impl IkeCrypto {
-    pub fn new(group: u16, hash_alg: u16, enc_alg: u16, key_len_bits: usize) -> Result<Self, String> {
+    pub fn new(
+        group: u16,
+        hash_alg: u16,
+        enc_alg: u16,
+        key_len_bits: usize,
+    ) -> Result<Self, String> {
         let (prime, pub_len) = match group {
             IKE_GROUP_MODP1024 => (G2_P, 128),
             IKE_GROUP_MODP2048 => (G14_P, 256),
@@ -159,7 +164,12 @@ impl IkeCrypto {
     /// Verify the gateway's IKE signature: in IKEv1 SIG_R is the peer's private
     /// key applied to the already-computed HASH_R (PKCS#1 v1.5, no extra digest
     /// round). We RSA-public-decrypt and compare to the expected hash.
-    pub fn verify_rsa_signature(&self, hash: &[u8], signature: &[u8], cert_der: &[u8]) -> Result<(), String> {
+    pub fn verify_rsa_signature(
+        &self,
+        hash: &[u8],
+        signature: &[u8],
+        cert_der: &[u8],
+    ) -> Result<(), String> {
         let cert = X509::from_der(cert_der).map_err(e)?;
         let rsa = cert.public_key().map_err(e)?.rsa().map_err(e)?;
         let mut out = vec![0u8; rsa.size() as usize];

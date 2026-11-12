@@ -12,7 +12,7 @@
 //!     :RequestHeader (
 //!         :id (<n>)
 //!         :type (ClientHello)
-//! :session_id 
+//! :session_id
 //! )
 //!     :RequestData (
 //!         :client_info (
@@ -111,7 +111,11 @@ impl Value {
             }
             Value::Map(entries) if entries.is_empty() => out.push_str("()"),
             Value::Named(name, inner) => {
-                let name = if name.bytes().all(|b| b.is_ascii_graphic() && b != b'"') { name.clone() } else { format!("\"{}\"", escape(name)) };
+                let name = if name.bytes().all(|b| b.is_ascii_graphic() && b != b'"') {
+                    name.clone()
+                } else {
+                    format!("\"{}\"", escape(name))
+                };
                 let mut body = String::new();
                 inner.write_indented(&mut body, level);
                 let body = body.strip_prefix('(').unwrap_or(&body);
@@ -166,9 +170,10 @@ fn push_tabs(out: &mut String, n: usize) {
 // XOR against a fixed table, emitted in reversed byte order.
 
 const XOR_TABLE: &[u8] = &[
-    45, 79, 68, 73, 70, 73, 69, 68, 38, 87, 48, 82, 79, 80, 69, 82, 84, 89, 51, 72, 69, 69, 84, 55, 73, 84, 72, 47, 43,
-    52, 72, 69, 51, 72, 69, 69, 84, 41, 36, 51, 63, 44, 36, 33, 48, 63, 33, 53, 63, 48, 50, 47, 48, 37, 50, 52, 41, 37,
-    51, 46, 53, 44, 44, 16, 38, 55, 63, 55, 48, 63, 47, 34, 42, 37, 35, 52, 51,
+    45, 79, 68, 73, 70, 73, 69, 68, 38, 87, 48, 82, 79, 80, 69, 82, 84, 89, 51, 72, 69, 69, 84, 55,
+    73, 84, 72, 47, 43, 52, 72, 69, 51, 72, 69, 69, 84, 41, 36, 51, 63, 44, 36, 33, 48, 63, 33, 53,
+    63, 48, 50, 47, 48, 37, 50, 52, 41, 37, 51, 46, 53, 44, 44, 16, 38, 55, 63, 55, 48, 63, 47, 34,
+    42, 37, 35, 52, 51,
 ];
 
 fn translate_byte(i: usize, c: u8) -> u8 {
@@ -357,16 +362,27 @@ pub fn client_settings(request_id: i64, session_id: &str) -> Packet {
 }
 
 /// The encryption domain of a `ClientSettings` answer, as `(from, to)` ranges.
-pub fn encryption_domain(pkt: &Packet) -> Result<Vec<(std::net::Ipv4Addr, std::net::Ipv4Addr)>, String> {
+pub fn encryption_domain(
+    pkt: &Packet,
+) -> Result<Vec<(std::net::Ipv4Addr, std::net::Ipv4Addr)>, String> {
     match pkt.path(&["ResponseHeader", "return_code"]) {
         Some(Value::Num(600)) => {}
         rc => {
             let rc = rc.and_then(Value::text).unwrap_or_else(|| "missing".into());
-            let detail = pkt.get("ResponseData").map(|d| crate::sysnet::one_line(&d.pretty(0))).unwrap_or_default();
-            return Err(if detail.is_empty() || detail == "()" { format!("return_code {rc}") } else { format!("return_code {rc}: {detail}") });
+            let detail = pkt
+                .get("ResponseData")
+                .map(|d| crate::sysnet::one_line(&d.pretty(0)))
+                .unwrap_or_default();
+            return Err(if detail.is_empty() || detail == "()" {
+                format!("return_code {rc}")
+            } else {
+                format!("return_code {rc}: {detail}")
+            });
         }
     }
-    let Some(Value::Map(entries)) = pkt.path(&["ResponseData", "updated_policies", "range", "settings"]) else {
+    let Some(Value::Map(entries)) =
+        pkt.path(&["ResponseData", "updated_policies", "range", "settings"])
+    else {
         return Err("no range in the answer".into());
     };
     let addr = |r: &Value, k: &str| r.get(k).and_then(Value::text).and_then(|t| t.parse().ok());
@@ -374,7 +390,10 @@ pub fn encryption_domain(pkt: &Packet) -> Result<Vec<(std::net::Ipv4Addr, std::n
         .iter()
         .map(|(_, r)| match (addr(r, "from"), addr(r, "to")) {
             (Some(f), Some(t)) => Ok((f, t)),
-            _ => Err(format!("bad range entry {}", r.pretty(0).split_whitespace().collect::<Vec<_>>().join(" "))),
+            _ => Err(format!(
+                "bad range entry {}",
+                r.pretty(0).split_whitespace().collect::<Vec<_>>().join(" ")
+            )),
         })
         .collect()
 }
@@ -552,14 +571,29 @@ mod tests {
         let answer = "(CCCserverResponse\n\t:ResponseHeader (\n\t\t:id (3)\n\t\t:type (ClientSettings)\n\t\t:return_code (600)\n\t)\n\t:ResponseData (\n\t\t:updated_policies (\n\t\t\t:range (\n\t\t\t\t:settings (\n\t\t\t\t\t: (\n\t\t\t\t\t\t:from (10.0.0.0)\n\t\t\t\t\t\t:to (10.255.255.255)\n\t\t\t\t\t)\n\t\t\t\t\t: (\n\t\t\t\t\t\t:from (198.51.100.0)\n\t\t\t\t\t\t:to (198.51.100.127)\n\t\t\t\t\t)\n\t\t\t\t)\n\t\t\t)\n\t\t)\n\t)\n)";
         let ranges = encryption_domain(&parse(answer).unwrap()).unwrap();
         assert_eq!(ranges.len(), 2);
-        assert_eq!(ranges[1], ("198.51.100.0".parse().unwrap(), "198.51.100.127".parse().unwrap()));
+        assert_eq!(
+            ranges[1],
+            (
+                "198.51.100.0".parse().unwrap(),
+                "198.51.100.127".parse().unwrap()
+            )
+        );
         let denied = "(CCCserverResponse\n\t:ResponseHeader (\n\t\t:return_code (601)\n\t)\n)";
-        assert_eq!(encryption_domain(&parse(denied).unwrap()).unwrap_err(), "return_code 601");
+        assert_eq!(
+            encryption_domain(&parse(denied).unwrap()).unwrap_err(),
+            "return_code 601"
+        );
         let refused = "(CCCserverResponse\n\t:ResponseHeader (\n\t\t:return_code (501)\n\t)\n\t:ResponseData (\n\t\t:error_message (\"no session\")\n\t)\n)";
         let err = encryption_domain(&parse(refused).unwrap()).unwrap_err();
-        assert!(err.starts_with("return_code 501: ") && err.contains("no session"), "{err}");
+        assert!(
+            err.starts_with("return_code 501: ") && err.contains("no session"),
+            "{err}"
+        );
         let rules = "(CCCserverResponse\n\t:ResponseHeader (\n\t\t:return_code (600)\n\t)\n\t:ResponseData (\n\t\t:updated_policies (\n\t\t\t:desktop (\n\t\t\t\t:settings (\n\t\t\t\t\t: (Rules\n\t\t\t\t\t\t:rule-1 (\n\t\t\t\t\t\t\t:dst (\n\t\t\t\t\t\t\t\t: (\"All Users\"\n\t\t\t\t\t\t\t\t\t:type (usrgroup)\n\t\t\t\t\t\t\t\t)\n\t\t\t\t\t\t\t)\n\t\t\t\t\t\t)\n\t\t\t\t\t)\n\t\t\t\t)\n\t\t\t)\n\t\t\t:range (\n\t\t\t\t:settings (\n\t\t\t\t\t: (\n\t\t\t\t\t\t:from (192.0.2.0)\n\t\t\t\t\t\t:to (192.0.2.255)\n\t\t\t\t\t)\n\t\t\t\t)\n\t\t\t)\n\t\t)\n\t)\n)";
-        assert_eq!(encryption_domain(&parse(rules).unwrap()).unwrap(), vec![("192.0.2.0".parse().unwrap(), "192.0.2.255".parse().unwrap())]);
+        assert_eq!(
+            encryption_domain(&parse(rules).unwrap()).unwrap(),
+            vec![("192.0.2.0".parse().unwrap(), "192.0.2.255".parse().unwrap())]
+        );
     }
 
     #[test]

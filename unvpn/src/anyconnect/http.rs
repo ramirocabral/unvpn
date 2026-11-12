@@ -24,7 +24,13 @@ impl Cookies {
         if self.0.is_empty() {
             return None;
         }
-        Some(self.0.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join("; "))
+        Some(
+            self.0
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
     }
     pub fn absorb(&mut self, set_cookie: &str) {
         let pair = set_cookie.split(';').next().unwrap_or("").trim();
@@ -50,7 +56,10 @@ pub struct Response {
 
 impl Response {
     pub fn header(&self, name: &str) -> Option<&str> {
-        self.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
+        self.headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
     }
     pub fn body_str(&self) -> std::borrow::Cow<'_, str> {
         String::from_utf8_lossy(&self.body)
@@ -82,7 +91,11 @@ impl Endpoint {
 /// The headers every AnyConnect control request carries: identity, cookies and
 /// the aggregate-auth markers.
 pub fn common_headers(ep: &Endpoint, cookies: &Cookies) -> String {
-    let mut h = format!("Host: {}\r\nUser-Agent: {}\r\n", ep.host_header(), ep.user_agent);
+    let mut h = format!(
+        "Host: {}\r\nUser-Agent: {}\r\n",
+        ep.host_header(),
+        ep.user_agent
+    );
     if let Some(c) = cookies.header() {
         h.push_str(&format!("Cookie: {c}\r\n"));
     }
@@ -112,7 +125,8 @@ pub fn request(
     req.push_str("Connection: close\r\n\r\n");
     let mut raw = req.into_bytes();
     raw.extend_from_slice(body);
-    tls.write_all(&raw).map_err(|e| format!("write request: {e}"))?;
+    tls.write_all(&raw)
+        .map_err(|e| format!("write request: {e}"))?;
     tls.flush().ok();
 
     let resp = read_response(&mut tls, true)?;
@@ -145,12 +159,16 @@ pub fn read_response<S: Read>(s: &mut S, with_body: bool) -> Result<Response, St
     let (status, headers) = parse_head(&raw[..header_end])?;
     let mut body = raw[header_end..].to_vec();
     if !with_body {
-        return Ok(Response { status, headers, body });
+        return Ok(Response {
+            status,
+            headers,
+            body,
+        });
     }
 
-    let chunked = headers
-        .iter()
-        .any(|(k, v)| k.eq_ignore_ascii_case("transfer-encoding") && v.to_ascii_lowercase().contains("chunked"));
+    let chunked = headers.iter().any(|(k, v)| {
+        k.eq_ignore_ascii_case("transfer-encoding") && v.to_ascii_lowercase().contains("chunked")
+    });
     let clen = headers
         .iter()
         .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
@@ -184,7 +202,11 @@ pub fn read_response<S: Read>(s: &mut S, with_body: bool) -> Result<Response, St
             }
         }
     }
-    Ok(Response { status, headers, body })
+    Ok(Response {
+        status,
+        headers,
+        body,
+    })
 }
 
 pub fn parse_head(head: &[u8]) -> Result<(u16, Vec<(String, String)>), String> {
@@ -213,7 +235,8 @@ fn dechunk(raw: &[u8]) -> Option<Vec<u8>> {
         let rest = raw.get(i..)?;
         let line_end = rest.windows(2).position(|w| w == b"\r\n")? + i;
         let size_str = std::str::from_utf8(&raw[i..line_end]).ok()?;
-        let size = usize::from_str_radix(size_str.split(';').next().unwrap_or("").trim(), 16).ok()?;
+        let size =
+            usize::from_str_radix(size_str.split(';').next().unwrap_or("").trim(), 16).ok()?;
         i = line_end + 2;
         if size == 0 {
             return Some(out);
@@ -249,10 +272,17 @@ pub fn split_url(url: &str) -> Result<(String, u16, String), String> {
     }
     let (host, port) = if let Some(v6) = authority.strip_prefix('[') {
         let (h, tail) = v6.split_once(']').ok_or("bad [IPv6] host")?;
-        let port = tail.strip_prefix(':').map(|p| p.parse::<u16>().map_err(|_| "bad port")).transpose()?;
+        let port = tail
+            .strip_prefix(':')
+            .map(|p| p.parse::<u16>().map_err(|_| "bad port"))
+            .transpose()?;
         (h.to_string(), port.unwrap_or(443))
     } else if let Some((h, p)) = authority.rsplit_once(':') {
-        (h.to_string(), p.parse::<u16>().map_err(|_| format!("bad port in {url:?}"))?)
+        (
+            h.to_string(),
+            p.parse::<u16>()
+                .map_err(|_| format!("bad port in {url:?}"))?,
+        )
     } else {
         (authority.to_string(), 443)
     };
@@ -265,14 +295,26 @@ mod tests {
 
     #[test]
     fn url_forms() {
-        assert_eq!(split_url("203.0.113.20").unwrap(), ("203.0.113.20".into(), 443, "/".into()));
+        assert_eq!(
+            split_url("203.0.113.20").unwrap(),
+            ("203.0.113.20".into(), 443, "/".into())
+        );
         assert_eq!(
             split_url("https://vpn-sso.example.com/SSOGROUP").unwrap(),
             ("vpn-sso.example.com".into(), 443, "/SSOGROUP".into())
         );
-        assert_eq!(split_url("gw.example:8443/grp").unwrap(), ("gw.example".into(), 8443, "/grp".into()));
-        assert_eq!(split_url("https://gw/?a=1").unwrap(), ("gw".into(), 443, "/?a=1".into()));
-        assert_eq!(split_url("[2001:db8::1]:444/x").unwrap(), ("2001:db8::1".into(), 444, "/x".into()));
+        assert_eq!(
+            split_url("gw.example:8443/grp").unwrap(),
+            ("gw.example".into(), 8443, "/grp".into())
+        );
+        assert_eq!(
+            split_url("https://gw/?a=1").unwrap(),
+            ("gw".into(), 443, "/?a=1".into())
+        );
+        assert_eq!(
+            split_url("[2001:db8::1]:444/x").unwrap(),
+            ("2001:db8::1".into(), 444, "/x".into())
+        );
         assert!(split_url("http://gw").is_err());
         assert!(split_url("https://").is_err());
     }
@@ -293,7 +335,12 @@ mod tests {
 
     #[test]
     fn host_header_omits_default_port() {
-        let ep = Endpoint { host: "gw".into(), port: 443, user_agent: "AnyConnect".into(), timeout: Duration::from_secs(1) };
+        let ep = Endpoint {
+            host: "gw".into(),
+            port: 443,
+            user_agent: "AnyConnect".into(),
+            timeout: Duration::from_secs(1),
+        };
         assert_eq!(ep.host_header(), "gw");
         let ep2 = Endpoint { port: 8443, ..ep };
         assert_eq!(ep2.base_url(), "https://gw:8443");

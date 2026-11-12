@@ -55,7 +55,10 @@ pub struct PushConfig {
 impl PushConfig {
     /// Returns true when this was the last part.
     pub fn merge(&mut self, msg: &str) -> bool {
-        let body = msg.strip_prefix("PUSH_REPLY").unwrap_or(msg).trim_start_matches(',');
+        let body = msg
+            .strip_prefix("PUSH_REPLY")
+            .unwrap_or(msg)
+            .trim_start_matches(',');
         let mut last = true;
         for opt in body.split(',') {
             let w: Vec<&str> = opt.split_whitespace().collect();
@@ -101,8 +104,12 @@ impl PushConfig {
                             }
                         }
                     }
-                    Some("server") if a(3) == Some("resolve-domains") => self.domains.extend(w[4..].iter().map(|s| s.to_string())),
-                    Some("search-domains") => self.domains.extend(w[2..].iter().map(|s| s.to_string())),
+                    Some("server") if a(3) == Some("resolve-domains") => {
+                        self.domains.extend(w[4..].iter().map(|s| s.to_string()))
+                    }
+                    Some("search-domains") => {
+                        self.domains.extend(w[2..].iter().map(|s| s.to_string()))
+                    }
                     _ => {}
                 },
                 "peer-id" => self.peer_id = a(1).and_then(|s| s.parse().ok()),
@@ -123,11 +130,12 @@ impl PushConfig {
                 "protocol-flags" => self.tls_ekm |= w[1..].contains(&"tls-ekm"),
                 "auth-token" => self.auth_token = a(1).map(str::to_string),
                 "auth-token-user" => {
-                    self.auth_token_user = a(1).and_then(|b| openssl::base64::decode_block(b).ok()).and_then(|v| String::from_utf8(v).ok())
+                    self.auth_token_user = a(1)
+                        .and_then(|b| openssl::base64::decode_block(b).ok())
+                        .and_then(|v| String::from_utf8(v).ok())
                 }
-                "route-ipv6" | "ifconfig-ipv6" | "tun-ipv6" | "block-outside-dns" | "register-dns" => {
-                    self.ignored.push(w[0].to_string())
-                }
+                "route-ipv6" | "ifconfig-ipv6" | "tun-ipv6" | "block-outside-dns"
+                | "register-dns" => self.ignored.push(w[0].to_string()),
                 _ => {}
             }
         }
@@ -196,12 +204,28 @@ mod tests {
              cipher AES-256-GCM,protocol-flags cc-exit tls-ekm dyn-tls-crypt,auth-token SESS_ID_xyz",
         );
         assert!(last);
-        assert_eq!(p.ifconfig, Some(("10.8.0.6".parse().unwrap(), "255.255.255.0".parse().unwrap())));
+        assert_eq!(
+            p.ifconfig,
+            Some((
+                "10.8.0.6".parse().unwrap(),
+                "255.255.255.0".parse().unwrap()
+            ))
+        );
         assert_eq!(p.topology(), Topology::Subnet);
-        assert_eq!(p.routes, vec![Route { net: "10.20.0.0".parse().unwrap(), mask: "255.255.0.0".parse().unwrap(), bypass: false }]);
+        assert_eq!(
+            p.routes,
+            vec![Route {
+                net: "10.20.0.0".parse().unwrap(),
+                mask: "255.255.0.0".parse().unwrap(),
+                bypass: false
+            }]
+        );
         assert_eq!(p.dns, vec!["10.20.0.2".parse::<Ipv4Addr>().unwrap()]);
         assert_eq!(p.domains, vec!["corp.example"]);
-        assert_eq!((p.peer_id, p.ping, p.ping_restart), (Some(3), Some(10), Some(120)));
+        assert_eq!(
+            (p.peer_id, p.ping, p.ping_restart),
+            (Some(3), Some(10), Some(120))
+        );
         assert_eq!(p.cipher.as_deref(), Some("AES-256-GCM"));
         assert!(p.tls_ekm);
         assert_eq!(p.auth_token.as_deref(), Some("SESS_ID_xyz"));
@@ -211,7 +235,9 @@ mod tests {
     fn continuation_and_net30() {
         let mut p = PushConfig::default();
         assert!(!p.merge("PUSH_REPLY,route 192.168.1.0 255.255.255.0,push-continuation 2"));
-        assert!(p.merge("PUSH_REPLY,ifconfig 10.8.0.6 10.8.0.5,redirect-gateway def1,push-continuation 1"));
+        assert!(p.merge(
+            "PUSH_REPLY,ifconfig 10.8.0.6 10.8.0.5,redirect-gateway def1,push-continuation 1"
+        ));
         assert_eq!(p.routes.len(), 1);
         assert!(p.redirect_gateway);
         assert_eq!(p.topology(), Topology::Net30);

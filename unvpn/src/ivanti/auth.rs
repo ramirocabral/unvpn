@@ -77,7 +77,12 @@ pub struct Session {
 
 impl Session {
     pub fn new(ep: Endpoint, url: &str) -> Self {
-        Session { ep, cookies: Cookies::default(), url: url.to_string(), dsid: None }
+        Session {
+            ep,
+            cookies: Cookies::default(),
+            url: url.to_string(),
+            dsid: None,
+        }
     }
 
     fn auth_path(&self, page: &str) -> String {
@@ -104,11 +109,19 @@ impl Session {
     }
 
     /// Password sign-in. On success `self.dsid` holds the session cookie.
-    pub fn login(&mut self, creds: &Creds, realm: Option<&str>, p: &mut dyn Prompter) -> Result<()> {
+    pub fn login(
+        &mut self,
+        creds: &Creds,
+        realm: Option<&str>,
+        p: &mut dyn Prompter,
+    ) -> Result<()> {
         // Prime the form page for cookies and hidden fields.
         let page = http::get(&self.ep, &self.auth_path("welcome.cgi"), &mut self.cookies)?;
         if !looks_like_ivanti(&page, &page.body_str()) {
-            return Err(IvantiError::NotHere(format!("{} is not an Ivanti sign-in page", self.ep.host_header())));
+            return Err(IvantiError::NotHere(format!(
+                "{} is not an Ivanti sign-in page",
+                self.ep.host_header()
+            )));
         }
         let password = match creds.password.clone() {
             Some(pw) => pw,
@@ -127,7 +140,12 @@ impl Session {
             form.add(&k, &v);
         }
 
-        let resp = http::post_form(&self.ep, &self.auth_path("login.cgi"), &mut self.cookies, &form.encode())?;
+        let resp = http::post_form(
+            &self.ep,
+            &self.auth_path("login.cgi"),
+            &mut self.cookies,
+            &form.encode(),
+        )?;
         self.absorb_dsid();
         if self.dsid.is_some() {
             return Ok(());
@@ -139,8 +157,12 @@ impl Session {
     fn after_login(&mut self, resp: Response, p: &mut dyn Prompter) -> Result<()> {
         let body = resp.body_str().to_string();
         let low = body.to_ascii_lowercase();
-        if low.contains("invalid") && (low.contains("username") || low.contains("password") || low.contains("credential")) {
-            return Err(IvantiError::BadCreds("the gateway rejected the credentials".into()));
+        if low.contains("invalid")
+            && (low.contains("username") || low.contains("password") || low.contains("credential"))
+        {
+            return Err(IvantiError::BadCreds(
+                "the gateway rejected the credentials".into(),
+            ));
         }
         if low.contains("frmconfirmation") || low.contains("btncontinue") {
             // An older session is still open; the page must be re-posted to take over.
@@ -149,10 +171,17 @@ impl Session {
                 "session-takeover confirmation is not driven yet (needs a capture of login.cgi's continue form)".into(),
             ));
         }
-        if low.contains("secondary") || low.contains("token") || low.contains("passcode") || low.contains("frmdefender") {
-            let _ = p.challenge("Enter your second-factor code").map_err(IvantiError::Other)?;
+        if low.contains("secondary")
+            || low.contains("token")
+            || low.contains("passcode")
+            || low.contains("frmdefender")
+        {
+            let _ = p
+                .challenge("Enter your second-factor code")
+                .map_err(IvantiError::Other)?;
             return Err(IvantiError::Unimplemented(
-                "second-factor re-post is not driven yet (needs a capture of the challenge form)".into(),
+                "second-factor re-post is not driven yet (needs a capture of the challenge form)"
+                    .into(),
             ));
         }
         Err(IvantiError::Unimplemented(format!(
@@ -170,17 +199,28 @@ impl Session {
 
 /// Markers of the Ivanti/Pulse web front end.
 fn looks_like_ivanti(resp: &Response, body: &str) -> bool {
-    if resp.header("set-cookie").map(|c| c.contains("DSID") || c.contains("DSSIGNIN")).unwrap_or(false) {
+    if resp
+        .header("set-cookie")
+        .map(|c| c.contains("DSID") || c.contains("DSSIGNIN"))
+        .unwrap_or(false)
+    {
         return true;
     }
     let b = body.to_ascii_lowercase();
-    b.contains("/dana-na/") || b.contains("dsidformdatastr") || b.contains("frmlogin") || b.contains("pulse secure") || b.contains("ivanti")
+    b.contains("/dana-na/")
+        || b.contains("dsidformdatastr")
+        || b.contains("frmlogin")
+        || b.contains("pulse secure")
+        || b.contains("ivanti")
 }
 
 /// Hidden `<input>` name/value pairs that must be echoed back on POST.
 fn hidden_fields(html: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
-    for tag in html.split('<').filter(|t| t.trim_start().to_ascii_lowercase().starts_with("input")) {
+    for tag in html
+        .split('<')
+        .filter(|t| t.trim_start().to_ascii_lowercase().starts_with("input"))
+    {
         let low = tag.to_ascii_lowercase();
         if !low.contains("type=\"hidden\"") && !low.contains("type='hidden'") {
             continue;
@@ -203,10 +243,18 @@ fn field_label(_html: &str, _field: &str) -> Option<String> {
 fn select_options(html: &str, name: &str) -> Vec<String> {
     let low = html.to_ascii_lowercase();
     let needle = format!("name=\"{}\"", name.to_ascii_lowercase());
-    let Some(sel) = low.find(&needle) else { return Vec::new() };
-    let end = low[sel..].find("</select>").map(|e| sel + e).unwrap_or(html.len());
+    let Some(sel) = low.find(&needle) else {
+        return Vec::new();
+    };
+    let end = low[sel..]
+        .find("</select>")
+        .map(|e| sel + e)
+        .unwrap_or(html.len());
     let mut out = Vec::new();
-    for opt in html[sel..end].split('<').filter(|t| t.trim_start().to_ascii_lowercase().starts_with("option")) {
+    for opt in html[sel..end]
+        .split('<')
+        .filter(|t| t.trim_start().to_ascii_lowercase().starts_with("option"))
+    {
         if let Some(v) = attr(opt, "value") {
             if !v.is_empty() {
                 out.push(v);
@@ -228,7 +276,9 @@ fn attr(tag: &str, name: &str) -> Option<String> {
         let end = rest.find(quote)?;
         Some(rest[..end].to_string())
     } else {
-        let end = rest.find(|c: char| c.is_whitespace() || c == '>' || c == '/').unwrap_or(rest.len());
+        let end = rest
+            .find(|c: char| c.is_whitespace() || c == '>' || c == '/')
+            .unwrap_or(rest.len());
         Some(rest[..end].to_string())
     }
 }
@@ -241,7 +291,13 @@ mod tests {
     fn scrapes_hidden_fields() {
         let html = r#"<form><input type="hidden" name="FormDataStr" value="abc123"><input type="text" name="username"><input type='hidden' name='xsauth_token' value='zz'></form>"#;
         let got = hidden_fields(html);
-        assert_eq!(got, vec![("FormDataStr".to_string(), "abc123".to_string()), ("xsauth_token".to_string(), "zz".to_string())]);
+        assert_eq!(
+            got,
+            vec![
+                ("FormDataStr".to_string(), "abc123".to_string()),
+                ("xsauth_token".to_string(), "zz".to_string())
+            ]
+        );
     }
 
     #[test]
@@ -253,8 +309,15 @@ mod tests {
 
     #[test]
     fn detects_the_front_end() {
-        let resp = Response { status: 200, headers: vec![], body: Vec::new() };
-        assert!(looks_like_ivanti(&resp, "<a href=\"/dana-na/auth/url_default/welcome.cgi\">"));
+        let resp = Response {
+            status: 200,
+            headers: vec![],
+            body: Vec::new(),
+        };
+        assert!(looks_like_ivanti(
+            &resp,
+            "<a href=\"/dana-na/auth/url_default/welcome.cgi\">"
+        ));
         assert!(!looks_like_ivanti(&resp, "<html>nothing here</html>"));
     }
 }

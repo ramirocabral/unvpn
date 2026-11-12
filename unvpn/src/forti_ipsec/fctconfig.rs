@@ -31,8 +31,8 @@ pub struct FctProfile {
 
 /// Parse the first IPsec connection from a `<forticlient_configuration>` XML.
 pub fn parse(xml: &str) -> Result<FctProfile, String> {
-    let ipsec = between(xml, "<ipsecvpn>", "</ipsecvpn>")
-        .ok_or("no <ipsecvpn> section in the config")?;
+    let ipsec =
+        between(xml, "<ipsecvpn>", "</ipsecvpn>").ok_or("no <ipsecvpn> section in the config")?;
     let conn = between(ipsec, "<connection>", "</connection>")
         .ok_or("no IPsec <connection> in the config")?;
     let ike = between(conn, "<ike_settings>", "</ike_settings>")
@@ -41,7 +41,9 @@ pub fn parse(xml: &str) -> Result<FctProfile, String> {
     let mut p = FctProfile {
         name: tag(conn, "name").unwrap_or("").to_string(),
         server: tag(ike, "server").unwrap_or("").to_string(),
-        udp_port: tag(ike, "udp_port").and_then(|s| s.parse().ok()).unwrap_or(500),
+        udp_port: tag(ike, "udp_port")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(500),
         localid: tag(ike, "localid").unwrap_or("").to_string(),
         auth_method: tag(ike, "authentication_method").unwrap_or("").to_string(),
         eap_method: tag(ike, "eap_method").unwrap_or("").to_string(),
@@ -68,8 +70,7 @@ pub fn parse(xml: &str) -> Result<FctProfile, String> {
 
     if let Some(enc) = tag(ike, "preshared_key") {
         if !enc.trim().is_empty() {
-            p.psk = decrypt_enc(enc)
-                .map_err(|e| format!("decrypt preshared_key: {e}"))?;
+            p.psk = decrypt_enc(enc).map_err(|e| format!("decrypt preshared_key: {e}"))?;
         }
     }
 
@@ -166,7 +167,8 @@ mod tests {
     use super::*;
 
     // "hello-unvpn-123!" encrypted with ENC_KEY and a fixed salt.
-    const KAT_BLOB: &str = "Enc 000102030405060708090a0b1397109e333438abbb37e7196d70f7b9f570503266d32a549f1da19d";
+    const KAT_BLOB: &str =
+        "Enc 000102030405060708090a0b1397109e333438abbb37e7196d70f7b9f570503266d32a549f1da19d";
 
     #[test]
     fn decrypt_known_answer() {

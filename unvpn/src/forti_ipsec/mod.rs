@@ -107,13 +107,28 @@ fn apply_config(opts: &mut Opts) -> Result<(), String> {
     let xml = sysnet::read_user_string(&path).map_err(|e| format!("read {path}: {e}"))?;
     let p = fctconfig::parse(&xml)?;
 
-    out!("# imported FortiClient config '{}' (connection '{}')", path, p.name);
+    out!(
+        "# imported FortiClient config '{}' (connection '{}')",
+        path,
+        p.name
+    );
     out!("#   gateway   {}:{}", p.server, p.udp_port);
     out!("#   localid   {}", p.localid);
-    out!("#   auth      {} / EAP method {}", p.auth_method, p.eap_method);
+    out!(
+        "#   auth      {} / EAP method {}",
+        p.auth_method,
+        p.eap_method
+    );
     out!("#   version   {}", p.fctver);
     out!("#   proposals {}  DH {}", p.proposals.join(", "), p.dhgroup);
-    out!("#   group PSK {}", if p.psk.is_empty() { "(none)".into() } else { format!("recovered ({} chars)", p.psk.len()) });
+    out!(
+        "#   group PSK {}",
+        if p.psk.is_empty() {
+            "(none)".into()
+        } else {
+            format!("recovered ({} chars)", p.psk.len())
+        }
+    );
     if opts.show_psk && !p.psk.is_empty() {
         out!("#   PSK value {}", p.psk);
     }
@@ -162,7 +177,9 @@ fn parse_args(args: &[String]) -> Result<Opts, String> {
         let a = args[i].clone();
         let next = |i: &mut usize| -> Result<String, String> {
             *i += 1;
-            args.get(*i).cloned().ok_or_else(|| format!("{a} needs a value"))
+            args.get(*i)
+                .cloned()
+                .ok_or_else(|| format!("{a} needs a value"))
         };
         match args[i].as_str() {
             "-g" | "--gateway" => o.gateway = next(&mut i)?,
@@ -227,7 +244,11 @@ fn parse_args(args: &[String]) -> Result<Opts, String> {
     if o.mode == Mode::AuthProbe && o.user.is_empty() {
         o.user = "probe@example.com".to_string();
     }
-    if o.mode != Mode::Probe && o.mode != Mode::AuthProbe && o.mode != Mode::Import && o.user.is_empty() {
+    if o.mode != Mode::Probe
+        && o.mode != Mode::AuthProbe
+        && o.mode != Mode::Import
+        && o.user.is_empty()
+    {
         return Err("missing -u <user>".into());
     }
     Ok(o)
@@ -271,7 +292,9 @@ fn run(o: &Opts) -> Result<(), String> {
 
     session.learn_esp_spi(&final_payloads)?;
     let cfg = config::from_payloads(&final_payloads);
-    let assigned = cfg.assigned_ip.ok_or("gateway did not assign an internal IP")?;
+    let assigned = cfg
+        .assigned_ip
+        .ok_or("gateway did not assign an internal IP")?;
     out!(
         "# CHILD SA up — IP {assigned}  DNS {:?}  routes {}  domains {:?}",
         cfg.dns,
@@ -289,7 +312,13 @@ fn run(o: &Opts) -> Result<(), String> {
 }
 
 /// IKE_SA_INIT with COOKIE and INVALID_KE_PAYLOAD retries.
-fn sa_init_exchange(session: &mut Ikev2Session, udp: &mut IkeUdp, local: Ipv4Addr, gw: Ipv4Addr, port: u16) -> Result<(), String> {
+fn sa_init_exchange(
+    session: &mut Ikev2Session,
+    udp: &mut IkeUdp,
+    local: Ipv4Addr,
+    gw: Ipv4Addr,
+    port: u16,
+) -> Result<(), String> {
     let mut cookie: Option<Vec<u8>> = None;
     for _ in 0..4 {
         let req = session.build_sa_init(local, port, gw, port, cookie.clone());
@@ -301,7 +330,9 @@ fn sa_init_exchange(session: &mut Ikev2Session, udp: &mut IkeUdp, local: Ipv4Add
                 cookie = Some(c);
             }
             SaInitOutcome::InvalidKe(group) => {
-                return Err(format!("gateway wants DH group {group}; only MODP2048 is wired so far"));
+                return Err(format!(
+                    "gateway wants DH group {group}; only MODP2048 is wired so far"
+                ));
             }
         }
     }
@@ -332,8 +363,15 @@ fn send_recv_retry(udp: &IkeUdp, msg: &[u8], tries: u32) -> Result<Vec<u8>, Stri
 /// is touched.
 fn auth_probe(session: &mut Ikev2Session, udp: &IkeUdp, o: &Opts) -> Result<(), String> {
     let serial = emssn::EmsSerial::resolve(o.emssn.as_deref());
-    out!("# auth-probe: first IKE_AUTH as identity {:?}, no credentials, no EMS serial{}",
-        o.user, if serial.as_str().is_some() { " (serial present)" } else { "" });
+    out!(
+        "# auth-probe: first IKE_AUTH as identity {:?}, no credentials, no EMS serial{}",
+        o.user,
+        if serial.as_str().is_some() {
+            " (serial present)"
+        } else {
+            ""
+        }
+    );
 
     let idi = build_idi(o);
     let mut first: Vec<Payload> = vec![idi];
@@ -347,7 +385,12 @@ fn auth_probe(session: &mut Ikev2Session, udp: &IkeUdp, o: &Opts) -> Result<(), 
         ntype: model::NotifyType::InitialContact.into(),
         data: vec![],
     }));
-    first.extend(emssn::auth_payloads(&serial, &o.user, &udp.local_ipv4().to_string(), o.fctver.as_deref().unwrap_or("")));
+    first.extend(emssn::auth_payloads(
+        &serial,
+        &o.user,
+        &udp.local_ipv4().to_string(),
+        o.fctver.as_deref().unwrap_or(""),
+    ));
 
     let msg_id = session.next_msg_id;
     let req = session.encrypt(model::ExchangeType::IkeAuth.into(), msg_id, &first);
@@ -361,7 +404,9 @@ fn auth_probe(session: &mut Ikev2Session, udp: &IkeUdp, o: &Opts) -> Result<(), 
         out!("# auth-probe: gateway returned AUTHENTICATION_FAILED ({code}) — rejected before/at EAP start");
     } else if payloads.iter().any(|p| matches!(p, Payload::Eap(_))) {
         out!("# auth-probe: gateway accepted the framing and started EAP (see the EAP payload above)");
-    } else if let Some(Payload::Auth { method, .. }) = payloads.iter().find(|p| matches!(p, Payload::Auth { .. })) {
+    } else if let Some(Payload::Auth { method, .. }) =
+        payloads.iter().find(|p| matches!(p, Payload::Auth { .. }))
+    {
         out!("# auth-probe: gateway sent its AUTH (method {method}) without EAP — PSK/cert-only path");
     } else {
         out!("# auth-probe: gateway replied without EAP or AUTH — inspect the dump above");
@@ -369,8 +414,16 @@ fn auth_probe(session: &mut Ikev2Session, udp: &IkeUdp, o: &Opts) -> Result<(), 
     Ok(())
 }
 
-fn authenticate(session: &mut Ikev2Session, udp: &IkeUdp, o: &Opts) -> Result<Vec<Payload>, String> {
-    let password = o.password.clone().or_else(read_stdin_secret).ok_or("no password supplied")?;
+fn authenticate(
+    session: &mut Ikev2Session,
+    udp: &IkeUdp,
+    o: &Opts,
+) -> Result<Vec<Payload>, String> {
+    let password = o
+        .password
+        .clone()
+        .or_else(read_stdin_secret)
+        .ok_or("no password supplied")?;
     let serial = emssn::EmsSerial::resolve(o.emssn.as_deref());
     if let Some(sn) = serial.as_str() {
         out!("# presenting EMS serial {sn} in FORTICLIENT_CONNECT (0xF100)");
@@ -398,7 +451,12 @@ fn authenticate(session: &mut Ikev2Session, udp: &IkeUdp, o: &Opts) -> Result<Ve
         ntype: model::NotifyType::MobikeSupported.into(),
         data: vec![],
     }));
-    first.extend(emssn::auth_payloads(&serial, &o.user, &udp.local_ipv4().to_string(), o.fctver.as_deref().unwrap_or("")));
+    first.extend(emssn::auth_payloads(
+        &serial,
+        &o.user,
+        &udp.local_ipv4().to_string(),
+        o.fctver.as_deref().unwrap_or(""),
+    ));
 
     let verbose = std::env::var("UNVPN_VERBOSE").is_ok();
     let mut msg_id = session.next_msg_id; // 1
@@ -452,8 +510,13 @@ fn authenticate(session: &mut Ikev2Session, udp: &IkeUdp, o: &Opts) -> Result<Ve
 
         let msg = eap::Eap::parse(&eap_bytes)?;
         if verbose {
-            out!("# [verbose] EAP code={} id={} method={:?} data[{}]",
-                msg.code, msg.id, msg.method, msg.data.len());
+            out!(
+                "# [verbose] EAP code={} id={} method={:?} data[{}]",
+                msg.code,
+                msg.id,
+                msg.method,
+                msg.data.len()
+            );
         }
         msg_id += 1;
         match msg.code {
@@ -471,7 +534,10 @@ fn authenticate(session: &mut Ikev2Session, udp: &IkeUdp, o: &Opts) -> Result<Ve
                 if verbose {
                     out!("# [verbose] EAP-Success; sending final AUTH");
                 }
-                let auth = Payload::Auth { method: model::AUTH_PSK, data: auth_data };
+                let auth = Payload::Auth {
+                    method: model::AUTH_PSK,
+                    data: auth_data,
+                };
                 let req = session.encrypt(model::ExchangeType::IkeAuth.into(), msg_id, &[auth]);
                 session.next_msg_id = msg_id + 1;
                 let resp2 = send_recv_retry(udp, &req, 3)?;
@@ -493,7 +559,11 @@ fn authenticate(session: &mut Ikev2Session, udp: &IkeUdp, o: &Opts) -> Result<Ve
             eap::EAP_FAILURE => return Err("EAP authentication failed".into()),
             eap::EAP_REQUEST => {
                 let next_eap = eap_answer(&msg, o, &password, &mut mschap)?;
-                let req = session.encrypt(model::ExchangeType::IkeAuth.into(), msg_id, &[Payload::Eap(next_eap)]);
+                let req = session.encrypt(
+                    model::ExchangeType::IkeAuth.into(),
+                    msg_id,
+                    &[Payload::Eap(next_eap)],
+                );
                 resp = send_recv_retry(udp, &req, 3)?;
             }
             other => return Err(format!("unexpected EAP code {other}")),
@@ -510,7 +580,12 @@ struct Mschap {
 }
 
 /// Produce the EAP response bytes for a given EAP Request.
-fn eap_answer(msg: &eap::Eap, o: &Opts, password: &str, mschap: &mut Mschap) -> Result<Vec<u8>, String> {
+fn eap_answer(
+    msg: &eap::Eap,
+    o: &Opts,
+    password: &str,
+    mschap: &mut Mschap,
+) -> Result<Vec<u8>, String> {
     match msg.method {
         Some(eap::EAP_TYPE_IDENTITY) => Ok(eap::identity_response(msg.id, &o.user)),
         Some(eap::EAP_TYPE_GTC) => {
@@ -524,16 +599,29 @@ fn eap_answer(msg: &eap::Eap, o: &Opts, password: &str, mschap: &mut Mschap) -> 
                 let peer: [u8; 16] = crate::ike::crypto::random(16).try_into().unwrap();
                 let (resp, nt) = eap::mschap_response(&ch, &o.user, password, &peer);
                 mschap.msk = Some(eap::derive_msk(password, &nt));
-                mschap.server_proof = Some(eap::authenticator_response(password, &nt, &peer, &ch.challenge, &o.user));
+                mschap.server_proof = Some(eap::authenticator_response(
+                    password,
+                    &nt,
+                    &peer,
+                    &ch.challenge,
+                    &o.user,
+                ));
                 Ok(eap::Eap::response(msg.id, eap::EAP_TYPE_MSCHAPV2, &resp))
             } else if msg.data.first() == Some(&eap::MSCHAP_SUCCESS) {
-                let expected = mschap.server_proof.ok_or("MS-CHAP-v2 Success before any challenge")?;
-                let proof = eap::parse_mschap_success(&msg.data).ok_or("MS-CHAP-v2 Success without the gateway's proof")?;
+                let expected = mschap
+                    .server_proof
+                    .ok_or("MS-CHAP-v2 Success before any challenge")?;
+                let proof = eap::parse_mschap_success(&msg.data)
+                    .ok_or("MS-CHAP-v2 Success without the gateway's proof")?;
                 if !openssl::memcmp::eq(&proof, &expected) {
                     return Err("the gateway's MS-CHAP-v2 proof does not match the password — not the real gateway; aborting".into());
                 }
                 out!("# gateway proved it knows the password (MS-CHAP-v2)");
-                Ok(eap::Eap::response(msg.id, eap::EAP_TYPE_MSCHAPV2, &[eap::MSCHAP_SUCCESS]))
+                Ok(eap::Eap::response(
+                    msg.id,
+                    eap::EAP_TYPE_MSCHAPV2,
+                    &[eap::MSCHAP_SUCCESS],
+                ))
             } else {
                 Err("unexpected MS-CHAP-v2 opcode".into())
             }
@@ -541,7 +629,10 @@ fn eap_answer(msg: &eap::Eap, o: &Opts, password: &str, mschap: &mut Mschap) -> 
         Some(eap::EAP_TYPE_NAK) => Err("gateway sent an EAP Nak".into()),
         other => {
             out!("# gateway proposed unsupported EAP method {other:?} — Nak'ing to MSCHAPv2/GTC");
-            Ok(eap::nak_response(msg.id, &[eap::EAP_TYPE_MSCHAPV2, eap::EAP_TYPE_GTC]))
+            Ok(eap::nak_response(
+                msg.id,
+                &[eap::EAP_TYPE_MSCHAPV2, eap::EAP_TYPE_GTC],
+            ))
         }
     }
 }
@@ -578,7 +669,10 @@ fn read_stdin_secret() -> Option<String> {
 /// dropped before any auth.
 fn build_idi(o: &Opts) -> Payload {
     let id = o.localid.as_deref().unwrap_or(&o.user);
-    Payload::IdI { kind: o.id_type, data: id.as_bytes().to_vec() }
+    Payload::IdI {
+        kind: o.id_type,
+        data: id.as_bytes().to_vec(),
+    }
 }
 
 /// The IDi payload body (type + 3 reserved + data), as hashed into the AUTH octets.
@@ -642,12 +736,17 @@ fn verify_gateway_msk_auth(
         _ => None,
     });
     let auth = auth.ok_or("the gateway sent no final AUTH")?;
-    let idr = idr_of(payloads).or_else(|| first_idr.map(<[u8]>::to_vec)).ok_or("the gateway never sent its identity (IDr)")?;
+    let idr = idr_of(payloads)
+        .or_else(|| first_idr.map(<[u8]>::to_vec))
+        .ok_or("the gateway never sent its identity (IDr)")?;
     if session.gateway_psk_auth_matches(msk, &idr, &auth) {
         out!("# gateway final AUTH verified against the EAP key — mutual authentication complete");
         Ok(())
     } else {
-        Err("the gateway's final AUTH does not match the EAP key — possible interception; aborting".into())
+        Err(
+            "the gateway's final AUTH does not match the EAP key — possible interception; aborting"
+                .into(),
+        )
     }
 }
 
@@ -655,7 +754,11 @@ fn verify_gateway_msk_auth(
 /// (`--psk`) and a shared-key AUTH (method 2), recompute it from our transcript
 /// and compare; a mismatch aborts. Without one, EAP-MS-CHAP-v2 authenticates the
 /// gateway later.
-fn verify_gateway_auth(session: &Ikev2Session, o: &Opts, payloads: &[Payload]) -> Result<(), String> {
+fn verify_gateway_auth(
+    session: &Ikev2Session,
+    o: &Opts,
+    payloads: &[Payload],
+) -> Result<(), String> {
     let auth = payloads.iter().find_map(|p| match p {
         Payload::Auth { method, data } => Some((*method, data.clone())),
         _ => None,
@@ -677,7 +780,9 @@ fn verify_gateway_auth(session: &Ikev2Session, o: &Opts, payloads: &[Payload]) -
             let mut idr_body = vec![kind, 0, 0, 0];
             idr_body.extend_from_slice(&id);
             if session.gateway_psk_auth_matches(psk.as_bytes(), &idr_body, &data) {
-                out!("# gateway AUTH verified against the group PSK (method 2) — authentic gateway");
+                out!(
+                    "# gateway AUTH verified against the group PSK (method 2) — authentic gateway"
+                );
                 Ok(())
             } else {
                 Err("gateway AUTH did NOT match the group PSK (wrong --psk or man-in-the-middle) — aborting".into())
@@ -713,7 +818,9 @@ fn data_plane(
 
     static STOP: AtomicBool = AtomicBool::new(false);
 
-    let mut sock = udp.try_clone_socket().map_err(|e| format!("clone socket: {e}"))?;
+    let mut sock = udp
+        .try_clone_socket()
+        .map_err(|e| format!("clone socket: {e}"))?;
     // Non-blocking: the poll below waits for readiness, so the ESP→tun drain loop
     // must return immediately once the socket is empty. With a blocking read timeout
     // instead, every drain cycle ends in a ~500 ms blocking recv, inflating the RTT
@@ -774,9 +881,21 @@ fn data_plane(
             break;
         }
         let mut fds = [
-            libc::pollfd { fd: tun_fd, events: libc::POLLIN, revents: 0 },
-            libc::pollfd { fd: sock.as_raw_fd(), events: libc::POLLIN, revents: 0 },
-            libc::pollfd { fd: kick_fd, events: libc::POLLIN, revents: 0 },
+            libc::pollfd {
+                fd: tun_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: sock.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: kick_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
         ];
         let n = unsafe { libc::poll(fds.as_mut_ptr(), 3, 500) };
         if n < 0 {
@@ -832,7 +951,14 @@ fn data_plane(
                         Err(_) => derr += 1,
                     },
                     Ok(_) => {}
-                    Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => break,
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                        ) =>
+                    {
+                        break
+                    }
                     Err(_) => break,
                 }
             }
@@ -995,10 +1121,21 @@ fn ike_exchange(
         udp.send(req)?;
         let deadline = Instant::now() + Duration::from_secs(2);
         while Instant::now() < deadline {
-            let ms = deadline.saturating_duration_since(Instant::now()).as_millis().min(500) as i32;
+            let ms = deadline
+                .saturating_duration_since(Instant::now())
+                .as_millis()
+                .min(500) as i32;
             let mut fds = [
-                libc::pollfd { fd: tun_fd, events: libc::POLLIN, revents: 0 },
-                libc::pollfd { fd: sock_fd, events: libc::POLLIN, revents: 0 },
+                libc::pollfd {
+                    fd: tun_fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: sock_fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
             ];
             if unsafe { libc::poll(fds.as_mut_ptr(), 2, ms) } <= 0 {
                 continue;
@@ -1023,7 +1160,8 @@ fn ike_exchange(
                     match sock.recv(&mut buf) {
                         Ok(m) if m >= 4 && buf[..4] == [0, 0, 0, 0] => {
                             if let Ok((hdr, payloads)) = session.decrypt(&buf[4..m]) {
-                                if hdr.message_id == msg_id && hdr.flags & model::FLAG_RESPONSE != 0 {
+                                if hdr.message_id == msg_id && hdr.flags & model::FLAG_RESPONSE != 0
+                                {
                                     return Ok(payloads);
                                 }
                             }
@@ -1036,7 +1174,14 @@ fn ike_exchange(
                             }
                         }
                         Ok(_) => {}
-                        Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => break,
+                        Err(e)
+                            if matches!(
+                                e.kind(),
+                                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                            ) =>
+                        {
+                            break
+                        }
                         Err(_) => break,
                     }
                 }
@@ -1056,14 +1201,19 @@ fn rekey_child(
     esp: &crate::ike::esp::EspSa,
     session: &mut Ikev2Session,
 ) -> Result<crate::ike::esp::EspSa, String> {
-    let new_spi_i = u32::from_be_bytes(crate::ike::crypto::random(4).try_into().unwrap()).max(0x1000);
+    let new_spi_i =
+        u32::from_be_bytes(crate::ike::crypto::random(4).try_into().unwrap()).max(0x1000);
     let ni_new = crate::ike::crypto::random(32);
     // PFS with the phase-1 D-H group (FortiGate phase-2 default). Without it the
     // gateway refuses the rekey with NO_PROPOSAL_CHOSEN.
     let dh = crypto::dh_new(model::DH_MODP2048)?;
     let msg_id = session.next_msg_id;
     session.next_msg_id = msg_id + 1;
-    let payloads = session.rekey_child_payloads(new_spi_i, &ni_new, Some((model::DH_MODP2048, dh.public_key())));
+    let payloads = session.rekey_child_payloads(
+        new_spi_i,
+        &ni_new,
+        Some((model::DH_MODP2048, dh.public_key())),
+    );
     let req = session.encrypt(model::ExchangeType::CreateChildSa.into(), msg_id, &payloads);
     let resp = ike_exchange(udp, sock, tun_file, esp, session, &req, msg_id, 4)?;
     let (new_spi_r, nr, ke) = session.parse_child_response(&resp)?;
@@ -1113,20 +1263,27 @@ fn mobike_update(
 
 /// The source IPv4 the kernel currently uses to reach the gateway (`ip route get`).
 fn src_to_gateway(gw: Ipv4Addr) -> Option<Ipv4Addr> {
-    let out = std::process::Command::new("ip").args(["route", "get", &gw.to_string()]).output().ok()?;
+    let out = std::process::Command::new("ip")
+        .args(["route", "get", &gw.to_string()])
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }
     let text = String::from_utf8_lossy(&out.stdout);
     let toks: Vec<&str> = text.split_whitespace().collect();
-    toks.windows(2).find(|w| w[0] == "src").and_then(|w| w[1].parse().ok())
+    toks.windows(2)
+        .find(|w| w[0] == "src")
+        .and_then(|w| w[1].parse().ok())
 }
 
 /// Open a fresh NAT-T socket to the gateway. Binding 0.0.0.0:0 lets the kernel pick
 /// the current source address, so this re-homes the tunnel after a local-IP change.
 fn rebind_socket(gw: Ipv4Addr) -> Result<(IkeUdp, std::net::UdpSocket), String> {
     let udp = IkeUdp::connect(&gw.to_string(), true, std::time::Duration::from_secs(5))?;
-    let sock = udp.try_clone_socket().map_err(|e| format!("clone socket: {e}"))?;
+    let sock = udp
+        .try_clone_socket()
+        .map_err(|e| format!("clone socket: {e}"))?;
     sock.set_nonblocking(true).ok();
     Ok((udp, sock))
 }
@@ -1137,7 +1294,11 @@ fn handle_inbound_ike(udp: &IkeUdp, session: &Ikev2Session, raw: &[u8]) -> Optio
     let (hdr, payloads) = session.decrypt(raw).ok()?;
     let is_request = hdr.flags & model::FLAG_RESPONSE == 0;
     if is_request && hdr.exchange == u8::from(model::ExchangeType::Informational) {
-        let resp = session.encrypt_resp(u8::from(model::ExchangeType::Informational), hdr.message_id, &[]);
+        let resp = session.encrypt_resp(
+            u8::from(model::ExchangeType::Informational),
+            hdr.message_id,
+            &[],
+        );
         let _ = udp.send(&resp);
     }
     payloads
@@ -1154,7 +1315,9 @@ fn setup_routes(gw: Ipv4Addr, tun: &str, cfg: &config::TunnelConfig) -> Vec<Stri
     let mut del: Vec<String> = Vec::new();
 
     if let Some((via, dev)) = original_path(gw) {
-        let suffix = via.map(|v| format!("via {v} dev {dev}")).unwrap_or(format!("dev {dev}"));
+        let suffix = via
+            .map(|v| format!("via {v} dev {dev}"))
+            .unwrap_or(format!("dev {dev}"));
         add.push(format!("route add {gw}/32 {suffix}"));
         del.push(format!("route del {gw}/32 {suffix}"));
     }
@@ -1173,18 +1336,36 @@ fn setup_routes(gw: Ipv4Addr, tun: &str, cfg: &config::TunnelConfig) -> Vec<Stri
         out!("# split tunnel: {} route(s) via {tun}", cfg.routes.len());
     }
     let failed = tun::ip_batch_failed(&add).unwrap_or_default();
-    del.into_iter().enumerate().filter(|(i, _)| !failed.contains(i)).map(|(_, d)| d).collect()
+    del.into_iter()
+        .enumerate()
+        .filter(|(i, _)| !failed.contains(i))
+        .map(|(_, d)| d)
+        .collect()
 }
 
 fn original_path(dst: Ipv4Addr) -> Option<(Option<String>, String)> {
-    let out = std::process::Command::new("ip").args(["route", "get", &dst.to_string()]).output().ok()?;
+    let out = std::process::Command::new("ip")
+        .args(["route", "get", &dst.to_string()])
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }
     let text = String::from_utf8_lossy(&out.stdout);
-    let toks: Vec<&str> = text.lines().next().unwrap_or("").split_whitespace().collect();
-    let via = toks.windows(2).find(|w| w[0] == "via").map(|w| w[1].to_string());
-    let dev = toks.windows(2).find(|w| w[0] == "dev").map(|w| w[1].to_string())?;
+    let toks: Vec<&str> = text
+        .lines()
+        .next()
+        .unwrap_or("")
+        .split_whitespace()
+        .collect();
+    let via = toks
+        .windows(2)
+        .find(|w| w[0] == "via")
+        .map(|w| w[1].to_string());
+    let dev = toks
+        .windows(2)
+        .find(|w| w[0] == "dev")
+        .map(|w| w[1].to_string())?;
     Some((via, dev))
 }
 

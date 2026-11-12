@@ -29,7 +29,12 @@ pub fn dn_string(name: &X509NameRef) -> String {
 
 /// Serialize key + certificate (+ CA) in the widely readable layout: 3DES-
 /// shrouded key, plain certificate bags, SHA-1 MAC.
-pub fn build(password: &str, key: &PKey<Private>, cert: &X509, ca: Option<&X509>) -> Result<Vec<u8>, String> {
+pub fn build(
+    password: &str,
+    key: &PKey<Private>,
+    cert: &X509,
+    ca: Option<&X509>,
+) -> Result<Vec<u8>, String> {
     let mut b = Pkcs12::builder();
     b.name(&dn_string(cert.subject_name()))
         .pkey(key)
@@ -42,27 +47,44 @@ pub fn build(password: &str, key: &PKey<Private>, cert: &X509, ca: Option<&X509>
         st.push(ca.clone()).map_err(|e| e.to_string())?;
         b.ca(st);
     }
-    let p = b.build2(password).map_err(|e| format!("building PKCS#12: {e}"))?;
+    let p = b
+        .build2(password)
+        .map_err(|e| format!("building PKCS#12: {e}"))?;
     p.to_der().map_err(|e| e.to_string())
 }
 
 pub fn parse(der: &[u8], password: &str) -> Result<Identity, String> {
     let p = Pkcs12::from_der(der).map_err(|e| format!("not a PKCS#12 file: {e}"))?;
-    let parsed = p.parse2(password).map_err(|_| "cannot open the certificate file (wrong password?)".to_string())?;
-    let key = parsed.pkey.ok_or("the certificate file has no private key")?;
-    let mut chain: Vec<X509> = parsed.ca.map(|s| s.into_iter().collect()).unwrap_or_default();
+    let parsed = p
+        .parse2(password)
+        .map_err(|_| "cannot open the certificate file (wrong password?)".to_string())?;
+    let key = parsed
+        .pkey
+        .ok_or("the certificate file has no private key")?;
+    let mut chain: Vec<X509> = parsed
+        .ca
+        .map(|s| s.into_iter().collect())
+        .unwrap_or_default();
     let cert = match parsed.cert {
         Some(c) => c,
         None => {
             let our = key.public_key_to_der().map_err(|e| e.to_string())?;
             let i = chain
                 .iter()
-                .position(|c| c.public_key().and_then(|k| k.public_key_to_der()).map(|k| k == our).unwrap_or(false))
+                .position(|c| {
+                    c.public_key()
+                        .and_then(|k| k.public_key_to_der())
+                        .map(|k| k == our)
+                        .unwrap_or(false)
+                })
                 .ok_or("the certificate file has no certificate for its key")?;
             chain.remove(i)
         }
     };
-    let ours = cert.public_key().and_then(|k| k.public_key_to_der()).map_err(|e| e.to_string())?;
+    let ours = cert
+        .public_key()
+        .and_then(|k| k.public_key_to_der())
+        .map_err(|e| e.to_string())?;
     if ours != key.public_key_to_der().map_err(|e| e.to_string())? {
         return Err("the certificate in the file does not match its private key".into());
     }

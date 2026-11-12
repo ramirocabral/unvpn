@@ -20,12 +20,14 @@ impl Link {
         let link = match remote.proto {
             Proto::Udp => {
                 let s = UdpSocket::bind("0.0.0.0:0").map_err(|e| format!("udp bind: {e}"))?;
-                s.connect(addr).map_err(|e| format!("udp connect {addr}: {e}"))?;
+                s.connect(addr)
+                    .map_err(|e| format!("udp connect {addr}: {e}"))?;
                 s.set_nonblocking(true).ok();
                 Link::Udp(s)
             }
             Proto::Tcp => {
-                let s = TcpStream::connect_timeout(&addr, timeout).map_err(|e| format!("tcp connect {addr}: {e}"))?;
+                let s = TcpStream::connect_timeout(&addr, timeout)
+                    .map_err(|e| format!("tcp connect {addr}: {e}"))?;
                 s.set_nodelay(true).ok();
                 s.set_nonblocking(true).ok();
                 Link::Tcp { s, rx: Vec::new() }

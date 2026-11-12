@@ -8,8 +8,8 @@
 
 use std::net::Ipv4Addr;
 
-use super::wire::{Payload, TrafficSelector};
 use super::model::{CfgAttr, CfgType, TS_IPV4_ADDR_RANGE};
+use super::wire::{Payload, TrafficSelector};
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct TunnelConfig {
@@ -40,7 +40,9 @@ pub fn from_payloads(payloads: &[Payload]) -> TunnelConfig {
             Payload::Cp { cfg_type, attrs } if *cfg_type == u8::from(CfgType::Reply) => {
                 for (t, val) in attrs {
                     match CfgAttr::from(*t) {
-                        CfgAttr::InternalIp4Address => cfg.assigned_ip = v4(val).or(cfg.assigned_ip),
+                        CfgAttr::InternalIp4Address => {
+                            cfg.assigned_ip = v4(val).or(cfg.assigned_ip)
+                        }
                         CfgAttr::InternalIp4Netmask => cfg.netmask = v4(val),
                         CfgAttr::InternalIp4Dns => {
                             if let Some(a) = v4(val) {
@@ -135,9 +137,9 @@ fn range_to_prefix(start: u32, end: u32) -> Option<(u32, u8)> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::model::{CfgType, TS_IPV4_ADDR_RANGE};
     use super::super::wire::TrafficSelector;
+    use super::*;
 
     #[test]
     fn parse_cp_reply_ip_dns_subnets_domain() {
@@ -148,18 +150,33 @@ mod tests {
                 (CfgAttr::InternalIp4Netmask.into(), vec![255, 255, 255, 255]),
                 (CfgAttr::InternalIp4Dns.into(), vec![10, 0, 0, 53]),
                 (CfgAttr::InternalIp4Dns.into(), vec![10, 0, 0, 54]),
-                (CfgAttr::InternalIp4Subnet.into(), vec![10, 0, 0, 0, 255, 0, 0, 0]),
-                (CfgAttr::InternalIp4Subnet.into(), vec![172, 16, 0, 0, 255, 240, 0, 0]),
-                (CfgAttr::InternalDnsDomain.into(), b"corp.example.com".to_vec()),
+                (
+                    CfgAttr::InternalIp4Subnet.into(),
+                    vec![10, 0, 0, 0, 255, 0, 0, 0],
+                ),
+                (
+                    CfgAttr::InternalIp4Subnet.into(),
+                    vec![172, 16, 0, 0, 255, 240, 0, 0],
+                ),
+                (
+                    CfgAttr::InternalDnsDomain.into(),
+                    b"corp.example.com".to_vec(),
+                ),
             ],
         };
         let cfg = from_payloads(&[cp]);
         assert_eq!(cfg.assigned_ip, Some(Ipv4Addr::new(10, 212, 134, 9)));
-        assert_eq!(cfg.dns, vec![Ipv4Addr::new(10, 0, 0, 53), Ipv4Addr::new(10, 0, 0, 54)]);
-        assert_eq!(cfg.routes, vec![
-            (Ipv4Addr::new(10, 0, 0, 0), 8),
-            (Ipv4Addr::new(172, 16, 0, 0), 12),
-        ]);
+        assert_eq!(
+            cfg.dns,
+            vec![Ipv4Addr::new(10, 0, 0, 53), Ipv4Addr::new(10, 0, 0, 54)]
+        );
+        assert_eq!(
+            cfg.routes,
+            vec![
+                (Ipv4Addr::new(10, 0, 0, 0), 8),
+                (Ipv4Addr::new(172, 16, 0, 0), 12),
+            ]
+        );
         assert_eq!(cfg.domains, "corp.example.com");
     }
 
@@ -190,8 +207,14 @@ mod tests {
 
     #[test]
     fn range_to_prefix_cases() {
-        assert_eq!(range_to_prefix(0x0a000000, 0x0a0000ff), Some((0x0a000000, 24)));
-        assert_eq!(range_to_prefix(0x0a000000, 0x0affffff), Some((0x0a000000, 8)));
+        assert_eq!(
+            range_to_prefix(0x0a000000, 0x0a0000ff),
+            Some((0x0a000000, 24))
+        );
+        assert_eq!(
+            range_to_prefix(0x0a000000, 0x0affffff),
+            Some((0x0a000000, 8))
+        );
         assert_eq!(range_to_prefix(0, u32::MAX), Some((0, 0)));
         // Non-aligned start.
         assert_eq!(range_to_prefix(0x0a000001, 0x0a0000ff), None);

@@ -61,7 +61,10 @@ impl EspParams {
             "sha256" => (MessageDigest::sha256(), 16),
             h => return Err(format!("unsupported ESP MAC {h}")),
         };
-        if self.ekey_s2c.len() != self.ekey_c2s.len() || self.akey_c2s.is_empty() || self.akey_s2c.is_empty() {
+        if self.ekey_s2c.len() != self.ekey_c2s.len()
+            || self.akey_c2s.is_empty()
+            || self.akey_s2c.is_empty()
+        {
             return Err("incomplete ESP keys".into());
         }
         Ok(crate::ike::esp::EspSa::from_keys(
@@ -114,7 +117,10 @@ mod tests {
 
     #[test]
     fn rejects_incomplete_keys() {
-        let bad = EspParams { akey_c2s: Vec::new(), ..sample() };
+        let bad = EspParams {
+            akey_c2s: Vec::new(),
+            ..sample()
+        };
         assert!(bad.sa().is_err());
     }
 }

@@ -91,7 +91,13 @@ pub fn collect(profs: &[Profile]) -> (Bundle, Vec<String>) {
             Err(e) => warnings.push(format!("{}: {e}", p.name)),
         }
     }
-    (Bundle { version: 1, entries }, warnings)
+    (
+        Bundle {
+            version: 1,
+            entries,
+        },
+        warnings,
+    )
 }
 
 fn collect_one(p: &Profile, secret: impl Fn(&str) -> Option<String>) -> Result<Entry, String> {
@@ -106,22 +112,49 @@ fn collect_one(p: &Profile, secret: impl Fn(&str) -> Option<String>) -> Result<E
             (text, Vec::new())
         };
         let main_name = file_name(path, "profile.conf");
-        files.push(EmbeddedFile { name: main_name.clone(), data: B64.encode(main) });
-        files.extend(refs.into_iter().map(|(name, data)| EmbeddedFile { name, data: B64.encode(data) }));
+        files.push(EmbeddedFile {
+            name: main_name.clone(),
+            data: B64.encode(main),
+        });
+        files.extend(refs.into_iter().map(|(name, data)| EmbeddedFile {
+            name,
+            data: B64.encode(data),
+        }));
         profile.gateway = main_name;
     } else if p.uses_cp_cert() && !p.cert_path.is_empty() {
         let path = Path::new(&p.cert_path);
         let data = std::fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
         let name = file_name(path, "certificate.p12");
-        files.push(EmbeddedFile { name: name.clone(), data: B64.encode(data) });
+        files.push(EmbeddedFile {
+            name: name.clone(),
+            data: B64.encode(data),
+        });
         profile.cert_path = name;
     }
-    let password = if p.remember_password { secret(&p.name) } else { None };
-    let key_pass = if p.remember_key_pass { secret(&profiles::keypass_account(&p.name)) } else { None };
-    let psk = if p.backend == Backend::FortiIpsec { secret(&profiles::psk_account(&p.name)) } else { None };
+    let password = if p.remember_password {
+        secret(&p.name)
+    } else {
+        None
+    };
+    let key_pass = if p.remember_key_pass {
+        secret(&profiles::keypass_account(&p.name))
+    } else {
+        None
+    };
+    let psk = if p.backend == Backend::FortiIpsec {
+        secret(&profiles::psk_account(&p.name))
+    } else {
+        None
+    };
     profile.remember_password = password.is_some();
     profile.remember_key_pass = key_pass.is_some();
-    Ok(Entry { profile, password, key_pass, psk, files })
+    Ok(Entry {
+        profile,
+        password,
+        key_pass,
+        psk,
+        files,
+    })
 }
 
 pub fn seal(bundle: &Bundle, passphrase: &str) -> Result<Vec<u8>, String> {
@@ -142,7 +175,13 @@ pub fn seal(bundle: &Bundle, passphrase: &str) -> Result<Vec<u8>, String> {
     let key = derive_key(passphrase, &salt, M_COST_KIB, T_COST, P_COST)?;
     let cipher = XChaCha20Poly1305::new((&key).into());
     let ct = cipher
-        .encrypt(XNonce::from_slice(&nonce), Payload { msg: plain.as_bytes(), aad: &out })
+        .encrypt(
+            XNonce::from_slice(&nonce),
+            Payload {
+                msg: plain.as_bytes(),
+                aad: &out,
+            },
+        )
         .map_err(|_| "encryption failed".to_string())?;
     out.extend_from_slice(&ct);
     Ok(out)
@@ -159,14 +198,22 @@ pub fn open(data: &[u8], passphrase: &str) -> Result<Bundle, OpenError> {
     let u32_at = |i: usize| u32::from_le_bytes(header[i..i + 4].try_into().unwrap());
     let (m, t, p) = (u32_at(8), u32_at(12), u32_at(16));
     if m > MAX_M_COST_KIB || t > MAX_T_COST || p == 0 || p > 16 {
-        return Err(OpenError::Corrupt("unsupported key-derivation parameters".into()));
+        return Err(OpenError::Corrupt(
+            "unsupported key-derivation parameters".into(),
+        ));
     }
     let salt = &header[20..20 + SALT_LEN];
     let nonce = &header[20 + SALT_LEN..];
     let key = derive_key(passphrase, salt, m, t, p).map_err(OpenError::Corrupt)?;
     let cipher = XChaCha20Poly1305::new((&key).into());
     let plain = cipher
-        .decrypt(XNonce::from_slice(nonce), Payload { msg: ct, aad: header })
+        .decrypt(
+            XNonce::from_slice(nonce),
+            Payload {
+                msg: ct,
+                aad: header,
+            },
+        )
         .map_err(|_| OpenError::WrongPassphrase)?;
     let text = String::from_utf8(plain).map_err(|e| OpenError::Corrupt(e.to_string()))?;
     toml::from_str(&text).map_err(|e| OpenError::Corrupt(e.to_string()))
@@ -233,7 +280,8 @@ pub fn install_secrets(entry: &Entry, p: &mut Profile) -> bool {
 
 /// The main file (rewritten) and the files it references, as (name, contents).
 fn ovpn_files(path: &Path) -> Result<(Vec<u8>, Vec<(String, Vec<u8>)>), String> {
-    let text = std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
     let dir = path.parent().unwrap_or(Path::new("."));
     let main_name = file_name(path, "profile.conf");
     let mut refs: Vec<(String, Vec<u8>)> = Vec::new();
@@ -311,8 +359,20 @@ fn resolve(dir: &Path, f: &str) -> PathBuf {
 
 /// A file's name, made safe to use as a sibling file (no spaces, no leading dot).
 fn file_name(path: &Path, fallback: &str) -> String {
-    let raw = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let s: String = raw.chars().map(|c| if c.is_alphanumeric() || "-_.".contains(c) { c } else { '_' }).collect();
+    let raw = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let s: String = raw
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || "-_.".contains(c) {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
     let s = s.trim_start_matches('.').to_string();
     if s.is_empty() {
         fallback.to_string()
@@ -324,7 +384,13 @@ fn file_name(path: &Path, fallback: &str) -> String {
 pub fn slug(name: &str) -> String {
     let s: String = name
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     if s.is_empty() {
         "profile".to_string()
@@ -344,7 +410,11 @@ pub fn fresh_dir(root: &Path, base: &str) -> PathBuf {
 }
 
 fn quote(w: &str) -> String {
-    if !w.is_empty() && !w.chars().any(|c| c.is_whitespace() || "\"'\\#;".contains(c)) {
+    if !w.is_empty()
+        && !w
+            .chars()
+            .any(|c| c.is_whitespace() || "\"'\\#;".contains(c))
+    {
         return w.to_string();
     }
     format!("\"{}\"", w.replace('\\', "\\\\").replace('"', "\\\""))
@@ -353,7 +423,12 @@ fn quote(w: &str) -> String {
 pub fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
-    let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path)?;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
     f.write_all(data)
 }
 
@@ -414,7 +489,11 @@ mod tests {
     use super::*;
 
     fn profile(name: &str, backend: Backend, gateway: &str) -> Profile {
-        toml::from_str(&format!("name = {name:?}\nbackend = {:?}\ngateway = {gateway:?}\n", backend_str(backend))).unwrap()
+        toml::from_str(&format!(
+            "name = {name:?}\nbackend = {:?}\ngateway = {gateway:?}\n",
+            backend_str(backend)
+        ))
+        .unwrap()
     }
 
     fn backend_str(b: Backend) -> &'static str {
@@ -432,7 +511,14 @@ mod tests {
         let mut p = profile("work", Backend::FortiIpsec, "vpn.example.com");
         p.remember_password = true;
         let e = collect_one(&p, |acct| Some(format!("secret-{acct}"))).unwrap();
-        let sealed = seal(&Bundle { version: 1, entries: vec![e] }, "correct horse").unwrap();
+        let sealed = seal(
+            &Bundle {
+                version: 1,
+                entries: vec![e],
+            },
+            "correct horse",
+        )
+        .unwrap();
         assert!(is_bundle(&sealed));
         let b = open(&sealed, "correct horse").ok().unwrap();
         let e = &b.entries[0];
@@ -440,11 +526,17 @@ mod tests {
         assert_eq!(e.password.as_deref(), Some("secret-work"));
         assert_eq!(e.psk.as_deref(), Some("secret-work#psk"));
         assert!(e.key_pass.is_none());
-        assert!(matches!(open(&sealed, "wrong horse"), Err(OpenError::WrongPassphrase)));
+        assert!(matches!(
+            open(&sealed, "wrong horse"),
+            Err(OpenError::WrongPassphrase)
+        ));
         let mut tampered = sealed.clone();
         tampered[9] ^= 1;
         assert!(open(&tampered, "correct horse").is_err());
-        assert!(matches!(open(b"[profile]", "x"), Err(OpenError::NotABundle)));
+        assert!(matches!(
+            open(b"[profile]", "x"),
+            Err(OpenError::NotABundle)
+        ));
     }
 
     #[test]
@@ -467,7 +559,11 @@ mod tests {
         )
         .unwrap();
 
-        let e = collect_one(&profile("office", Backend::OpenVpn, ovpn.to_str().unwrap()), |_| None).unwrap();
+        let e = collect_one(
+            &profile("office", Backend::OpenVpn, ovpn.to_str().unwrap()),
+            |_| None,
+        )
+        .unwrap();
         assert_eq!(e.profile.gateway, "office_vpn.ovpn");
         let names: Vec<_> = e.files.iter().map(|f| f.name.as_str()).collect();
         assert_eq!(names, ["office_vpn.ovpn", "ca.crt", "client.key", "ta.key"]);
@@ -483,7 +579,10 @@ mod tests {
         let p2 = install_files(&e, "office", dst.path()).unwrap();
         assert_ne!(p.gateway, p2.gateway);
         let dir = Path::new(&p.gateway).parent().unwrap();
-        assert_eq!(std::fs::read_to_string(dir.join("client.key")).unwrap(), "KEY");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("client.key")).unwrap(),
+            "KEY"
+        );
         assert_eq!(std::fs::read_to_string(dir.join("ca.crt")).unwrap(), "CA");
         assert_eq!(std::fs::read_to_string(&p.gateway).unwrap(), main);
     }
@@ -539,8 +638,14 @@ mod tests {
             key_pass: None,
             psk: None,
             files: vec![
-                EmbeddedFile { name: "wg.conf".into(), data: B64.encode("x") },
-                EmbeddedFile { name: "../evil".into(), data: B64.encode("x") },
+                EmbeddedFile {
+                    name: "wg.conf".into(),
+                    data: B64.encode("x"),
+                },
+                EmbeddedFile {
+                    name: "../evil".into(),
+                    data: B64.encode("x"),
+                },
             ],
         };
         let dst = tempfile::tempdir().unwrap();

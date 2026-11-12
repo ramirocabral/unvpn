@@ -57,7 +57,10 @@ pub fn parse_profile(xml: &str) -> Option<String> {
             .find(|(n, v)| n == "params" && v.contains("resourcename"))
             .map(|(_, v)| v);
     }
-    leaf_texts(xml).into_iter().find(|(n, _)| n == "params").map(|(_, v)| v)
+    leaf_texts(xml)
+        .into_iter()
+        .find(|(n, _)| n == "params")
+        .map(|(_, v)| v)
 }
 
 /// Unknown elements are ignored and missing fields defaulted; the caller
@@ -83,7 +86,10 @@ pub fn parse_options(xml: &str) -> F5Options {
             "SplitTunneling0" => o.default_route = bool_or_int(text) == 0,
             _ => {
                 // Case-insensitive; the gateway sends it lowercase with a `0` index.
-                if name.to_ascii_lowercase().starts_with("autoreconnectifdropped") {
+                if name
+                    .to_ascii_lowercase()
+                    .starts_with("autoreconnectifdropped")
+                {
                     o.autoreconnect = bool_or_int(text) != 0;
                     continue;
                 }
@@ -95,7 +101,9 @@ pub fn parse_options(xml: &str) -> F5Options {
                     push_domain(&mut o.domains, text);
                 } else if is_numbered(&name, "LAN") || is_numbered(&name, "LAN6_") {
                     push_routes(&mut o.routes, text);
-                } else if is_numbered(&name, "ExcludeSubnets") || is_numbered(&name, "ExcludeSubnets6_") {
+                } else if is_numbered(&name, "ExcludeSubnets")
+                    || is_numbered(&name, "ExcludeSubnets6_")
+                {
                     push_routes(&mut o.exclude, text);
                 }
             }
@@ -122,7 +130,10 @@ fn is_numbered(name: &str, prefix: &str) -> bool {
 /// F5 sends DNS both as separate `DNS<n>` tags and, sometimes, multiple space- or
 /// comma-separated values in one.
 fn push_ips(dst: &mut Vec<Ipv4Addr>, text: &str) {
-    for w in text.split(|c: char| c.is_whitespace() || c == ',').filter(|s| !s.is_empty()) {
+    for w in text
+        .split(|c: char| c.is_whitespace() || c == ',')
+        .filter(|s| !s.is_empty())
+    {
         if let Ok(ip) = w.parse::<Ipv4Addr>() {
             if !dst.contains(&ip) {
                 dst.push(ip);
@@ -134,11 +145,16 @@ fn push_ips(dst: &mut Vec<Ipv4Addr>, text: &str) {
 /// `net/mask` words, space- or comma-separated. The real F5 wire form uses a dotted
 /// mask (`10.0.0.0/255.0.0.0`); a prefix length is accepted too.
 fn push_routes(dst: &mut Vec<Route>, text: &str) {
-    for word in text.split(|c: char| c.is_whitespace() || c == ',').filter(|s| !s.is_empty()) {
+    for word in text
+        .split(|c: char| c.is_whitespace() || c == ',')
+        .filter(|s| !s.is_empty())
+    {
         let Some((net_s, mask_s)) = word.split_once('/') else {
             continue;
         };
-        let Ok(net) = net_s.parse::<Ipv4Addr>() else { continue };
+        let Ok(net) = net_s.parse::<Ipv4Addr>() else {
+            continue;
+        };
         if let Some(mask) = parse_mask(mask_s) {
             dst.push(Route { net, mask });
         }
@@ -153,7 +169,11 @@ fn parse_mask(s: &str) -> Option<Ipv4Addr> {
     if prefix > 32 {
         return None;
     }
-    let bits: u32 = if prefix == 0 { 0 } else { u32::MAX << (32 - prefix) };
+    let bits: u32 = if prefix == 0 {
+        0
+    } else {
+        u32::MAX << (32 - prefix)
+    };
     Some(Ipv4Addr::from(bits))
 }
 
@@ -182,21 +202,33 @@ fn leaf_texts(xml: &str) -> Vec<(String, String)> {
         }
         if xml[i..].starts_with("<!--") {
             match xml[i..].find("-->") {
-                Some(e) => { i += e + 3; continue; }
+                Some(e) => {
+                    i += e + 3;
+                    continue;
+                }
                 None => break,
             }
         }
         if xml[i..].starts_with("<?") || xml[i..].starts_with("</") || xml[i..].starts_with("<!") {
             match xml[i..].find('>') {
-                Some(e) => { i += e + 1; continue; }
+                Some(e) => {
+                    i += e + 1;
+                    continue;
+                }
                 None => break,
             }
         }
-        let Some(close_rel) = xml[i..].find('>') else { break };
+        let Some(close_rel) = xml[i..].find('>') else {
+            break;
+        };
         let tag_inner = &xml[i + 1..i + close_rel];
         let self_closing = tag_inner.ends_with('/');
         let name = tag_inner.trim_end_matches('/').trim_start();
-        let name = name.split(|c: char| c.is_whitespace()).next().unwrap_or("").to_string();
+        let name = name
+            .split(|c: char| c.is_whitespace())
+            .next()
+            .unwrap_or("")
+            .to_string();
         let content_start = i + close_rel + 1;
         i = content_start;
         if self_closing || name.is_empty() {
@@ -204,13 +236,18 @@ fn leaf_texts(xml: &str) -> Vec<(String, String)> {
         }
         // Content runs until the next '<'. If that '<' opens the matching close
         // tag, this is a leaf and the text in between is its value.
-        let Some(next_lt_rel) = xml[content_start..].find('<') else { break };
+        let Some(next_lt_rel) = xml[content_start..].find('<') else {
+            break;
+        };
         let next_lt = content_start + next_lt_rel;
-        if xml[next_lt..].to_ascii_lowercase().starts_with(&format!("</{}", name.to_ascii_lowercase())) {
+        if xml[next_lt..]
+            .to_ascii_lowercase()
+            .starts_with(&format!("</{}", name.to_ascii_lowercase()))
+        {
             let text = xml[content_start..next_lt].trim().to_string();
             out.push((name, text));
         }
-    // Otherwise a container: i stays at content_start to descend into children.
+        // Otherwise a container: i stays at content_start to descend into children.
     }
     out
 }
@@ -270,7 +307,10 @@ mod tests {
         assert!(!o.default_route);
         assert_eq!(
             o.dns,
-            vec!["10.10.0.53".parse::<Ipv4Addr>().unwrap(), "10.10.0.54".parse::<Ipv4Addr>().unwrap()]
+            vec![
+                "10.10.0.53".parse::<Ipv4Addr>().unwrap(),
+                "10.10.0.54".parse::<Ipv4Addr>().unwrap()
+            ]
         );
         assert!(o.domains.contains("corp.example.com"));
         assert_eq!(o.routes.len(), 2);
@@ -280,7 +320,10 @@ mod tests {
 
     #[test]
     fn mask_forms() {
-        assert_eq!(parse_mask("255.255.255.0"), Some("255.255.255.0".parse().unwrap()));
+        assert_eq!(
+            parse_mask("255.255.255.0"),
+            Some("255.255.255.0".parse().unwrap())
+        );
         assert_eq!(parse_mask("24"), Some("255.255.255.0".parse().unwrap()));
         assert_eq!(parse_mask("0"), Some("0.0.0.0".parse().unwrap()));
         assert_eq!(parse_mask("33"), None);
@@ -323,8 +366,14 @@ mod tests {
         assert_eq!(o.routes.len(), 4);
         assert_eq!(o.routes[0].net, "10.0.0.0".parse::<Ipv4Addr>().unwrap());
         assert_eq!(o.routes[0].mask, "255.0.0.0".parse::<Ipv4Addr>().unwrap());
-        assert_eq!(o.routes[1].mask, "255.255.248.0".parse::<Ipv4Addr>().unwrap());
-        assert_eq!(o.routes[3].mask, "255.255.255.255".parse::<Ipv4Addr>().unwrap());
+        assert_eq!(
+            o.routes[1].mask,
+            "255.255.248.0".parse::<Ipv4Addr>().unwrap()
+        );
+        assert_eq!(
+            o.routes[3].mask,
+            "255.255.255.255".parse::<Ipv4Addr>().unwrap()
+        );
         assert_eq!(o.exclude.len(), 0);
     }
 

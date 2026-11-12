@@ -120,7 +120,9 @@ impl TunnelConfig {
     }
 
     pub fn prefix(&self) -> u8 {
-        self.netmask.map(|m| u32::from(m).count_ones() as u8).unwrap_or(32)
+        self.netmask
+            .map(|m| u32::from(m).count_ones() as u8)
+            .unwrap_or(32)
     }
 }
 
@@ -152,10 +154,11 @@ fn push_route(v: &mut Vec<Route>, s: &str) {
     }
     let (addr, pfx) = match s.split_once('/') {
         Some((a, p)) => {
-            let prefix = p
-                .parse::<u8>()
-                .ok()
-                .or_else(|| p.parse::<Ipv4Addr>().ok().map(|m| u32::from(m).count_ones() as u8));
+            let prefix = p.parse::<u8>().ok().or_else(|| {
+                p.parse::<Ipv4Addr>()
+                    .ok()
+                    .map(|m| u32::from(m).count_ones() as u8)
+            });
             (a, prefix)
         }
         None => (s, Some(32)),
@@ -222,7 +225,10 @@ mod tests {
     use super::*;
 
     fn h(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     #[test]
@@ -242,7 +248,8 @@ mod tests {
         assert_eq!(c.address, Some("10.20.30.40".parse().unwrap()));
         assert_eq!(c.prefix(), 24);
         assert_eq!(c.mtu, 1390);
-        let want_dns: Vec<Ipv4Addr> = vec!["10.0.0.53".parse().unwrap(), "10.0.0.54".parse().unwrap()];
+        let want_dns: Vec<Ipv4Addr> =
+            vec!["10.0.0.53".parse().unwrap(), "10.0.0.54".parse().unwrap()];
         assert_eq!(c.dns, want_dns);
         assert_eq!(c.domains, vec!["corp.example.com".to_string()]);
         assert!(c.default_route);
@@ -260,13 +267,25 @@ mod tests {
             ("X-CSTP-Split-Include", "2001:db8::/32"),
             ("X-DTLS-Port", "443"),
             ("X-DTLS-CipherSuite", "DHE-RSA-AES256-SHA"),
-            ("X-DTLS-Session-ID", "00112233445566778899aabbccddeeff00112233445566778899AABBCCDDEEFF"),
+            (
+                "X-DTLS-Session-ID",
+                "00112233445566778899aabbccddeeff00112233445566778899AABBCCDDEEFF",
+            ),
         ]));
         assert!(!c.default_route);
-        assert_eq!(c.split_include, vec![
-            Route { net: "10.0.0.0".parse().unwrap(), prefix: 8 },
-            Route { net: "172.16.0.0".parse().unwrap(), prefix: 12 },
-        ]);
+        assert_eq!(
+            c.split_include,
+            vec![
+                Route {
+                    net: "10.0.0.0".parse().unwrap(),
+                    prefix: 8
+                },
+                Route {
+                    net: "172.16.0.0".parse().unwrap(),
+                    prefix: 12
+                },
+            ]
+        );
         assert_eq!(c.split_exclude[0].to_cidr(), "172.16.9.0/24");
         assert_eq!(c.dtls_port, 443);
         assert_eq!(c.dtls_cipher.as_deref(), Some("DHE-RSA-AES256-SHA"));
@@ -292,6 +311,12 @@ mod tests {
     #[test]
     fn host_route_and_case_insensitive_headers() {
         let c = TunnelConfig::from_headers(&h(&[("x-cstp-split-include", "10.1.2.3")]));
-        assert_eq!(c.split_include, vec![Route { net: "10.1.2.3".parse().unwrap(), prefix: 32 }]);
+        assert_eq!(
+            c.split_include,
+            vec![Route {
+                net: "10.1.2.3".parse().unwrap(),
+                prefix: 32
+            }]
+        );
     }
 }

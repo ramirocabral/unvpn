@@ -69,7 +69,10 @@ impl EspParams {
             "sha256" => (MessageDigest::sha256(), 16),
             h => return Err(format!("unsupported ESP MAC {h}")),
         };
-        if self.ekey_s2c.len() != self.ekey_c2s.len() || self.akey_c2s.is_empty() || self.akey_s2c.is_empty() {
+        if self.ekey_s2c.len() != self.ekey_c2s.len()
+            || self.akey_c2s.is_empty()
+            || self.akey_s2c.is_empty()
+        {
             return Err("incomplete ESP keys".into());
         }
         Ok(crate::ike::esp::EspSa::from_keys(
@@ -97,7 +100,12 @@ pub fn fetch(s: &mut Session, preferred: Option<Ipv4Addr>) -> Result<GpConfig, S
     f.add("client-type", "1")
         .add("protocol-version", "p1")
         .add("internal", "no")
-        .add("app-version", s.app_version.as_deref().unwrap_or(super::DEFAULT_APP_VERSION))
+        .add(
+            "app-version",
+            s.app_version
+                .as_deref()
+                .unwrap_or(super::DEFAULT_APP_VERSION),
+        )
         .add("ipv6-support", "no")
         .add("clientos", &s.clientos)
         .add("os-version", &s.os_version)
@@ -118,7 +126,9 @@ pub fn fetch(s: &mut Session, preferred: Option<Ipv4Addr>) -> Result<GpConfig, S
     }
     let body = resp.body_str();
     if body.trim() == "errors getting SSL/VPN config" {
-        return Err("getconfig: the gateway rejected the session (errors getting SSL/VPN config)".into());
+        return Err(
+            "getconfig: the gateway rejected the session (errors getting SSL/VPN config)".into(),
+        );
     }
     match classify(&body).map_err(|e| format!("getconfig: {e}"))? {
         Reply::Xml(root) => parse(&root),
@@ -130,9 +140,15 @@ pub fn parse(root: &Element) -> Result<GpConfig, String> {
     if root.name != "response" {
         return Err(format!("unexpected getconfig reply <{}>", root.name));
     }
-    let mut c = GpConfig { tunnel_path: "/ssl-tunnel-connect.sslvpn".into(), ..Default::default() };
+    let mut c = GpConfig {
+        tunnel_path: "/ssl-tunnel-connect.sslvpn".into(),
+        ..Default::default()
+    };
     let members = |e: &Element| -> Vec<String> {
-        e.children_named("member").map(|m| m.text.trim().to_string()).filter(|s| !s.is_empty()).collect()
+        e.children_named("member")
+            .map(|m| m.text.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
     };
     for e in &root.children {
         let v = e.text.trim();
@@ -155,8 +171,12 @@ pub fn parse(root: &Element) -> Result<GpConfig, String> {
                 }
             }
             "dns-suffix" => c.domains.extend(members(e)),
-            "access-routes" => c.include.extend(members(e).iter().filter_map(|m| parse_route(m))),
-            "exclude-access-routes" => c.exclude.extend(members(e).iter().filter_map(|m| parse_route(m))),
+            "access-routes" => c
+                .include
+                .extend(members(e).iter().filter_map(|m| parse_route(m))),
+            "exclude-access-routes" => c
+                .exclude
+                .extend(members(e).iter().filter_map(|m| parse_route(m))),
             "ipsec" => c.esp = parse_ipsec(e),
             _ => {}
         }
@@ -170,7 +190,13 @@ pub fn parse(root: &Element) -> Result<GpConfig, String> {
 
 fn parse_ipsec(e: &Element) -> Option<EspParams> {
     let mut p = EspParams::default();
-    let spi = |s: &str| u32::from_str_radix(s.trim().trim_start_matches("0x").trim_start_matches("0X"), 16).ok();
+    let spi = |s: &str| {
+        u32::from_str_radix(
+            s.trim().trim_start_matches("0x").trim_start_matches("0X"),
+            16,
+        )
+        .ok()
+    };
     for m in &e.children {
         let v = m.text.trim();
         match m.name.as_str() {
@@ -194,7 +220,9 @@ fn parse_ipsec(e: &Element) -> Option<EspParams> {
 fn parse_key(e: &Element) -> Option<Vec<u8>> {
     let bits: usize = e.child_text("bits")?.parse().ok()?;
     let hex = e.child_text("val")?;
-    let bytes: Option<Vec<u8>> = (0..hex.len() / 2).map(|i| u8::from_str_radix(hex.get(2 * i..2 * i + 2)?, 16).ok()).collect();
+    let bytes: Option<Vec<u8>> = (0..hex.len() / 2)
+        .map(|i| u8::from_str_radix(hex.get(2 * i..2 * i + 2)?, 16).ok())
+        .collect();
     bytes.filter(|b| bits.is_multiple_of(8) && b.len() == bits / 8)
 }
 
@@ -204,7 +232,12 @@ fn parse_route(s: &str) -> Option<Route> {
         return None;
     }
     let (addr, prefix) = match s.split_once('/') {
-        Some((a, p)) => (a, p.parse::<u8>().ok().or_else(|| p.parse().ok().map(crate::tun::mask_to_prefix))?),
+        Some((a, p)) => (
+            a,
+            p.parse::<u8>()
+                .ok()
+                .or_else(|| p.parse().ok().map(crate::tun::mask_to_prefix))?,
+        ),
         None => (s, 32),
     };
     let net: Ipv4Addr = addr.trim().parse().ok()?;
@@ -257,16 +290,28 @@ mod tests {
         let c = parse(&xml::parse(SAMPLE).unwrap()).unwrap();
         assert_eq!(c.address, Some(Ipv4Addr::new(198, 51, 100, 7)));
         assert_eq!(c.prefix(), 32);
-        assert_eq!(c.dns, vec![Ipv4Addr::new(198, 51, 100, 53), Ipv4Addr::new(198, 51, 100, 54)]);
+        assert_eq!(
+            c.dns,
+            vec![
+                Ipv4Addr::new(198, 51, 100, 53),
+                Ipv4Addr::new(198, 51, 100, 54)
+            ]
+        );
         assert_eq!(c.domains, vec!["corp.example.com", "example.net"]);
         let inc: Vec<_> = c.include.iter().map(Route::to_cidr).collect();
         assert_eq!(inc, vec!["10.0.0.0/8", "192.0.2.0/24", "172.16.1.1/32"]);
         assert_eq!(c.exclude[0].to_cidr(), "10.9.0.0/16");
         assert!(!c.default_route);
-        assert_eq!((c.timeout, c.lifetime, c.idle_timeout), (10800, 2592000, 3600));
+        assert_eq!(
+            (c.timeout, c.lifetime, c.idle_timeout),
+            (10800, 2592000, 3600)
+        );
         assert_eq!(c.gw_address, Some(Ipv4Addr::new(203, 0, 113, 10)));
         let esp = c.esp.unwrap();
-        assert_eq!((esp.udp_port, esp.c2s_spi, esp.s2c_spi), (4501, 0xCAFE0001, 0x0BEEF002));
+        assert_eq!(
+            (esp.udp_port, esp.c2s_spi, esp.s2c_spi),
+            (4501, 0xCAFE0001, 0x0BEEF002)
+        );
         assert_eq!(esp.ekey_c2s.len(), 16);
         assert_eq!(esp.akey_s2c.len(), 20);
         let sa = esp.sa().unwrap();
@@ -307,9 +352,21 @@ mod tests {
         assert_eq!(server.decode(&client.encode(&pkt).unwrap()).unwrap(), pkt);
         assert_eq!(client.decode(&server.encode(&pkt).unwrap()).unwrap(), pkt);
         for h in ["md5", "sha256"] {
-            let p = EspParams { hmac: h.into(), ..mirrored.clone() };
-            let q = EspParams { hmac: h.into(), ..esp.clone() };
-            assert_eq!(q.sa().unwrap().decode(&p.sa().unwrap().encode(&pkt).unwrap()).unwrap(), pkt);
+            let p = EspParams {
+                hmac: h.into(),
+                ..mirrored.clone()
+            };
+            let q = EspParams {
+                hmac: h.into(),
+                ..esp.clone()
+            };
+            assert_eq!(
+                q.sa()
+                    .unwrap()
+                    .decode(&p.sa().unwrap().encode(&pkt).unwrap())
+                    .unwrap(),
+                pkt
+            );
         }
     }
 }

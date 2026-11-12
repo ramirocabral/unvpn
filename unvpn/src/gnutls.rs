@@ -37,7 +37,8 @@ struct Gnutls {
     global_init: unsafe extern "C" fn() -> c_int,
     init: unsafe extern "C" fn(*mut GnutlsSession, c_uint) -> c_int,
     deinit: unsafe extern "C" fn(GnutlsSession),
-    priority_set_direct: unsafe extern "C" fn(GnutlsSession, *const c_char, *mut *const c_char) -> c_int,
+    priority_set_direct:
+        unsafe extern "C" fn(GnutlsSession, *const c_char, *mut *const c_char) -> c_int,
     record_disable_padding: unsafe extern "C" fn(GnutlsSession),
     session_set_premaster: unsafe extern "C" fn(
         GnutlsSession,
@@ -86,14 +87,19 @@ pub fn available() -> bool {
 fn load_gnutls() -> Option<Gnutls> {
     unsafe {
         // The current soname first, then the dev symlink as a fallback.
-        let handle = ["libgnutls.so.30\0", "libgnutls.so\0"].iter().find_map(|name| {
-            let h = libc::dlopen(name.as_ptr() as *const c_char, libc::RTLD_NOW | libc::RTLD_GLOBAL);
-            if h.is_null() {
-                None
-            } else {
-                Some(h)
-            }
-        })?;
+        let handle = ["libgnutls.so.30\0", "libgnutls.so\0"]
+            .iter()
+            .find_map(|name| {
+                let h = libc::dlopen(
+                    name.as_ptr() as *const c_char,
+                    libc::RTLD_NOW | libc::RTLD_GLOBAL,
+                );
+                if h.is_null() {
+                    None
+                } else {
+                    Some(h)
+                }
+            })?;
 
         // Resolve a symbol or bail (whole feature off) if any is missing. The handle
         // is intentionally never dlclose'd — gnutls stays mapped for the process.
@@ -178,7 +184,12 @@ unsafe impl Send for DtlsSession {}
 impl DtlsSession {
     /// AnyConnect: resume the session the gateway pre-agreed over CSTP. The flags
     /// (`NO_DEFAULT_EXTENSIONS`) give the minimal ClientHello a modern ASA accepts.
-    pub fn connect_resume(gw: IpAddr, port: u16, r: &Resume, timeout: Duration) -> Result<Self, String> {
+    pub fn connect_resume(
+        gw: IpAddr,
+        port: u16,
+        r: &Resume,
+        timeout: Duration,
+    ) -> Result<Self, String> {
         if r.session_id.is_empty() || r.master_secret.len() != 48 {
             return Err("missing DTLS session id / master secret".into());
         }
@@ -217,7 +228,13 @@ impl DtlsSession {
     /// Fortinet / F5: an ordinary certificate-based handshake. The gateway must
     /// present a certificate already trusted for `host` over TLS in this run.
     /// `dtls12 = false` caps at DTLS 1.0 (old BIG-IPs choke on even being offered 1.2).
-    pub fn connect_cert(gw: IpAddr, port: u16, dtls12: bool, timeout: Duration, host: &str) -> Result<Self, String> {
+    pub fn connect_cert(
+        gw: IpAddr,
+        port: u16,
+        dtls12: bool,
+        timeout: Duration,
+        host: &str,
+    ) -> Result<Self, String> {
         let mut s = Self::new_raw(gw, port)?;
         let g = s.g;
         unsafe {
@@ -238,7 +255,9 @@ impl DtlsSession {
         };
         s.set_priority(&prio)?;
         s.handshake(timeout)?;
-        let der = s.peer_certificate().ok_or("the gateway sent no DTLS certificate")?;
+        let der = s
+            .peer_certificate()
+            .ok_or("the gateway sent no DTLS certificate")?;
         crate::net::trust::require_known(host, &der).map_err(|e| format!("DTLS refused: {e}"))?;
         Ok(s)
     }
@@ -266,7 +285,8 @@ impl DtlsSession {
         sock.set_nonblocking(true).ok();
         let fd = sock.as_raw_fd();
         let mut session: GnutlsSession = std::ptr::null_mut();
-        let flags = GNUTLS_CLIENT | GNUTLS_DATAGRAM | GNUTLS_NONBLOCK | GNUTLS_NO_DEFAULT_EXTENSIONS;
+        let flags =
+            GNUTLS_CLIENT | GNUTLS_DATAGRAM | GNUTLS_NONBLOCK | GNUTLS_NO_DEFAULT_EXTENSIONS;
         let rc = unsafe { (g.init)(&mut session, flags) };
         if rc != 0 || session.is_null() {
             return Err(format!("gnutls_init: {}", err_str(g, rc)));
@@ -286,7 +306,8 @@ impl DtlsSession {
 
     fn set_priority(&mut self, prio: &str) -> Result<(), String> {
         let c = CString::new(prio).unwrap();
-        let rc = unsafe { (self.g.priority_set_direct)(self.session, c.as_ptr(), std::ptr::null_mut()) };
+        let rc =
+            unsafe { (self.g.priority_set_direct)(self.session, c.as_ptr(), std::ptr::null_mut()) };
         if rc != 0 {
             return Err(format!("DTLS priority {prio:?}: {}", err_str(self.g, rc)));
         }
@@ -309,7 +330,11 @@ impl DtlsSession {
                 return Err("DTLS handshake timed out".into());
             }
             let want_send = unsafe { (g.record_get_direction)(self.session) } == 1;
-            let events = if want_send { libc::POLLOUT } else { libc::POLLIN };
+            let events = if want_send {
+                libc::POLLOUT
+            } else {
+                libc::POLLIN
+            };
             poll_fd(self.fd, events, remaining.min(Duration::from_secs(1)));
         }
     }
@@ -327,8 +352,15 @@ impl DtlsSession {
     /// datagram) — for the vendor hellos, whose session cookie alone can be ~2 KB
     /// (FortiClient sends a 2 KB hello datagram). Data records stay within the MTU.
     pub fn send_oversized(&self, data: &[u8]) -> Result<bool, String> {
-        unsafe { (self.g.dtls_set_mtu)(self.session, (data.len() as c_uint + 256).max(UDP_PAYLOAD_MTU)) };
-        let n = unsafe { (self.g.record_send)(self.session, data.as_ptr() as *const c_void, data.len()) };
+        unsafe {
+            (self.g.dtls_set_mtu)(
+                self.session,
+                (data.len() as c_uint + 256).max(UDP_PAYLOAD_MTU),
+            )
+        };
+        let n = unsafe {
+            (self.g.record_send)(self.session, data.as_ptr() as *const c_void, data.len())
+        };
         unsafe { (self.g.dtls_set_mtu)(self.session, UDP_PAYLOAD_MTU) };
         match n {
             n if n >= 0 => Ok(true),
@@ -340,7 +372,9 @@ impl DtlsSession {
     /// Send one record. `Ok(false)` = would block (UDP: the caller may drop it). An
     /// over-MTU record is dropped (`Ok(true)`) rather than killing the tunnel.
     pub fn send(&self, data: &[u8]) -> Result<bool, String> {
-        let n = unsafe { (self.g.record_send)(self.session, data.as_ptr() as *const c_void, data.len()) };
+        let n = unsafe {
+            (self.g.record_send)(self.session, data.as_ptr() as *const c_void, data.len())
+        };
         if n >= 0 {
             return Ok(true);
         }
@@ -354,7 +388,9 @@ impl DtlsSession {
     /// Receive one record into `buf`. `Ok(None)` when nothing is ready (incl. a
     /// non-fatal alert or a discarded bad record); `Err` when closed or fatal.
     pub fn recv(&self, buf: &mut [u8]) -> Result<Option<usize>, String> {
-        let n = unsafe { (self.g.record_recv)(self.session, buf.as_mut_ptr() as *mut c_void, buf.len()) };
+        let n = unsafe {
+            (self.g.record_recv)(self.session, buf.as_mut_ptr() as *mut c_void, buf.len())
+        };
         if n > 0 {
             return Ok(Some(n as usize));
         }
@@ -446,7 +482,11 @@ impl io::Write for DtlsStream {
 }
 
 fn poll_fd(fd: c_int, events: libc::c_short, t: Duration) {
-    let mut p = libc::pollfd { fd, events, revents: 0 };
+    let mut p = libc::pollfd {
+        fd,
+        events,
+        revents: 0,
+    };
     unsafe { libc::poll(&mut p, 1, t.as_millis().min(i32::MAX as u128) as c_int) };
 }
 
@@ -472,14 +512,23 @@ mod tests {
     #[test]
     #[ignore]
     fn dtls_cert_echo() {
-        let port: u16 = std::env::var("UNVPN_DTLS_ECHO_PORT").unwrap().parse().unwrap();
+        let port: u16 = std::env::var("UNVPN_DTLS_ECHO_PORT")
+            .unwrap()
+            .parse()
+            .unwrap();
         let pem = std::fs::read(std::env::var("UNVPN_DTLS_ECHO_CERT").unwrap()).unwrap();
-        let der = openssl::x509::X509::from_pem(&pem).unwrap().to_der().unwrap();
+        let der = openssl::x509::X509::from_pem(&pem)
+            .unwrap()
+            .to_der()
+            .unwrap();
         let gw = "127.0.0.1".parse().unwrap();
-        let refused = DtlsSession::connect_cert(gw, port, true, Duration::from_secs(5), "dtls-test.invalid");
+        let refused =
+            DtlsSession::connect_cert(gw, port, true, Duration::from_secs(5), "dtls-test.invalid");
         assert!(refused.err().unwrap().contains("not the one trusted"));
         crate::net::trust::note_verified("dtls-test.invalid:443", &der);
-        let s = DtlsSession::connect_cert(gw, port, true, Duration::from_secs(5), "dtls-test.invalid").unwrap();
+        let s =
+            DtlsSession::connect_cert(gw, port, true, Duration::from_secs(5), "dtls-test.invalid")
+                .unwrap();
         let mtu = s.data_mtu();
         assert!(mtu > 1300 && mtu < 1472, "data mtu {mtu}");
         let mut st = DtlsStream::new(s);

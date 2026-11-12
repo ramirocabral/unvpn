@@ -86,7 +86,13 @@ pub const WOULDBLOCK: &str = "__wouldblock__";
 
 impl<S: Read + Write> PppConn<S> {
     pub fn new(stream: S) -> Self {
-        PppConn { stream, rbuf: Vec::with_capacity(4096), poll_fd: None, txbuf: Vec::new(), coalesce: true }
+        PppConn {
+            stream,
+            rbuf: Vec::with_capacity(4096),
+            poll_fd: None,
+            txbuf: Vec::new(),
+            coalesce: true,
+        }
     }
 
     /// One frame per write (record-oriented transports such as DTLS).
@@ -156,7 +162,8 @@ impl<S: Read + Write> PppConn<S> {
     }
 
     fn write_out(&mut self, out: &[u8]) -> Result<(), String> {
-        crate::sysnet::write_all_polling(&mut self.stream, self.poll_fd, out).map_err(|e| format!("ppp {e}"))?;
+        crate::sysnet::write_all_polling(&mut self.stream, self.poll_fd, out)
+            .map_err(|e| format!("ppp {e}"))?;
         self.stream.flush().ok();
         Ok(())
     }
@@ -167,11 +174,20 @@ impl<S: Read + Write> PppConn<S> {
         if self.rbuf.len() >= 4 && &self.rbuf[0..4] == b"HTTP" {
             // The gateway answered with HTTP. On success some gateways send
             // `200 OK` then switch straight to PPP; on failure, an error status.
-            let Some(end) = self.rbuf.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4) else {
+            let Some(end) = self
+                .rbuf
+                .windows(4)
+                .position(|w| w == b"\r\n\r\n")
+                .map(|i| i + 4)
+            else {
                 return Ok(None);
             };
             let head = String::from_utf8_lossy(&self.rbuf[..end]);
-            let status = head.split_whitespace().nth(1).and_then(|s| s.parse::<u16>().ok()).unwrap_or(0);
+            let status = head
+                .split_whitespace()
+                .nth(1)
+                .and_then(|s| s.parse::<u16>().ok())
+                .unwrap_or(0);
             if status == 200 {
                 self.rbuf.drain(..end);
             } else {
@@ -237,7 +253,10 @@ impl<S: Read + Write> PppConn<S> {
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::WouldBlock
+                        || e.kind() == std::io::ErrorKind::TimedOut =>
+                {
                     return Ok(total)
                 }
                 Err(e) => return Err(format!("tunnel read: {e}")),
@@ -304,7 +323,11 @@ fn parse_ctrl(payload: &[u8]) -> Option<Ctrl> {
         return None;
     }
     let end = len.min(payload.len());
-    Some(Ctrl { code: payload[0], id: payload[1], body: payload[4..end].to_vec() })
+    Some(Ctrl {
+        code: payload[0],
+        id: payload[1],
+        body: payload[4..end].to_vec(),
+    })
 }
 
 fn iter_opts(body: &[u8]) -> Vec<(u8, Vec<u8>)> {
@@ -324,7 +347,9 @@ fn iter_opts(body: &[u8]) -> Vec<(u8, Vec<u8>)> {
 
 /// Run LCP then IPCP to completion. The socket must have a read timeout set.
 pub fn negotiate<S: Read + Write>(conn: &mut PppConn<S>) -> Result<IpConfig, String> {
-    let magic: [u8; 4] = crate::ike::crypto::random(4).try_into().unwrap_or([1, 2, 3, 4]);
+    let magic: [u8; 4] = crate::ike::crypto::random(4)
+        .try_into()
+        .unwrap_or([1, 2, 3, 4]);
     let peer_mru = lcp_phase(conn, &magic)?;
     let mut ipc = ipcp_phase(conn)?;
     ipc.peer_mru = peer_mru;
@@ -332,11 +357,17 @@ pub fn negotiate<S: Read + Write>(conn: &mut PppConn<S>) -> Result<IpConfig, Str
 }
 
 fn mru_option(body: &[u8]) -> Option<u16> {
-    iter_opts(body).into_iter().find(|(t, v)| *t == LCP_OPT_MRU && v.len() == 2).map(|(_, v)| u16::from_be_bytes([v[0], v[1]]))
+    iter_opts(body)
+        .into_iter()
+        .find(|(t, v)| *t == LCP_OPT_MRU && v.len() == 2)
+        .map(|(_, v)| u16::from_be_bytes([v[0], v[1]]))
 }
 
 /// Returns the gateway's MRU (from its Configure-Request).
-fn lcp_phase<S: Read + Write>(conn: &mut PppConn<S>, magic: &[u8; 4]) -> Result<Option<u16>, String> {
+fn lcp_phase<S: Read + Write>(
+    conn: &mut PppConn<S>,
+    magic: &[u8; 4],
+) -> Result<Option<u16>, String> {
     let mut our_opts = Vec::new();
     our_opts.extend_from_slice(&opt(LCP_OPT_MRU, &DEFAULT_MRU.to_be_bytes()));
     our_opts.extend_from_slice(&opt(LCP_OPT_MAGIC, magic));
@@ -351,7 +382,9 @@ fn lcp_phase<S: Read + Write>(conn: &mut PppConn<S>, magic: &[u8; 4]) -> Result<
     while !(our_acked && peer_acked) {
         match conn.recv_blocking() {
             Ok((PPP_LCP, payload)) => {
-                let Some(c) = parse_ctrl(&payload) else { continue };
+                let Some(c) = parse_ctrl(&payload) else {
+                    continue;
+                };
                 match c.code {
                     CONF_REQ => {
                         peer_mru = mru_option(&c.body).or(peer_mru);
@@ -404,13 +437,18 @@ fn ipcp_phase<S: Read + Write>(conn: &mut PppConn<S>) -> Result<IpConfig, String
     let mut id = 1u8;
     let mut our_acked = false;
     let mut peer_acked = false;
-    conn.send(PPP_IPCP, &ctrl(CONF_REQ, id, &build_req(want_ip, dns1, dns2)))?;
+    conn.send(
+        PPP_IPCP,
+        &ctrl(CONF_REQ, id, &build_req(want_ip, dns1, dns2)),
+    )?;
 
     let mut tries = 0;
     while !(our_acked && peer_acked) {
         match conn.recv_blocking() {
             Ok((PPP_IPCP, payload)) => {
-                let Some(c) = parse_ctrl(&payload) else { continue };
+                let Some(c) = parse_ctrl(&payload) else {
+                    continue;
+                };
                 match c.code {
                     CONF_REQ => {
                         conn.send(PPP_IPCP, &ctrl(CONF_ACK, c.id, &c.body))?;
@@ -430,11 +468,17 @@ fn ipcp_phase<S: Read + Write>(conn: &mut PppConn<S>) -> Result<IpConfig, String
                             }
                         }
                         id = id.wrapping_add(1);
-                        conn.send(PPP_IPCP, &ctrl(CONF_REQ, id, &build_req(want_ip, dns1, dns2)))?;
+                        conn.send(
+                            PPP_IPCP,
+                            &ctrl(CONF_REQ, id, &build_req(want_ip, dns1, dns2)),
+                        )?;
                     }
                     CONF_REJ => {
                         id = id.wrapping_add(1);
-                        conn.send(PPP_IPCP, &ctrl(CONF_REQ, id, &opt(IPCP_OPT_IP, &want_ip.octets())))?;
+                        conn.send(
+                            PPP_IPCP,
+                            &ctrl(CONF_REQ, id, &opt(IPCP_OPT_IP, &want_ip.octets())),
+                        )?;
                     }
                     TERM_REQ => {
                         conn.send(PPP_IPCP, &ctrl(TERM_ACK, c.id, &[]))?;
@@ -462,7 +506,10 @@ fn ipcp_phase<S: Read + Write>(conn: &mut PppConn<S>) -> Result<IpConfig, String
                     return Err("IPCP negotiation timed out".into());
                 }
                 if !our_acked {
-                    conn.send(PPP_IPCP, &ctrl(CONF_REQ, id, &build_req(want_ip, dns1, dns2)))?;
+                    conn.send(
+                        PPP_IPCP,
+                        &ctrl(CONF_REQ, id, &build_req(want_ip, dns1, dns2)),
+                    )?;
                 }
             }
             Err(e) => return Err(e),
@@ -479,7 +526,11 @@ fn ipcp_phase<S: Read + Write>(conn: &mut PppConn<S>) -> Result<IpConfig, String
     if !dns2.is_unspecified() {
         dns.push(dns2);
     }
-    Ok(IpConfig { addr: want_ip, dns, peer_mru: None })
+    Ok(IpConfig {
+        addr: want_ip,
+        dns,
+        peer_mru: None,
+    })
 }
 
 /// Magic 0, no data.
@@ -493,7 +544,10 @@ pub fn terminate_request(id: u8) -> Vec<u8> {
 
 /// Service an inbound LCP control frame during the data phase (reply to echo and
 /// terminate). Returns `Ok(true)` if the peer asked to terminate.
-pub fn handle_lcp_in<S: Read + Write>(conn: &mut PppConn<S>, payload: &[u8]) -> Result<bool, String> {
+pub fn handle_lcp_in<S: Read + Write>(
+    conn: &mut PppConn<S>,
+    payload: &[u8],
+) -> Result<bool, String> {
     if let Some(c) = parse_ctrl(payload) {
         match c.code {
             ECHO_REQ => conn.send(PPP_LCP, &ctrl(ECHO_REP, c.id, &c.body))?,
@@ -539,7 +593,8 @@ mod tests {
         let payload = [0x45u8; 1400];
         for _ in 0..2000 {
             // ~2.8 MB: far past the socket buffer — must block-and-retry, never fail.
-            conn.send(PPP_IPV4, &payload).expect("send must not fail on WouldBlock");
+            conn.send(PPP_IPV4, &payload)
+                .expect("send must not fail on WouldBlock");
         }
         drop(conn);
         assert_eq!(reader.join().unwrap(), 2000 * (6 + 4 + 1400));
@@ -565,19 +620,30 @@ mod tests {
         c.queue(PPP_IPV4, b"\x45one").unwrap();
         c.queue(PPP_IPV4, b"\x45two").unwrap();
         assert!(c.get_ref().get_ref().is_empty(), "queued, not yet written");
-        c.send(PPP_LCP, b"\x09\x01\x00\x08\x00\x00\x00\x00").unwrap(); // flushes the queue first
+        c.send(PPP_LCP, b"\x09\x01\x00\x08\x00\x00\x00\x00")
+            .unwrap(); // flushes the queue first
         let wire = c.get_ref().get_ref().clone();
         let mut r = PppConn::new(Cursor::new(Vec::<u8>::new()));
         r.rbuf.extend_from_slice(&wire);
-        assert_eq!(r.take_frame().unwrap().unwrap(), (PPP_IPV4, b"\x45one".to_vec()));
-        assert_eq!(r.take_frame().unwrap().unwrap(), (PPP_IPV4, b"\x45two".to_vec()));
+        assert_eq!(
+            r.take_frame().unwrap().unwrap(),
+            (PPP_IPV4, b"\x45one".to_vec())
+        );
+        assert_eq!(
+            r.take_frame().unwrap().unwrap(),
+            (PPP_IPV4, b"\x45two".to_vec())
+        );
         assert_eq!(r.take_frame().unwrap().unwrap().0, PPP_LCP);
         assert!(r.take_frame().unwrap().is_none());
     }
 
     #[test]
     fn peer_mru_option_is_read() {
-        let body = [&opt(LCP_OPT_MAGIC, &[1, 2, 3, 4])[..], &opt(LCP_OPT_MRU, &1354u16.to_be_bytes())[..]].concat();
+        let body = [
+            &opt(LCP_OPT_MAGIC, &[1, 2, 3, 4])[..],
+            &opt(LCP_OPT_MRU, &1354u16.to_be_bytes())[..],
+        ]
+        .concat();
         assert_eq!(mru_option(&body), Some(1354));
         assert_eq!(mru_option(&opt(LCP_OPT_MAGIC, &[1, 2, 3, 4])), None);
     }
@@ -597,7 +663,10 @@ mod tests {
         r.rbuf.extend_from_slice(&ppp_frame);
         assert_eq!(r.take_frame().unwrap().unwrap().0, FORTI_CTRL);
         // The stream stays in sync: the PPP frame parses right after it.
-        assert_eq!(r.take_frame().unwrap().unwrap(), (PPP_IPV4, b"\x45data".to_vec()));
+        assert_eq!(
+            r.take_frame().unwrap().unwrap(),
+            (PPP_IPV4, b"\x45data".to_vec())
+        );
         assert!(r.take_frame().unwrap().is_none());
     }
 
@@ -605,7 +674,8 @@ mod tests {
     fn detects_bad_magic() {
         let mut r = PppConn::new(Cursor::new(Vec::<u8>::new()));
         // total=8, magic=0x1234 (wrong), frame_len=2
-        r.rbuf.extend_from_slice(&[0x00, 0x08, 0x12, 0x34, 0x00, 0x02, 0xff, 0x03]);
+        r.rbuf
+            .extend_from_slice(&[0x00, 0x08, 0x12, 0x34, 0x00, 0x02, 0xff, 0x03]);
         assert!(r.take_frame().is_err());
     }
 
@@ -621,7 +691,8 @@ mod tests {
     fn partial_frame_waits() {
         let mut r = PppConn::new(Cursor::new(Vec::<u8>::new()));
         // claims frame_len 100 but only a few bytes present
-        r.rbuf.extend_from_slice(&[0x00, 106, 0x50, 0x50, 0x00, 100, 0xff, 0x03]);
+        r.rbuf
+            .extend_from_slice(&[0x00, 106, 0x50, 0x50, 0x00, 100, 0xff, 0x03]);
         assert!(r.take_frame().unwrap().is_none());
     }
 }

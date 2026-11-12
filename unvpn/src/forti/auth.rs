@@ -126,7 +126,13 @@ impl Challenge {
     pub fn prompt_text(&self, pushing: bool) -> String {
         const TOKEN: &str = "A FortiToken code is required for SSL-VPN login authentication.";
         let to = http::percent_decode(&self.tokeninfo);
-        let own = |fallback: &str| if self.message.is_empty() { fallback.to_string() } else { self.message.clone() };
+        let own = |fallback: &str| {
+            if self.message.is_empty() {
+                fallback.to_string()
+            } else {
+                self.message.clone()
+            }
+        };
         match self.kind {
             ChallengeKind::Token if pushing => {
                 "A push was sent to FortiToken Mobile — approve it, or type the code.".to_string()
@@ -136,17 +142,24 @@ impl Challenge {
             ChallengeKind::Token if self.ftm_push => TOKEN.to_string(),
             ChallengeKind::Token => own(TOKEN),
             ChallengeKind::Email if !to.is_empty() => {
-                format!("An email message containing a Token Code will be sent to <{to}> in a moment.")
+                format!(
+                    "An email message containing a Token Code will be sent to <{to}> in a moment."
+                )
             }
             ChallengeKind::Email => "A Token Code was sent to you by email.".to_string(),
             ChallengeKind::Sms if !to.is_empty() => {
-                format!("An SMS message containing a Token Code will be sent to <{to}> in a moment.")
+                format!(
+                    "An SMS message containing a Token Code will be sent to <{to}> in a moment."
+                )
             }
             ChallengeKind::Sms => "A Token Code was sent to you by SMS.".to_string(),
             ChallengeKind::Drift => {
-                "FortiToken clock drift detected. Please input the next code and continue.".to_string()
+                "FortiToken clock drift detected. Please input the next code and continue."
+                    .to_string()
             }
-            ChallengeKind::Answer | ChallengeKind::HtmlAnswer => own("The gateway asks for additional verification."),
+            ChallengeKind::Answer | ChallengeKind::HtmlAnswer => {
+                own("The gateway asks for additional verification.")
+            }
             ChallengeKind::NewPassword | ChallengeKind::HtmlNewPassword => {
                 own("Your password is expired, please input a new password.")
             }
@@ -204,7 +217,16 @@ impl Session {
                 }
             });
         }
-        let r = http::request_cancellable(&self.host, self.port, "POST", LOGINCHECK, &mut self.cookies, body.as_bytes(), t, &cancel);
+        let r = http::request_cancellable(
+            &self.host,
+            self.port,
+            "POST",
+            LOGINCHECK,
+            &mut self.cookies,
+            body.as_bytes(),
+            t,
+            &cancel,
+        );
         done.store(true, Ordering::SeqCst);
         if r.is_err() && sysnet::stop_requested() {
             return Err("authentication cancelled".into());
@@ -218,13 +240,22 @@ impl Session {
         // echoed on the logincheck POST (some FortiOS builds reject a cold POST).
         // Its `<!--remoteauthtimeout=N-->` sets our auth budget, like FortiClient.
         let page = http::request(
-            &self.host, self.port, "GET", "/remote/login?lang=en",
-            &mut self.cookies, &[], b"", self.timeout,
+            &self.host,
+            self.port,
+            "GET",
+            "/remote/login?lang=en",
+            &mut self.cookies,
+            &[],
+            b"",
+            self.timeout,
         )
         .map(|r| r.body_str().into_owned())
         .unwrap_or_default();
-        let secs = remote_auth_timeout(&page)
-            .or_else(|| super::saml::remote_info(&self.host, self.port).ok().and_then(|i| i.auth_timeout));
+        let secs = remote_auth_timeout(&page).or_else(|| {
+            super::saml::remote_info(&self.host, self.port)
+                .ok()
+                .and_then(|i| i.auth_timeout)
+        });
         self.auth_budget = Duration::from_secs(auth_budget(secs));
 
         let body = format!(
@@ -238,7 +269,12 @@ impl Session {
     }
 
     /// Token challenge (ret=2/3/4/5). `code2` is empty except for clock drift.
-    pub fn answer_code(&mut self, ch: &Challenge, code: &str, code2: &str) -> Result<AuthOutcome, String> {
+    pub fn answer_code(
+        &mut self,
+        ch: &Challenge,
+        code: &str,
+        code2: &str,
+    ) -> Result<AuthOutcome, String> {
         self.second_factor = true;
         let resp = self.post_logincheck(self.code_body(ch, code, code2))?;
         Ok(self.interpret(&resp))
@@ -249,7 +285,11 @@ impl Session {
     /// a typed code abort it, as the portal does.
     pub fn push(&mut self, ch: &Challenge, cancel: &http::Cancel) -> Result<AuthOutcome, String> {
         self.second_factor = true;
-        let secs = self.auth_budget.as_secs().max(ch.timeout.unwrap_or(0)).min(AUTH_BUDGET_MAX);
+        let secs = self
+            .auth_budget
+            .as_secs()
+            .max(ch.timeout.unwrap_or(0))
+            .min(AUTH_BUDGET_MAX);
         let body = self.push_body(ch);
         let started = std::time::Instant::now();
         let resp = http::request_cancellable(
@@ -387,9 +427,15 @@ impl Session {
         let t = http::urlencode(text);
         let realm = http::urlencode(&self.realm);
         match ch.kind {
-            ChallengeKind::HtmlNewPassword => format!("{head}&credential={t}&credential2={t}&realm={realm}"),
+            ChallengeKind::HtmlNewPassword => {
+                format!("{head}&credential={t}&credential2={t}&realm={realm}")
+            }
             _ => {
-                let idx = ch.idx.as_deref().map(|i| format!("&idx={}", http::urlencode(i))).unwrap_or_default();
+                let idx = ch
+                    .idx
+                    .as_deref()
+                    .map(|i| format!("&idx={}", http::urlencode(i)))
+                    .unwrap_or_default();
                 format!("{head}{idx}&credential={t}&realm={realm}{ANSWER_SUFFIX}")
             }
         }
@@ -415,7 +461,14 @@ impl Session {
                 Some('6') if get("pass_renew") == "1" => ChallengeKind::NewPassword,
                 Some('6') => ChallengeKind::Answer,
                 Some('1') => return AuthOutcome::Failed(ret1_failure(&get("redir"))),
-                _ => return AuthOutcome::Failed(clean_failure(&f, &body, resp.status, self.second_factor)),
+                _ => {
+                    return AuthOutcome::Failed(clean_failure(
+                        &f,
+                        &body,
+                        resp.status,
+                        self.second_factor,
+                    ))
+                }
             };
             if !get("polid").is_empty() {
                 self.last_polid = get("polid");
@@ -449,7 +502,12 @@ impl Session {
         if let Some(ch) = parse_html_challenge(&body) {
             return AuthOutcome::Challenge(ch);
         }
-        AuthOutcome::Failed(clean_failure(&BTreeMap::new(), &body, resp.status, self.second_factor))
+        AuthOutcome::Failed(clean_failure(
+            &BTreeMap::new(),
+            &body,
+            resp.status,
+            self.second_factor,
+        ))
     }
 }
 
@@ -461,7 +519,9 @@ fn remote_auth_timeout(page: &str) -> Option<u64> {
 
 /// FortiClient's clamp: unknown → 30 s, else [30, 300] s.
 fn auth_budget(remote_auth_timeout: Option<u64>) -> u64 {
-    remote_auth_timeout.unwrap_or(0).clamp(AUTH_BUDGET_MIN, AUTH_BUDGET_MAX)
+    remote_auth_timeout
+        .unwrap_or(0)
+        .clamp(AUTH_BUDGET_MIN, AUTH_BUDGET_MAX)
 }
 
 /// Parse an ajax `ret=2,reqid=..,polid=..,grp=..,tokeninfo=..` body into key→value.
@@ -482,8 +542,13 @@ fn parse_ret_fields(body: &str) -> BTreeMap<String, String> {
     }
     if let Some(c) = chal {
         // login.js also reads comma tokens past chal_msg (only `to=` matters).
-        if let Some(to) = c.split(',').filter_map(|t| t.trim().strip_prefix("to=")).last() {
-            map.entry("to".to_string()).or_insert_with(|| to.trim().to_string());
+        if let Some(to) = c
+            .split(',')
+            .filter_map(|t| t.trim().strip_prefix("to="))
+            .last()
+        {
+            map.entry("to".to_string())
+                .or_insert_with(|| to.trim().to_string());
         }
         map.insert("chal_msg".to_string(), c.trim_end().to_string());
     }
@@ -497,10 +562,18 @@ fn parse_ret_fields(body: &str) -> BTreeMap<String, String> {
 fn parse_html_challenge(body: &str) -> Option<Challenge> {
     let start = body.to_ascii_lowercase().find(LEGACY_FORM)?;
     let form = &body[start..];
-    let form = &form[..form.to_ascii_lowercase().find("</form>").map(|e| e + 7).unwrap_or(form.len())];
+    let form = &form[..form
+        .to_ascii_lowercase()
+        .find("</form>")
+        .map(|e| e + 7)
+        .unwrap_or(form.len())];
     let magic = find_input(form, "magic").filter(|m| !m.is_empty())?;
     let new_password = find_input(form, "credential2").is_some();
-    let mut ch = Challenge::new(if new_password { ChallengeKind::HtmlNewPassword } else { ChallengeKind::HtmlAnswer });
+    let mut ch = Challenge::new(if new_password {
+        ChallengeKind::HtmlNewPassword
+    } else {
+        ChallengeKind::HtmlAnswer
+    });
     ch.magic = magic;
     ch.reqid = find_input(form, "reqid")?;
     ch.grpid = find_input(form, "grpid")?;
@@ -526,7 +599,10 @@ fn find_input(body: &str, name: &str) -> Option<String> {
     let mut search = 0;
     while let Some(rel) = lower[search..].find("<input") {
         let start = search + rel;
-        let end = body[start..].find('>').map(|e| start + e + 1).unwrap_or(body.len());
+        let end = body[start..]
+            .find('>')
+            .map(|e| start + e + 1)
+            .unwrap_or(body.len());
         let tag = &body[start..end];
         if attr_value(tag, "name").is_some_and(|n| n.eq_ignore_ascii_case(&want)) {
             return Some(attr_value(tag, "value").unwrap_or_default());
@@ -555,7 +631,9 @@ fn attr_value(tag: &str, attr: &str) -> Option<String> {
             Some(rest[1..end].to_string())
         }
         _ => {
-            let end = rest.find(|c: char| c.is_whitespace() || c == '>' || c == '/').unwrap_or(rest.len());
+            let end = rest
+                .find(|c: char| c.is_whitespace() || c == '>' || c == '/')
+                .unwrap_or(rest.len());
             Some(rest[..end].to_string())
         }
     }
@@ -579,7 +657,12 @@ fn ret1_failure(redir: &str) -> String {
 
 /// A concise failure message — never dump a whole HTML login page at the user.
 /// `second_factor`: the password was already accepted, so don't blame it.
-fn clean_failure(fields: &BTreeMap<String, String>, body: &str, status: u16, second_factor: bool) -> String {
+fn clean_failure(
+    fields: &BTreeMap<String, String>,
+    body: &str,
+    status: u16,
+    second_factor: bool,
+) -> String {
     if let Some(err) = fields.get("err").filter(|e| !e.is_empty()) {
         return format!("login rejected: {}", describe_err(err));
     }
@@ -587,7 +670,10 @@ fn clean_failure(fields: &BTreeMap<String, String>, body: &str, status: u16, sec
         return format!("login rejected: {}", sysnet::one_line(m));
     }
     // HTML error pages: the engine matches these strings (FUN_00472c40).
-    for known in ["Two-factor Authentication failed", "Too many bad login attempts"] {
+    for known in [
+        "Two-factor Authentication failed",
+        "Too many bad login attempts",
+    ] {
         if body.contains(known) {
             return format!("login rejected: {known}");
         }
@@ -598,15 +684,20 @@ fn clean_failure(fields: &BTreeMap<String, String>, body: &str, status: u16, sec
             return format!("login rejected: {}", sysnet::one_line(rest[..e].trim()));
         }
     }
-    if let Some(err) = ["sslvpn_login_permission_denied", "sslvpn_login_password_expired", "sslvpn_logindisable_errmsg"]
-        .into_iter()
-        .find(|e| body.contains(e))
+    if let Some(err) = [
+        "sslvpn_login_permission_denied",
+        "sslvpn_login_password_expired",
+        "sslvpn_logindisable_errmsg",
+    ]
+    .into_iter()
+    .find(|e| body.contains(e))
     {
         return format!("login rejected: {}", describe_err(err));
     }
     if status == 405 {
         if second_factor {
-            return "login rejected (HTTP 405) — the gateway refused this second-factor request".to_string();
+            return "login rejected (HTTP 405) — the gateway refused this second-factor request"
+                .to_string();
         }
         // Fortinet answers bad credentials (or login throttling) with 405.
         return "login rejected (HTTP 405) — wrong username/password/realm, or the gateway is \
@@ -614,7 +705,10 @@ fn clean_failure(fields: &BTreeMap<String, String>, body: &str, status: u16, sec
             .to_string();
     }
     let bl = body.to_ascii_lowercase();
-    if ["<html", "<body", "<form", "fgt_lang"].iter().any(|m| bl.contains(m)) {
+    if ["<html", "<body", "<form", "fgt_lang"]
+        .iter()
+        .any(|m| bl.contains(m))
+    {
         return format!(
             "login rejected by gateway (HTTP {status}) — check username, password and realm \
              (gateway returned its login/error page, not an auth token)"
@@ -630,11 +724,15 @@ fn clean_failure(fields: &BTreeMap<String, String>, body: &str, status: u16, sec
 /// FortiOS `err=` codes (portal language file) → words.
 fn describe_err(err: &str) -> String {
     match err {
-        "sslvpn_login_permission_denied" => "permission denied (wrong credentials or not allowed)".into(),
+        "sslvpn_login_permission_denied" => {
+            "permission denied (wrong credentials or not allowed)".into()
+        }
         "sslvpn_login_password_expired" => "password expired".into(),
         "sslvpn_login_insufficient_credential" => "insufficient credentials".into(),
         "sslvpn_login_change_password_failed" => "failed to change password".into(),
-        "sslvpn_logindisable_errmsg" => "too many bad login attempts — login temporarily disabled".into(),
+        "sslvpn_logindisable_errmsg" => {
+            "too many bad login attempts — login temporarily disabled".into()
+        }
         other => sysnet::one_line(other),
     }
 }
@@ -646,13 +744,23 @@ mod tests {
     use super::*;
 
     fn session() -> Session {
-        let mut s = Session::new("gw".into(), 443, "corp".into(), "ana".into(), Duration::from_secs(5));
+        let mut s = Session::new(
+            "gw".into(),
+            443,
+            "corp".into(),
+            "ana".into(),
+            Duration::from_secs(5),
+        );
         s.password = "p@ss word".into();
         s
     }
 
     fn resp(status: u16, body: &str) -> http::Response {
-        http::Response { status, headers: vec![], body: body.as_bytes().to_vec() }
+        http::Response {
+            status,
+            headers: vec![],
+            body: body.as_bytes().to_vec(),
+        }
     }
 
     fn challenge(s: &mut Session, body: &str) -> Challenge {
@@ -672,7 +780,8 @@ mod tests {
 
     #[test]
     fn ret2_challenge_fields() {
-        let f = parse_ret_fields("ret=2,reqid=12345,polid=1,grp=,tokeninfo=FTK,chal_msg=Enter token");
+        let f =
+            parse_ret_fields("ret=2,reqid=12345,polid=1,grp=,tokeninfo=FTK,chal_msg=Enter token");
         assert_eq!(f.get("ret").map(|s| s.as_str()), Some("2"));
         assert_eq!(f.get("reqid").map(|s| s.as_str()), Some("12345"));
         assert_eq!(f.get("polid").map(|s| s.as_str()), Some("1"));
@@ -682,8 +791,13 @@ mod tests {
 
     #[test]
     fn chal_msg_keeps_commas_ampersands_and_newlines() {
-        let f = parse_ret_fields("ret=6,magic=1-ab,reqid=77,chal_msg=Wait, then enter PIN & code:\nOption (1-3):\r\n");
-        assert_eq!(f.get("chal_msg").unwrap(), "Wait, then enter PIN & code:\nOption (1-3):");
+        let f = parse_ret_fields(
+            "ret=6,magic=1-ab,reqid=77,chal_msg=Wait, then enter PIN & code:\nOption (1-3):\r\n",
+        );
+        assert_eq!(
+            f.get("chal_msg").unwrap(),
+            "Wait, then enter PIN & code:\nOption (1-3):"
+        );
         assert_eq!(f.get("reqid").unwrap(), "77");
         // `to=` after chal_msg is still read (login.js scans every comma token).
         let f = parse_ret_fields("ret=2,reqid=1,polid=2,grp=g,chal_msg=Enter code,to=60");
@@ -693,7 +807,11 @@ mod tests {
     #[test]
     fn ret0_redir_yields_err() {
         let mut s = session();
-        let m = failure(&mut s, 200, "ret=0,redir=/remote/login?&err=sslvpn_login_permission_denied&lang=en");
+        let m = failure(
+            &mut s,
+            200,
+            "ret=0,redir=/remote/login?&err=sslvpn_login_permission_denied&lang=en",
+        );
         assert!(m.contains("permission denied"), "{m}");
     }
 
@@ -708,15 +826,37 @@ mod tests {
         );
         assert_eq!(c.kind, ChallengeKind::Token);
         assert!(c.ftm_push);
-        assert_eq!((c.reqid.as_str(), c.polid.as_str(), c.grp.as_str()), ("1111111111", "1111111111", "alfa"));
+        assert_eq!(
+            (c.reqid.as_str(), c.polid.as_str(), c.grp.as_str()),
+            ("1111111111", "1111111111", "alfa")
+        );
         assert!(!challenge(&mut s, "ret=2,reqid=1,polid=2,grp=g,tokeninfo=").ftm_push);
-        assert!(!challenge(&mut s, "ret=2,reqid=1,polid=2,grp=g,tokeninfo=remote_token_auth").ftm_push);
+        assert!(
+            !challenge(
+                &mut s,
+                "ret=2,reqid=1,polid=2,grp=g,tokeninfo=remote_token_auth"
+            )
+            .ftm_push
+        );
 
-        let c = challenge(&mut s, "ret=3,reqid=1,polid=2,grp=g,tokeninfo=user%2Bvpn%40example.com");
+        let c = challenge(
+            &mut s,
+            "ret=3,reqid=1,polid=2,grp=g,tokeninfo=user%2Bvpn%40example.com",
+        );
         assert_eq!(c.kind, ChallengeKind::Email);
-        assert!(c.prompt_text(false).contains("<user+vpn@example.com>"), "{}", c.prompt_text(false));
-        assert_eq!(challenge(&mut s, "ret=4,reqid=1,polid=2,grp=g,tokeninfo=%2B51999").kind, ChallengeKind::Sms);
-        assert_eq!(challenge(&mut s, "ret=5,reqid=1,polid=2,grp=g").kind, ChallengeKind::Drift);
+        assert!(
+            c.prompt_text(false).contains("<user+vpn@example.com>"),
+            "{}",
+            c.prompt_text(false)
+        );
+        assert_eq!(
+            challenge(&mut s, "ret=4,reqid=1,polid=2,grp=g,tokeninfo=%2B51999").kind,
+            ChallengeKind::Sms
+        );
+        assert_eq!(
+            challenge(&mut s, "ret=5,reqid=1,polid=2,grp=g").kind,
+            ChallengeKind::Drift
+        );
     }
 
     #[test]
@@ -725,8 +865,14 @@ mod tests {
         let c = challenge(&mut s, "ret=2,reqid=1,polid=2,grp=g,tokeninfo=ftm_push,chal_msg=Enter token code or no code to send a notification");
         assert!(c.prompt_text(true).contains("push was sent"));
         // --no-push / fallback: neither our push wording nor the gateway's "no code ⇒ notification".
-        assert_eq!(c.prompt_text(false), "A FortiToken code is required for SSL-VPN login authentication.");
-        let c = challenge(&mut s, "ret=2,reqid=1,polid=2,grp=g,tokeninfo=,chal_msg=Enter token code");
+        assert_eq!(
+            c.prompt_text(false),
+            "A FortiToken code is required for SSL-VPN login authentication."
+        );
+        let c = challenge(
+            &mut s,
+            "ret=2,reqid=1,polid=2,grp=g,tokeninfo=,chal_msg=Enter token code",
+        );
         assert_eq!(c.prompt_text(false), "Enter token code");
     }
 
@@ -736,7 +882,10 @@ mod tests {
         assert!(failure(&mut s, 405, "<html>405</html>").contains("wrong username/password"));
         s.second_factor = true;
         let m = failure(&mut s, 405, "<html>405</html>");
-        assert!(m.contains("second-factor") && !m.contains("password"), "{m}");
+        assert!(
+            m.contains("second-factor") && !m.contains("password"),
+            "{m}"
+        );
     }
 
     #[test]
@@ -776,7 +925,10 @@ mod tests {
     #[test]
     fn code_and_push_bodies_follow_the_engine() {
         let mut s = session();
-        let c = challenge(&mut s, "ret=2,reqid=9,polid=1-1-ab,grp=Grupo VPN,magic=1-ab,tokeninfo=ftm_push,peer=pkiuser");
+        let c = challenge(
+            &mut s,
+            "ret=2,reqid=9,polid=1-1-ab,grp=Grupo VPN,magic=1-ab,tokeninfo=ftm_push,peer=pkiuser",
+        );
         assert_eq!(
             s.code_body(&c, "123456", ""),
             "username=ana&reqid=9&polid=1-1-ab&grp=Grupo%20VPN&realm=corp&peer=pkiuser&code=123456&code2=\
@@ -799,7 +951,10 @@ mod tests {
             200,
             "ret=1,redir=/remote/hostcheck_install?auth_type=1&user=ana&grpname=g&portal=p&rip=1.1.1.1&realm=",
         );
-        assert!(m.contains("host check") && !m.contains("1.1.1.1") && !m.contains("ana"), "{m}");
+        assert!(
+            m.contains("host check") && !m.contains("1.1.1.1") && !m.contains("ana"),
+            "{m}"
+        );
     }
 
     #[test]
@@ -857,11 +1012,23 @@ mod tests {
 
     #[test]
     fn find_input_quotes_and_attr_order() {
-        assert_eq!(find_input("<input name='reqid' value='42'>", "reqid").as_deref(), Some("42"));
-        assert_eq!(find_input(r#"<INPUT VALUE="abc" NAME="magic">"#, "magic").as_deref(), Some("abc"));
-        assert_eq!(find_input("<input type=hidden name=grpid value=\"\">", "grpid").as_deref(), Some(""));
+        assert_eq!(
+            find_input("<input name='reqid' value='42'>", "reqid").as_deref(),
+            Some("42")
+        );
+        assert_eq!(
+            find_input(r#"<INPUT VALUE="abc" NAME="magic">"#, "magic").as_deref(),
+            Some("abc")
+        );
+        assert_eq!(
+            find_input("<input type=hidden name=grpid value=\"\">", "grpid").as_deref(),
+            Some("")
+        );
         assert_eq!(find_input("<input name=\"x\" value=\"y\">", "reqid"), None);
-        assert_eq!(find_input("<input rename=\"reqid\" value=\"1\">", "reqid"), None);
+        assert_eq!(
+            find_input("<input rename=\"reqid\" value=\"1\">", "reqid"),
+            None
+        );
     }
 
     #[test]

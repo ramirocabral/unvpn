@@ -4,7 +4,10 @@
 pub fn key_to_english(key: &[u8; 16]) -> String {
     let mut words = Vec::with_capacity(12);
     for half in key.chunks(8) {
-        let mut bits: Vec<u8> = half.iter().flat_map(|b| (0..8).rev().map(move |i| (b >> i) & 1)).collect();
+        let mut bits: Vec<u8> = half
+            .iter()
+            .flat_map(|b| (0..8).rev().map(move |i| (b >> i) & 1))
+            .collect();
         let parity: u32 = bits.chunks(2).map(|p| (p[0] * 2 + p[1]) as u32).sum();
         bits.extend((0..2).rev().map(|i| ((parity >> i) & 1) as u8));
         for w in bits.chunks(11).take(6) {
@@ -191,7 +194,10 @@ mod tests {
 
     #[test]
     fn rfc_vectors() {
-        let k = [0xEB, 0x33, 0xF7, 0x7E, 0xE7, 0x3D, 0x40, 0x53, 0xCC, 0xAC, 0x40, 0x9A, 0x7B, 0x8D, 0xAB, 0x81];
+        let k = [
+            0xEB, 0x33, 0xF7, 0x7E, 0xE7, 0x3D, 0x40, 0x53, 0xCC, 0xAC, 0x40, 0x9A, 0x7B, 0x8D,
+            0xAB, 0x81,
+        ];
         let w = key_to_english(&k);
         assert!(w.starts_with("TIDE ITCH SLOW REIN RULE MOT "), "{w}");
     }

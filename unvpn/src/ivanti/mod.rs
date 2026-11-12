@@ -78,7 +78,9 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
             "--password" | "-p" => password = it.next().cloned(),
             "--code" | "--otp" => code = it.next().cloned(),
             "--realm" | "-r" => realm = it.next().cloned(),
-            "--user-agent" => user_agent = it.next().cloned().ok_or("--user-agent needs a value")?,
+            "--user-agent" => {
+                user_agent = it.next().cloned().ok_or("--user-agent needs a value")?
+            }
             "--probe" => action = Action::Probe,
             "--login" => action = Action::Login,
             "--connect" => action = Action::Connect,
@@ -91,14 +93,29 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
     if action != Action::Probe && user.is_empty() {
         return Err("ivanti requires --user <user>".into());
     }
-    Ok(Args { host, url, user, password, code, realm, user_agent, action, no_routes, no_esp })
+    Ok(Args {
+        host,
+        url,
+        user,
+        password,
+        code,
+        realm,
+        user_agent,
+        action,
+        no_routes,
+        no_esp,
+    })
 }
 
 fn usage() {
     eprintln!("usage:");
-    eprintln!("  unvpn ivanti -g <host> --probe                       # is this an Ivanti/Pulse gateway?");
+    eprintln!(
+        "  unvpn ivanti -g <host> --probe                       # is this an Ivanti/Pulse gateway?"
+    );
     eprintln!("  unvpn ivanti -g <host> -u <user> [--realm R] --login # authenticate, get a DSID");
-    eprintln!("  unvpn ivanti -g <host> -u <user> [...] --connect     # bring up the tunnel (sudo)");
+    eprintln!(
+        "  unvpn ivanti -g <host> -u <user> [...] --connect     # bring up the tunnel (sudo)"
+    );
     eprintln!("      [--url url_<policy>]  sign-in policy URL segment (default: url_default)");
     eprintln!("      [--password p] [--code otp] [--realm R]");
     eprintln!("      [--no-esp]            IF-T/TLS data path only (no UDP/ESP)");
@@ -108,7 +125,12 @@ fn usage() {
 
 fn make_session(a: &Args) -> Result<Session, String> {
     let (host, port, _) = http::split_url(&a.host)?;
-    let ep = Endpoint { host, port, user_agent: a.user_agent.clone(), timeout: Duration::from_secs(20) };
+    let ep = Endpoint {
+        host,
+        port,
+        user_agent: a.user_agent.clone(),
+        timeout: Duration::from_secs(20),
+    };
     Ok(Session::new(ep, &a.url))
 }
 
@@ -117,13 +139,19 @@ fn probe(a: &Args) -> Result<(), String> {
     let mut s = make_session(a)?;
     println!("# probing {} …", s.ep.base_url());
     let pre = s.prelogin().map_err(|e| e.to_string())?;
-    println!("# {} is an Ivanti Connect Secure (Pulse) sign-in page", s.ep.host_header());
+    println!(
+        "# {} is an Ivanti Connect Secure (Pulse) sign-in page",
+        s.ep.host_header()
+    );
     println!("#   fields: {} / {}", pre.user_label, pre.pass_label);
     if pre.realms.is_empty() {
         println!("#   → unvpn ivanti -g {} -u <user> --connect", a.host);
     } else {
         println!("#   realms: {}", pre.realms.join(", "));
-        println!("#   → unvpn ivanti -g {} -u <user> --realm <realm> --connect", a.host);
+        println!(
+            "#   → unvpn ivanti -g {} -u <user> --realm <realm> --connect",
+            a.host
+        );
     }
     Ok(())
 }
@@ -131,11 +159,20 @@ fn probe(a: &Args) -> Result<(), String> {
 fn do_login(a: &Args) -> Result<Session, String> {
     let mut s = make_session(a)?;
     println!("# authenticating {} @ {} …", a.user, s.ep.base_url());
-    let creds = Creds { user: a.user.clone(), password: a.password.clone() };
-    let mut p = CliPrompter { code: a.code.clone() };
-    s.login(&creds, a.realm.as_deref(), &mut p).map_err(|e: IvantiError| e.to_string())?;
+    let creds = Creds {
+        user: a.user.clone(),
+        password: a.password.clone(),
+    };
+    let mut p = CliPrompter {
+        code: a.code.clone(),
+    };
+    s.login(&creds, a.realm.as_deref(), &mut p)
+        .map_err(|e: IvantiError| e.to_string())?;
     let dsid = s.dsid.clone().ok_or("login returned no DSID")?;
-    println!("# authenticated — DSID session established on {}", s.ep.host_header());
+    println!(
+        "# authenticated — DSID session established on {}",
+        s.ep.host_header()
+    );
     println!("# DSID={}…", &dsid[..dsid.len().min(8)]);
     Ok(s)
 }
@@ -143,7 +180,14 @@ fn do_login(a: &Args) -> Result<Session, String> {
 /// Needs root.
 fn connect(a: &Args) -> Result<(), String> {
     let mut s = do_login(a)?;
-    tunnel::run(&mut s, tunnel::RunOpts { no_routes: a.no_routes, no_esp: a.no_esp, watch_stdin: true })
+    tunnel::run(
+        &mut s,
+        tunnel::RunOpts {
+            no_routes: a.no_routes,
+            no_esp: a.no_esp,
+            watch_stdin: true,
+        },
+    )
 }
 
 struct CliPrompter {
@@ -153,16 +197,22 @@ struct CliPrompter {
 impl Prompter for CliPrompter {
     fn password(&mut self, label: &str) -> Result<String, String> {
         crate::report::prompt("answer", label);
-        crate::anyconnect::read_secret(&format!("{label}: ")).ok_or_else(|| "no password provided".into())
+        crate::anyconnect::read_secret(&format!("{label}: "))
+            .ok_or_else(|| "no password provided".into())
     }
 
     fn challenge(&mut self, message: &str) -> Result<String, String> {
         if let Some(c) = self.code.take() {
             return Ok(c);
         }
-        let msg = if message.trim().is_empty() { "Enter the verification code" } else { message };
+        let msg = if message.trim().is_empty() {
+            "Enter the verification code"
+        } else {
+            message
+        };
         crate::report::prompt("code", msg);
-        crate::anyconnect::read_secret("Code: ").ok_or_else(|| "verification code required but none provided".into())
+        crate::anyconnect::read_secret("Code: ")
+            .ok_or_else(|| "verification code required but none provided".into())
     }
 
     fn info(&mut self, line: &str) {
@@ -180,14 +230,36 @@ mod tests {
 
     #[test]
     fn connect_args() {
-        let a = args(&["-g", "vpn.example.com", "-u", "alice", "--realm", "Users", "--no-esp", "--connect"]).unwrap();
-        assert_eq!((a.host.as_str(), a.user.as_str(), a.realm.as_deref()), ("vpn.example.com", "alice", Some("Users")));
+        let a = args(&[
+            "-g",
+            "vpn.example.com",
+            "-u",
+            "alice",
+            "--realm",
+            "Users",
+            "--no-esp",
+            "--connect",
+        ])
+        .unwrap();
+        assert_eq!(
+            (a.host.as_str(), a.user.as_str(), a.realm.as_deref()),
+            ("vpn.example.com", "alice", Some("Users"))
+        );
         assert!(a.no_esp && a.action == Action::Connect && a.url == DEFAULT_URL);
     }
 
     #[test]
     fn custom_sign_in_url() {
-        let a = args(&["-g", "vpn.example.com", "-u", "bob", "--url", "url_corp", "--login"]).unwrap();
+        let a = args(&[
+            "-g",
+            "vpn.example.com",
+            "-u",
+            "bob",
+            "--url",
+            "url_corp",
+            "--login",
+        ])
+        .unwrap();
         assert_eq!(a.url, "url_corp");
     }
 

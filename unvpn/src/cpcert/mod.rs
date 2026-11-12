@@ -30,16 +30,23 @@ impl GatewayInfo {
     pub fn from_hello(resp: &crate::ccc::Packet) -> GatewayInfo {
         use crate::ccc::Value;
         let mut info = GatewayInfo::default();
-        if let Some(Value::Map(fps)) = resp.path(&["ResponseData", "connectivity_info", "internal_ca_fingerprint"]) {
+        if let Some(Value::Map(fps)) = resp.path(&[
+            "ResponseData",
+            "connectivity_info",
+            "internal_ca_fingerprint",
+        ]) {
             for (_, v) in fps {
                 if let Some(t) = v.text() {
                     if let Ok(b) = crate::ccc::deobfuscate(&t) {
-                        info.ca_fingerprints.push(String::from_utf8_lossy(&b).trim().to_string());
+                        info.ca_fingerprints
+                            .push(String::from_utf8_lossy(&b).trim().to_string());
                     }
                 }
             }
         }
-        if let Some(Value::Map(opts)) = resp.path(&["ResponseData", "login_options_data", "login_options_list"]) {
+        if let Some(Value::Map(opts)) =
+            resp.path(&["ResponseData", "login_options_data", "login_options_list"])
+        {
             for (_, o) in opts {
                 let text = |k: &str| o.get(k).and_then(|v| v.text()).unwrap_or_default();
                 let mut factors = Vec::new();
@@ -70,14 +77,27 @@ impl GatewayInfo {
     pub fn certificate_option(&self, wanted: Option<&str>) -> Result<LoginOption, String> {
         if let Some(w) = wanted {
             return self.option(w).cloned().ok_or_else(|| {
-                format!("the gateway has no login option {w:?} (it offers: {})", self.describe_options())
+                format!(
+                    "the gateway has no login option {w:?} (it offers: {})",
+                    self.describe_options()
+                )
             });
         }
         self.login_options
             .iter()
-            .find(|o| o.factors.first().map(|f| f == "certificate").unwrap_or(false))
+            .find(|o| {
+                o.factors
+                    .first()
+                    .map(|f| f == "certificate")
+                    .unwrap_or(false)
+            })
             .cloned()
-            .ok_or_else(|| format!("the gateway offers no certificate login (it offers: {})", self.describe_options()))
+            .ok_or_else(|| {
+                format!(
+                    "the gateway offers no certificate login (it offers: {})",
+                    self.describe_options()
+                )
+            })
     }
 
     pub fn describe_options(&self) -> String {
@@ -115,8 +135,18 @@ pub fn cmd_enroll(args: &[String]) {
             "-g" | "--gateway" => gateway = it.next().cloned(),
             "-r" | "--regkey" | "--registration-key" => regkey = it.next().cloned(),
             "-o" | "--out" => out = it.next().cloned(),
-            "--key-bits" => key_bits = it.next().and_then(|v| v.parse().ok()).unwrap_or_else(|| usage()),
-            "--port" => port = it.next().and_then(|v| v.parse().ok()).unwrap_or_else(|| usage()),
+            "--key-bits" => {
+                key_bits = it
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or_else(|| usage())
+            }
+            "--port" => {
+                port = it
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or_else(|| usage())
+            }
             "--resume" => resume = true,
             "--resend" => resend = true,
             "--trust-ca" => trust_ca = true,
@@ -220,9 +250,11 @@ pub fn cmd_enroll(args: &[String]) {
 /// twice on a terminal.
 fn read_new_password() -> Result<String, String> {
     let tty = unsafe { libc::isatty(libc::STDIN_FILENO) == 1 };
-    let first = crate::anyconnect::read_secret("Certificate password: ").ok_or("no certificate password given")?;
+    let first = crate::anyconnect::read_secret("Certificate password: ")
+        .ok_or("no certificate password given")?;
     if tty {
-        let again = crate::anyconnect::read_secret("Repeat the password: ").ok_or("no certificate password given")?;
+        let again = crate::anyconnect::read_secret("Repeat the password: ")
+            .ok_or("no certificate password given")?;
         if again != first {
             return Err("the passwords do not match".into());
         }

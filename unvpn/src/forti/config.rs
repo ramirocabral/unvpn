@@ -125,7 +125,9 @@ fn start_tags(xml: &str) -> Vec<(String, BTreeMap<String, String>)> {
                 break;
             }
         }
-        let Some(close_rel) = xml[i..].find('>') else { break };
+        let Some(close_rel) = xml[i..].find('>') else {
+            break;
+        };
         let inner = &xml[i + 1..i + close_rel];
         let inner = inner.trim_end_matches('/').trim();
         if let Some((name, rest)) = split_name(inner) {
@@ -141,7 +143,9 @@ fn split_name(inner: &str) -> Option<(String, &str)> {
     if inner.is_empty() {
         return None;
     }
-    let end = inner.find(|c: char| c.is_whitespace()).unwrap_or(inner.len());
+    let end = inner
+        .find(|c: char| c.is_whitespace())
+        .unwrap_or(inner.len());
     let name = inner[..end].to_string();
     Some((name, &inner[end..]))
 }
@@ -231,7 +235,10 @@ mod tests {
         assert!(c.domains.contains("corp.example.com"));
         assert_eq!(c.routes.len(), 2);
         assert_eq!(c.exclude.len(), 1);
-        assert_eq!(c.routes[0].net, "10.0.0.0".parse::<std::net::Ipv4Addr>().unwrap());
+        assert_eq!(
+            c.routes[0].net,
+            "10.0.0.0".parse::<std::net::Ipv4Addr>().unwrap()
+        );
     }
 
     #[test]

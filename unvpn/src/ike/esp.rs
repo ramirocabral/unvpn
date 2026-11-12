@@ -77,8 +77,16 @@ impl EspSa {
             cipher,
             digest,
             icv_len,
-            (spi_in, &km_in[..enc_len], &km_in[enc_len..enc_len + auth_len]),
-            (spi_out, &km_out[..enc_len], &km_out[enc_len..enc_len + auth_len]),
+            (
+                spi_in,
+                &km_in[..enc_len],
+                &km_in[enc_len..enc_len + auth_len],
+            ),
+            (
+                spi_out,
+                &km_out[..enc_len],
+                &km_out[enc_len..enc_len + auth_len],
+            ),
         ))
     }
 
@@ -168,7 +176,12 @@ impl EspSa {
             return Err("ESP ICV mismatch".into());
         }
         let seq = u32::from_be_bytes(esp[4..8].try_into().unwrap());
-        if !self.replay.lock().unwrap_or_else(|p| p.into_inner()).check(seq) {
+        if !self
+            .replay
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .check(seq)
+        {
             return Err(format!("ESP replayed or stale sequence {seq}"));
         }
         let iv = &signed[8..8 + self.iv_len];
@@ -232,7 +245,16 @@ mod tests {
     #[test]
     fn esp_rejects_tampered_icv() {
         let km = vec![3u8; 44];
-        let sa = EspSa::new(u8::from(TransformId::Esp3Des), ESP_AUTH_HMAC_SHA96, 0, 1, &km, 1, &km).unwrap();
+        let sa = EspSa::new(
+            u8::from(TransformId::Esp3Des),
+            ESP_AUTH_HMAC_SHA96,
+            0,
+            1,
+            &km,
+            1,
+            &km,
+        )
+        .unwrap();
         let mut esp = sa.encode(&[1, 2, 3, 4]).unwrap();
         let n = esp.len();
         esp[n - 1] ^= 0xff;
@@ -242,7 +264,16 @@ mod tests {
     #[test]
     fn esp_rejects_replayed_and_stale_packets() {
         let km = vec![5u8; 44];
-        let sa = EspSa::new(u8::from(TransformId::Esp3Des), ESP_AUTH_HMAC_SHA96, 0, 1, &km, 1, &km).unwrap();
+        let sa = EspSa::new(
+            u8::from(TransformId::Esp3Des),
+            ESP_AUTH_HMAC_SHA96,
+            0,
+            1,
+            &km,
+            1,
+            &km,
+        )
+        .unwrap();
         let pkts: Vec<Vec<u8>> = (0..70).map(|i| sa.encode(&[i as u8; 8]).unwrap()).collect();
         assert!(sa.decode(&pkts[1]).is_ok());
         assert!(sa.decode(&pkts[0]).is_ok());
@@ -263,7 +294,16 @@ mod bench {
     #[ignore]
     fn esp_throughput() {
         let km = vec![9u8; 64];
-        let sa = EspSa::new(u8::from(TransformId::EspAesCbc), ESP_AUTH_HMAC_SHA256, 256, 1, &km, 1, &km).unwrap();
+        let sa = EspSa::new(
+            u8::from(TransformId::EspAesCbc),
+            ESP_AUTH_HMAC_SHA256,
+            256,
+            1,
+            &km,
+            1,
+            &km,
+        )
+        .unwrap();
         let pkt = vec![0x45u8; 1400];
         let n = 100_000;
         let t = std::time::Instant::now();
@@ -273,6 +313,9 @@ mod bench {
         }
         let el = t.elapsed();
         let mbit = (n as f64 * 1400.0 * 8.0) / el.as_secs_f64() / 1e6;
-        eprintln!("{n}× enc+dec 1400 B: {el:?} → {:.2} µs/round-trip, {mbit:.0} Mbit/s", el.as_secs_f64() * 1e6 / n as f64);
+        eprintln!(
+            "{n}× enc+dec 1400 B: {el:?} → {:.2} µs/round-trip, {mbit:.0} Mbit/s",
+            el.as_secs_f64() * 1e6 / n as f64
+        );
     }
 }

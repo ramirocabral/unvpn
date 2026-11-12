@@ -23,7 +23,9 @@ use webkit6::prelude::*;
 fn xdg_dir(var: &str, fallback: &str) -> std::path::PathBuf {
     match std::env::var_os(var).filter(|v| !v.is_empty()) {
         Some(x) => std::path::PathBuf::from(x),
-        None => std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(fallback),
+        None => {
+            std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(fallback)
+        }
     }
 }
 
@@ -56,7 +58,11 @@ pub fn open(
     on_done: impl Fn(Result<String, String>) + 'static,
 ) -> adw::Window {
     let session = SESSION.with(|s| s.clone());
-    let view = webkit6::WebView::builder().network_session(&session).vexpand(true).hexpand(true).build();
+    let view = webkit6::WebView::builder()
+        .network_session(&session)
+        .vexpand(true)
+        .hexpand(true)
+        .build();
 
     // Override the User-Agent (e.g. present as Windows) before the first load, so
     // the IdP's device-platform check sees it.
@@ -70,7 +76,11 @@ pub fn open(
         SsoWatch::Cookie { final_url, .. } => final_url.as_str(),
         SsoWatch::GpHeaders | SsoWatch::Loopback => login,
     };
-    let host = if shown_url.starts_with("data:") { String::new() } else { shown_url.split('/').nth(2).unwrap_or_default().to_string() };
+    let host = if shown_url.starts_with("data:") {
+        String::new()
+    } else {
+        shown_url.split('/').nth(2).unwrap_or_default().to_string()
+    };
     let header = adw::HeaderBar::builder()
         .title_widget(&adw::WindowTitle::new("VPN sign-in", &host))
         .build();
@@ -137,7 +147,10 @@ pub fn open(
                     .filter_map(|c| Some((c.name()?.to_string(), c.value()?.to_string())))
                     .collect();
                 let get = |name: &str| {
-                    cookies.iter().find(|(n, v)| n == name && !v.is_empty()).map(|(_, v)| v.clone())
+                    cookies
+                        .iter()
+                        .find(|(n, v)| n == name && !v.is_empty())
+                        .map(|(_, v)| v.clone())
                 };
                 let res = match get(&cookie) {
                     Some(t) => Ok(t),
@@ -204,7 +217,11 @@ pub fn open(
 /// (`http://127.0.0.1:<port>` / `http://localhost:<port>`). Nothing to scrape —
 /// once the window reaches loopback the engine already took the token, so finish
 /// and close the window. The data path comes up from the engine side.
-fn watch_loopback(view: &webkit6::WebView, win: &adw::Window, finish: Rc<dyn Fn(Result<String, String>)>) {
+fn watch_loopback(
+    view: &webkit6::WebView,
+    win: &adw::Window,
+    finish: Rc<dyn Fn(Result<String, String>)>,
+) {
     view.connect_load_changed({
         let finish = finish.clone();
         let win = win.downgrade();
@@ -230,7 +247,11 @@ fn watch_loopback(view: &webkit6::WebView, win: &adw::Window, finish: Rc<dyn Fn(
 /// SAML flow, or on a `globalprotectcallback:` navigation (never followed). The
 /// answer for the engine is `saml-username=…;<cookie-name>=…` (values
 /// percent-encoded) or the callback URL itself.
-fn watch_gp(view: &webkit6::WebView, win: &adw::Window, finish: Rc<dyn Fn(Result<String, String>)>) {
+fn watch_gp(
+    view: &webkit6::WebView,
+    win: &adw::Window,
+    finish: Rc<dyn Fn(Result<String, String>)>,
+) {
     let close_later = |win: glib::WeakRef<adw::Window>| {
         glib::idle_add_local_once(move || {
             if let Some(w) = win.upgrade() {
@@ -243,8 +264,14 @@ fn watch_gp(view: &webkit6::WebView, win: &adw::Window, finish: Rc<dyn Fn(Result
         let finish = finish.clone();
         let win = win.downgrade();
         move |_, decision, _| {
-            let Some(nav) = decision.downcast_ref::<webkit6::NavigationPolicyDecision>() else { return false };
-            let uri = nav.navigation_action().and_then(|a| a.request()).and_then(|r| r.uri()).unwrap_or_default();
+            let Some(nav) = decision.downcast_ref::<webkit6::NavigationPolicyDecision>() else {
+                return false;
+            };
+            let uri = nav
+                .navigation_action()
+                .and_then(|a| a.request())
+                .and_then(|r| r.uri())
+                .unwrap_or_default();
             if !uri.starts_with("globalprotectcallback:") {
                 return false;
             }
@@ -261,17 +288,29 @@ fn watch_gp(view: &webkit6::WebView, win: &adw::Window, finish: Rc<dyn Fn(Result
             if ev != webkit6::LoadEvent::Finished {
                 return;
             }
-            let Some(h) = v.main_resource().and_then(|r| r.response()).and_then(|r| r.http_headers()) else { return };
+            let Some(h) = v
+                .main_resource()
+                .and_then(|r| r.response())
+                .and_then(|r| r.http_headers())
+            else {
+                return;
+            };
             let get = |n: &str| h.one(n).map(|v| v.to_string()).filter(|v| !v.is_empty());
             if get("saml-auth-status").as_deref() == Some("-1") {
                 finish(Err("SAML login failed (saml-auth-status -1)".into()));
                 close_later(win.clone());
                 return;
             }
-            let found = ["prelogin-cookie", "portal-userauthcookie"].into_iter().find_map(|n| get(n).map(|v| (n, v)));
+            let found = ["prelogin-cookie", "portal-userauthcookie"]
+                .into_iter()
+                .find_map(|n| get(n).map(|v| (n, v)));
             let Some((name, value)) = found else { return };
             let user = get("saml-username").unwrap_or_default();
-            finish(Ok(format!("saml-username={};{name}={}", pct(&user), pct(&value))));
+            finish(Ok(format!(
+                "saml-username={};{name}={}",
+                pct(&user),
+                pct(&value)
+            )));
             close_later(win.clone());
         }
     });
@@ -281,7 +320,9 @@ fn watch_gp(view: &webkit6::WebView, win: &adw::Window, finish: Rc<dyn Fn(Result
 fn pct(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
             _ => format!("%{b:02X}"),
         })
         .collect()

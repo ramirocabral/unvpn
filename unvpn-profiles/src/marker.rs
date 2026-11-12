@@ -48,7 +48,10 @@ pub const ERROR_TUNNEL: &str = "tunnel";
 pub enum Marker {
     /// A question for the user (`code`, `push`, `sso`, `trust`, …), answered with
     /// one stdin line.
-    Prompt { kind: String, message: String },
+    Prompt {
+        kind: String,
+        message: String,
+    },
     /// SSO: the sign-in page to open.
     SamlUrl(String),
     /// SSO in an embedded browser: the page that ends the flow…
@@ -65,7 +68,10 @@ pub enum Marker {
     /// The tunnel's network interface.
     Iface(String),
     /// The run failed; `kind` is [`ERROR_CONNECT`] or [`ERROR_TUNNEL`].
-    Error { kind: String, message: String },
+    Error {
+        kind: String,
+        message: String,
+    },
 }
 
 const PROMPT: &str = "AUTH-PROMPT";
@@ -97,9 +103,17 @@ impl Marker {
             Marker::SamlHeaders(h) => format!("# {SAML_HEADERS}: {}", one_line(h)),
             Marker::State(s) => format!("# {STATE}: {}", s.as_str()),
             Marker::Ip(ip) => format!("# {IP}: {ip}"),
-            Marker::Dns(d) => format!("# {DNS}: {}", d.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", ")),
+            Marker::Dns(d) => format!(
+                "# {DNS}: {}",
+                d.iter()
+                    .map(|a| a.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
             Marker::Iface(i) => format!("# {IFACE}: {}", word(i)),
-            Marker::Error { kind, message } => format!("# {ERROR}: {}: {}", word(kind), one_line(message)),
+            Marker::Error { kind, message } => {
+                format!("# {ERROR}: {}: {}", word(kind), one_line(message))
+            }
         }
     }
 }
@@ -130,8 +144,12 @@ pub fn parse(line: &str) -> Option<Marker> {
         STATE => Marker::State(State::parse(value.trim())?),
         IP => Marker::Ip(value.trim().parse().ok()?),
         DNS => {
-            let list: Option<Vec<IpAddr>> =
-                value.split(',').map(str::trim).filter(|s| !s.is_empty()).map(|s| s.parse().ok()).collect();
+            let list: Option<Vec<IpAddr>> = value
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| s.parse().ok())
+                .collect();
             Marker::Dns(list?)
         }
         IFACE => {
@@ -151,20 +169,27 @@ pub fn parse(line: &str) -> Option<Marker> {
 
 /// A Linux interface name: 1–15 of `[A-Za-z0-9_.-]`, so it is safe in a `/sys` path.
 pub fn is_iface_name(s: &str) -> bool {
-    (1..=15).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
+    (1..=15).contains(&s.len())
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
 }
 
 /// Text flattened to one short line for the log and markers: control characters
 /// become spaces, whitespace runs collapse, cut at 300 characters.
 pub fn one_line(s: &str) -> String {
-    let flat: String = s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    let flat: String = s
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
     let flat = flat.split_whitespace().collect::<Vec<_>>().join(" ");
     flat.chars().take(300).collect()
 }
 
 /// A URL or name with control and whitespace characters removed.
 pub fn one_word(s: &str) -> String {
-    s.chars().filter(|c| !c.is_control() && !c.is_whitespace()).collect()
+    s.chars()
+        .filter(|c| !c.is_control() && !c.is_whitespace())
+        .collect()
 }
 
 /// A short token (a prompt or error kind): no `:` either, so it can't swallow the text after it.
@@ -182,32 +207,64 @@ mod tests {
 
     #[test]
     fn every_marker_reads_back() {
-        round_trip(Marker::Prompt { kind: "code".into(), message: "Enter the code".into() });
-        round_trip(Marker::Prompt { kind: "push".into(), message: String::new() });
-        round_trip(Marker::SamlUrl("https://vpn.example.com/remote/saml/start?x=1".into()));
-        round_trip(Marker::SamlFinal("https://vpn.example.com/+CSCOE+/saml_ac_login.html".into()));
+        round_trip(Marker::Prompt {
+            kind: "code".into(),
+            message: "Enter the code".into(),
+        });
+        round_trip(Marker::Prompt {
+            kind: "push".into(),
+            message: String::new(),
+        });
+        round_trip(Marker::SamlUrl(
+            "https://vpn.example.com/remote/saml/start?x=1".into(),
+        ));
+        round_trip(Marker::SamlFinal(
+            "https://vpn.example.com/+CSCOE+/saml_ac_login.html".into(),
+        ));
         round_trip(Marker::SamlCookie("acSamlv2Token".into()));
         round_trip(Marker::SamlHeaders("saml-username prelogin-cookie".into()));
-        for s in [State::Connecting, State::Up, State::Reconnecting, State::Down] {
+        for s in [
+            State::Connecting,
+            State::Up,
+            State::Reconnecting,
+            State::Down,
+        ] {
             round_trip(Marker::State(s));
         }
         round_trip(Marker::Ip("198.51.100.7".parse().unwrap()));
-        round_trip(Marker::Dns(vec!["203.0.113.53".parse().unwrap(), "2001:db8::53".parse().unwrap()]));
+        round_trip(Marker::Dns(vec![
+            "203.0.113.53".parse().unwrap(),
+            "2001:db8::53".parse().unwrap(),
+        ]));
         round_trip(Marker::Dns(Vec::new()));
         round_trip(Marker::Iface("unvpn0".into()));
-        round_trip(Marker::Error { kind: ERROR_TUNNEL.into(), message: "tunnel dropped (read: EOF) and gave up".into() });
+        round_trip(Marker::Error {
+            kind: ERROR_TUNNEL.into(),
+            message: "tunnel dropped (read: EOF) and gave up".into(),
+        });
     }
 
     #[test]
     fn the_lines_front_ends_have_always_read() {
         assert_eq!(
             parse("# AUTH-PROMPT: code: Enter the code: now"),
-            Some(Marker::Prompt { kind: "code".into(), message: "Enter the code: now".into() })
+            Some(Marker::Prompt {
+                kind: "code".into(),
+                message: "Enter the code: now".into()
+            })
         );
-        assert_eq!(parse("# AUTH-PROMPT: push"), Some(Marker::Prompt { kind: "push".into(), message: String::new() }));
+        assert_eq!(
+            parse("# AUTH-PROMPT: push"),
+            Some(Marker::Prompt {
+                kind: "push".into(),
+                message: String::new()
+            })
+        );
         assert_eq!(
             parse("# SAML-HEADERS: saml-username prelogin-cookie portal-userauthcookie"),
-            Some(Marker::SamlHeaders("saml-username prelogin-cookie portal-userauthcookie".into()))
+            Some(Marker::SamlHeaders(
+                "saml-username prelogin-cookie portal-userauthcookie".into()
+            ))
         );
     }
 
@@ -216,7 +273,10 @@ mod tests {
         assert_eq!(parse("gateway says # AUTH-PROMPT: code: x"), None);
         assert_eq!(parse("#AUTH-PROMPT: code: x"), None);
         assert_eq!(parse("AUTH-PROMPT: code: x"), None);
-        assert_eq!(parse("# TUNNEL UP. (send 'disconnect' on stdin or SIGTERM to stop)"), None);
+        assert_eq!(
+            parse("# TUNNEL UP. (send 'disconnect' on stdin or SIGTERM to stop)"),
+            None
+        );
         assert_eq!(parse("# DNS → [203.0.113.53]"), None);
         assert_eq!(parse("# STATE: up — try again"), None);
         assert_eq!(parse("# IP: 198.51.100.7 — try again"), None);
@@ -227,12 +287,20 @@ mod tests {
 
     #[test]
     fn values_are_flattened_when_written() {
-        let m = Marker::Prompt { kind: "code".into(), message: "a\n# STATE: up".into() };
+        let m = Marker::Prompt {
+            kind: "code".into(),
+            message: "a\n# STATE: up".into(),
+        };
         assert_eq!(m.line(), "# AUTH-PROMPT: code: a # STATE: up");
-        let m = Marker::Error { kind: "x: y".into(), message: "line\r\nERROR".into() };
+        let m = Marker::Error {
+            kind: "x: y".into(),
+            message: "line\r\nERROR".into(),
+        };
         assert_eq!(m.line(), "# ERROR: xy: line ERROR");
-        assert_eq!(Marker::SamlUrl("https://idp.example.com/a\n# AUTH-PROMPT: keypass: x".into()).line(),
-            "# SAML-URL: https://idp.example.com/a#AUTH-PROMPT:keypass:x");
+        assert_eq!(
+            Marker::SamlUrl("https://idp.example.com/a\n# AUTH-PROMPT: keypass: x".into()).line(),
+            "# SAML-URL: https://idp.example.com/a#AUTH-PROMPT:keypass:x"
+        );
     }
 
     #[test]

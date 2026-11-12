@@ -138,7 +138,8 @@ impl Msg {
     fn start(&mut self, ty: u16) -> usize {
         let at = self.buf.len();
         self.buf.extend_from_slice(&[0, 0]);
-        self.buf.extend_from_slice(&(ty | NLA_F_NESTED).to_ne_bytes());
+        self.buf
+            .extend_from_slice(&(ty | NLA_F_NESTED).to_ne_bytes());
         at
     }
 
@@ -206,7 +207,10 @@ fn parse_sockaddr(b: &[u8]) -> Option<SocketAddr> {
     let fam = u16::from_ne_bytes([b[0], b[1]]) as i32;
     if fam == libc::AF_INET && b.len() >= 8 {
         let port = u16::from_be_bytes([b[2], b[3]]);
-        Some(SocketAddr::new(IpAddr::from([b[4], b[5], b[6], b[7]]), port))
+        Some(SocketAddr::new(
+            IpAddr::from([b[4], b[5], b[6], b[7]]),
+            port,
+        ))
     } else if fam == libc::AF_INET6 && b.len() >= 24 {
         let port = u16::from_be_bytes([b[2], b[3]]);
         let ip: [u8; 16] = b[8..24].try_into().ok()?;
@@ -236,7 +240,13 @@ fn allowed_ip(m: &mut Msg, n: &Net) {
 /// more allowed IPs than fit spill into follow-up UPDATE_ONLY messages.
 fn set_messages(family: u16, ifname: &str, dev: &DeviceSet, seq: &mut u32) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
-    let mut m = Msg::new(family, NLM_F_REQUEST | NLM_F_ACK, next(seq), WG_CMD_SET_DEVICE, WG_GENL_VERSION);
+    let mut m = Msg::new(
+        family,
+        NLM_F_REQUEST | NLM_F_ACK,
+        next(seq),
+        WG_CMD_SET_DEVICE,
+        WG_GENL_VERSION,
+    );
     m.str(WGDEVICE_A_IFNAME, ifname);
     m.attr(WGDEVICE_A_PRIVATE_KEY, &dev.private_key);
     m.u32(WGDEVICE_A_FLAGS, WGDEVICE_F_REPLACE_PEERS);
@@ -256,7 +266,9 @@ fn set_messages(family: u16, ifname: &str, dev: &DeviceSet, seq: &mut u32) -> Ve
             m.attr(WGPEER_A_ENDPOINT, &sockaddr_bytes(ep));
         }
         m.u16(WGPEER_A_PERSISTENT_KEEPALIVE_INTERVAL, p.keepalive);
-        let (first, rest) = p.allowed_ips.split_at(p.allowed_ips.len().min(ALLOWED_IPS_PER_MSG));
+        let (first, rest) = p
+            .allowed_ips
+            .split_at(p.allowed_ips.len().min(ALLOWED_IPS_PER_MSG));
         let ips = m.start(WGPEER_A_ALLOWEDIPS);
         for n in first {
             allowed_ip(&mut m, n);
@@ -272,7 +284,13 @@ fn set_messages(family: u16, ifname: &str, dev: &DeviceSet, seq: &mut u32) -> Ve
 
     for (key, rest) in spill {
         for chunk in rest.chunks(ALLOWED_IPS_PER_MSG) {
-            let mut m = Msg::new(family, NLM_F_REQUEST | NLM_F_ACK, next(seq), WG_CMD_SET_DEVICE, WG_GENL_VERSION);
+            let mut m = Msg::new(
+                family,
+                NLM_F_REQUEST | NLM_F_ACK,
+                next(seq),
+                WG_CMD_SET_DEVICE,
+                WG_GENL_VERSION,
+            );
             m.str(WGDEVICE_A_IFNAME, ifname);
             let peers = m.start(WGDEVICE_A_PEERS);
             let a = m.start(0);
@@ -302,7 +320,9 @@ fn parse_device_part(payload: &[u8], st: &mut DeviceState) {
     for (ty, v) in attrs(payload) {
         match ty {
             WGDEVICE_A_PUBLIC_KEY if v.len() == 32 => st.public_key.copy_from_slice(v),
-            WGDEVICE_A_LISTEN_PORT if v.len() >= 2 => st.listen_port = u16::from_ne_bytes([v[0], v[1]]),
+            WGDEVICE_A_LISTEN_PORT if v.len() >= 2 => {
+                st.listen_port = u16::from_ne_bytes([v[0], v[1]])
+            }
             WGDEVICE_A_PEERS => {
                 for (_, pv) in attrs(v) {
                     let mut p = PeerState::default();
@@ -311,10 +331,15 @@ fn parse_device_part(payload: &[u8], st: &mut DeviceState) {
                             WGPEER_A_PUBLIC_KEY if x.len() == 32 => p.public_key.copy_from_slice(x),
                             WGPEER_A_ENDPOINT => p.endpoint = parse_sockaddr(x),
                             WGPEER_A_LAST_HANDSHAKE_TIME if x.len() >= 8 => {
-                                p.last_handshake = i64::from_ne_bytes(x[..8].try_into().unwrap()).max(0) as u64
+                                p.last_handshake =
+                                    i64::from_ne_bytes(x[..8].try_into().unwrap()).max(0) as u64
                             }
-                            WGPEER_A_RX_BYTES if x.len() >= 8 => p.rx_bytes = u64::from_ne_bytes(x[..8].try_into().unwrap()),
-                            WGPEER_A_TX_BYTES if x.len() >= 8 => p.tx_bytes = u64::from_ne_bytes(x[..8].try_into().unwrap()),
+                            WGPEER_A_RX_BYTES if x.len() >= 8 => {
+                                p.rx_bytes = u64::from_ne_bytes(x[..8].try_into().unwrap())
+                            }
+                            WGPEER_A_TX_BYTES if x.len() >= 8 => {
+                                p.tx_bytes = u64::from_ne_bytes(x[..8].try_into().unwrap())
+                            }
                             _ => {}
                         }
                     }
@@ -322,7 +347,7 @@ fn parse_device_part(payload: &[u8], st: &mut DeviceState) {
                         Some(last) if last.public_key == p.public_key => {
                             // Continuation of the previous part's peer (more allowed IPs).
                             if p.last_handshake != 0 || p.rx_bytes != 0 || p.tx_bytes != 0 {
-                            *last = p;
+                                *last = p;
                             }
                         }
                         _ => st.peers.push(p),
@@ -349,24 +374,58 @@ impl Drop for WgNetlink {
 impl WgNetlink {
     /// Fails when the kernel has no WireGuard (module not loaded/available).
     pub fn open() -> Result<WgNetlink, String> {
-        let fd = unsafe { libc::socket(libc::AF_NETLINK, libc::SOCK_RAW | libc::SOCK_CLOEXEC, NETLINK_GENERIC) };
+        let fd = unsafe {
+            libc::socket(
+                libc::AF_NETLINK,
+                libc::SOCK_RAW | libc::SOCK_CLOEXEC,
+                NETLINK_GENERIC,
+            )
+        };
         if fd < 0 {
-            return Err(format!("netlink socket: {}", std::io::Error::last_os_error()));
+            return Err(format!(
+                "netlink socket: {}",
+                std::io::Error::last_os_error()
+            ));
         }
-        let mut s = WgNetlink { fd, family: 0, seq: 0 };
+        let mut s = WgNetlink {
+            fd,
+            family: 0,
+            seq: 0,
+        };
         let mut sa: libc::sockaddr_nl = unsafe { std::mem::zeroed() };
         sa.nl_family = libc::AF_NETLINK as u16;
-        let r = unsafe { libc::bind(fd, &sa as *const _ as *const libc::sockaddr, std::mem::size_of::<libc::sockaddr_nl>() as u32) };
+        let r = unsafe {
+            libc::bind(
+                fd,
+                &sa as *const _ as *const libc::sockaddr,
+                std::mem::size_of::<libc::sockaddr_nl>() as u32,
+            )
+        };
         if r < 0 {
             return Err(format!("netlink bind: {}", std::io::Error::last_os_error()));
         }
         // 5 s receive timeout: a kernel reply is immediate; never hang the engine.
-        let tv = libc::timeval { tv_sec: 5, tv_usec: 0 };
+        let tv = libc::timeval {
+            tv_sec: 5,
+            tv_usec: 0,
+        };
         unsafe {
-            libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_RCVTIMEO, &tv as *const _ as *const libc::c_void, std::mem::size_of::<libc::timeval>() as u32)
+            libc::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_RCVTIMEO,
+                &tv as *const _ as *const libc::c_void,
+                std::mem::size_of::<libc::timeval>() as u32,
+            )
         };
 
-        let mut m = Msg::new(GENL_ID_CTRL, NLM_F_REQUEST | NLM_F_ACK, next(&mut s.seq), CTRL_CMD_GETFAMILY, 1);
+        let mut m = Msg::new(
+            GENL_ID_CTRL,
+            NLM_F_REQUEST | NLM_F_ACK,
+            next(&mut s.seq),
+            CTRL_CMD_GETFAMILY,
+            1,
+        );
         m.str(CTRL_ATTR_FAMILY_NAME, "wireguard");
         let mut family = None;
         s.transact(&m.done(), |payload| {
@@ -376,7 +435,13 @@ impl WgNetlink {
                 }
             }
         })
-        .map_err(|e| if e.contains("No such file") { "the kernel has no WireGuard (genl family not found)".to_string() } else { e })?;
+        .map_err(|e| {
+            if e.contains("No such file") {
+                "the kernel has no WireGuard (genl family not found)".to_string()
+            } else {
+                e
+            }
+        })?;
         s.family = family.ok_or("genl controller returned no family id")?;
         Ok(s)
     }
@@ -388,8 +453,19 @@ impl WgNetlink {
         Ok(())
     }
 
-    pub fn set_keepalive(&mut self, ifname: &str, public_key: &[u8; 32], secs: u16) -> Result<(), String> {
-        let mut m = Msg::new(self.family, NLM_F_REQUEST | NLM_F_ACK, next(&mut self.seq), WG_CMD_SET_DEVICE, WG_GENL_VERSION);
+    pub fn set_keepalive(
+        &mut self,
+        ifname: &str,
+        public_key: &[u8; 32],
+        secs: u16,
+    ) -> Result<(), String> {
+        let mut m = Msg::new(
+            self.family,
+            NLM_F_REQUEST | NLM_F_ACK,
+            next(&mut self.seq),
+            WG_CMD_SET_DEVICE,
+            WG_GENL_VERSION,
+        );
         m.str(WGDEVICE_A_IFNAME, ifname);
         let peers = m.start(WGDEVICE_A_PEERS);
         let a = m.start(0);
@@ -402,7 +478,13 @@ impl WgNetlink {
     }
 
     pub fn get_device(&mut self, ifname: &str) -> Result<DeviceState, String> {
-        let mut m = Msg::new(self.family, NLM_F_REQUEST | NLM_F_ACK | NLM_F_DUMP, next(&mut self.seq), WG_CMD_GET_DEVICE, WG_GENL_VERSION);
+        let mut m = Msg::new(
+            self.family,
+            NLM_F_REQUEST | NLM_F_ACK | NLM_F_DUMP,
+            next(&mut self.seq),
+            WG_CMD_GET_DEVICE,
+            WG_GENL_VERSION,
+        );
         m.str(WGDEVICE_A_IFNAME, ifname);
         let mut st = DeviceState::default();
         self.transact(&m.done(), |payload| parse_device_part(payload, &mut st))?;
@@ -416,14 +498,22 @@ impl WgNetlink {
         let mut sa: libc::sockaddr_nl = unsafe { std::mem::zeroed() };
         sa.nl_family = libc::AF_NETLINK as u16;
         let n = unsafe {
-            libc::sendto(self.fd, req.as_ptr() as *const libc::c_void, req.len(), 0, &sa as *const _ as *const libc::sockaddr, std::mem::size_of::<libc::sockaddr_nl>() as u32)
+            libc::sendto(
+                self.fd,
+                req.as_ptr() as *const libc::c_void,
+                req.len(),
+                0,
+                &sa as *const _ as *const libc::sockaddr,
+                std::mem::size_of::<libc::sockaddr_nl>() as u32,
+            )
         };
         if n < 0 {
             return Err(format!("netlink send: {}", std::io::Error::last_os_error()));
         }
         let mut buf = vec![0u8; 64 * 1024];
         loop {
-            let n = unsafe { libc::recv(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), 0) };
+            let n =
+                unsafe { libc::recv(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), 0) };
             if n < 0 {
                 return Err(format!("netlink recv: {}", std::io::Error::last_os_error()));
             }
@@ -442,11 +532,19 @@ impl WgNetlink {
                 }
                 match ty {
                     NLMSG_ERROR => {
-                        let err = i32::from_ne_bytes(body.get(..4).ok_or("netlink: short error")?.try_into().unwrap());
+                        let err = i32::from_ne_bytes(
+                            body.get(..4)
+                                .ok_or("netlink: short error")?
+                                .try_into()
+                                .unwrap(),
+                        );
                         if err == 0 {
                             return Ok(()); // ACK
                         }
-                        return Err(format!("netlink: {}", std::io::Error::from_raw_os_error(-err)));
+                        return Err(format!(
+                            "netlink: {}",
+                            std::io::Error::from_raw_os_error(-err)
+                        ));
                     }
                     NLMSG_DONE => {
                         // A dump ends with DONE, then the ACK we asked for; DONE is enough.
@@ -477,7 +575,10 @@ mod tests {
                 public_key: [2; 32],
                 preshared_key: None,
                 endpoint: Some("192.0.2.1:51820".parse().unwrap()),
-                allowed_ips: vec![Net::parse("0.0.0.0/0").unwrap(), Net::parse("::/0").unwrap()],
+                allowed_ips: vec![
+                    Net::parse("0.0.0.0/0").unwrap(),
+                    Net::parse("::/0").unwrap(),
+                ],
                 keepalive: 25,
             }],
         };
@@ -485,7 +586,10 @@ mod tests {
         let msgs = set_messages(0x22, "wg-test", &dev, &mut seq);
         assert_eq!(msgs.len(), 1);
         let m = &msgs[0];
-        assert_eq!(u32::from_ne_bytes(m[0..4].try_into().unwrap()) as usize, m.len());
+        assert_eq!(
+            u32::from_ne_bytes(m[0..4].try_into().unwrap()) as usize,
+            m.len()
+        );
         assert_eq!(u16::from_ne_bytes([m[4], m[5]]), 0x22);
         assert_eq!(m[16], WG_CMD_SET_DEVICE);
 
@@ -494,23 +598,47 @@ mod tests {
         assert_eq!(top[1].1, &[1u8; 32][..]);
         let peers = top.iter().find(|(t, _)| *t == WGDEVICE_A_PEERS).unwrap().1;
         let peer: Vec<(u16, &[u8])> = attrs(attrs(peers).next().unwrap().1).collect();
-        let ep = peer.iter().find(|(t, _)| *t == WGPEER_A_ENDPOINT).unwrap().1;
+        let ep = peer
+            .iter()
+            .find(|(t, _)| *t == WGPEER_A_ENDPOINT)
+            .unwrap()
+            .1;
         assert_eq!(parse_sockaddr(ep), Some("192.0.2.1:51820".parse().unwrap()));
-        let ips = peer.iter().find(|(t, _)| *t == WGPEER_A_ALLOWEDIPS).unwrap().1;
+        let ips = peer
+            .iter()
+            .find(|(t, _)| *t == WGPEER_A_ALLOWEDIPS)
+            .unwrap()
+            .1;
         let fams: Vec<u16> = attrs(ips)
-            .map(|(_, ip)| attrs(ip).find(|(t, _)| *t == WGALLOWEDIP_A_FAMILY).map(|(_, v)| u16::from_ne_bytes([v[0], v[1]])).unwrap())
+            .map(|(_, ip)| {
+                attrs(ip)
+                    .find(|(t, _)| *t == WGALLOWEDIP_A_FAMILY)
+                    .map(|(_, v)| u16::from_ne_bytes([v[0], v[1]]))
+                    .unwrap()
+            })
             .collect();
         assert_eq!(fams, vec![libc::AF_INET as u16, libc::AF_INET6 as u16]);
     }
 
     #[test]
     fn big_allowed_ip_sets_are_chunked() {
-        let ips: Vec<Net> = (0..2500u32).map(|i| Net { addr: IpAddr::from((0x0a00_0000 + (i << 8)).to_be_bytes()), prefix: 24 }).collect();
+        let ips: Vec<Net> = (0..2500u32)
+            .map(|i| Net {
+                addr: IpAddr::from((0x0a00_0000 + (i << 8)).to_be_bytes()),
+                prefix: 24,
+            })
+            .collect();
         let dev = DeviceSet {
             private_key: [1; 32],
             listen_port: None,
             fwmark: None,
-            peers: vec![PeerSet { public_key: [2; 32], preshared_key: None, endpoint: None, allowed_ips: ips, keepalive: 0 }],
+            peers: vec![PeerSet {
+                public_key: [2; 32],
+                preshared_key: None,
+                endpoint: None,
+                allowed_ips: ips,
+                keepalive: 0,
+            }],
         };
         let mut seq = 0;
         let msgs = set_messages(0x22, "wg", &dev, &mut seq);

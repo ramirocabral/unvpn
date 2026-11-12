@@ -535,7 +535,10 @@ mod tests {
     #[test]
     fn roundtrip_main_mode() {
         let msg = IsakmpMessage::decode(MM).expect("decode mm.bin");
-        assert_eq!(msg.exchange_type, u8::from(ExchangeType::IdentityProtection));
+        assert_eq!(
+            msg.exchange_type,
+            u8::from(ExchangeType::IdentityProtection)
+        );
         assert_eq!(msg.message_id, 0);
         let sa = match &msg.payloads[0] {
             Payload::Sa(sa) => sa,
@@ -549,9 +552,15 @@ mod tests {
                 .find(|a| a.attr_type == u16::from(ty))
                 .and_then(|a| a.as_u16())
         };
-        assert_eq!(attr(IkeAttributeType::EncryptionAlgorithm), Some(IKE_ENC_AES_CBC));
+        assert_eq!(
+            attr(IkeAttributeType::EncryptionAlgorithm),
+            Some(IKE_ENC_AES_CBC)
+        );
         assert_eq!(attr(IkeAttributeType::HashAlgorithm), Some(IKE_HASH_SHA256));
-        assert_eq!(attr(IkeAttributeType::GroupDescription), Some(IKE_GROUP_MODP1024));
+        assert_eq!(
+            attr(IkeAttributeType::GroupDescription),
+            Some(IKE_GROUP_MODP1024)
+        );
         assert_eq!(
             attr(IkeAttributeType::AuthenticationMethod),
             Some(IKE_AUTH_HYBRID_INIT_RSA)
@@ -575,12 +584,18 @@ mod tests {
                     Transform {
                         number: 1,
                         transform_id: u8::from(TransformId::EspAesCbc),
-                        attributes: vec![Attribute::short(u16::from(EspAttributeType::KeyLength), 256)],
+                        attributes: vec![Attribute::short(
+                            u16::from(EspAttributeType::KeyLength),
+                            256,
+                        )],
                     },
                     Transform {
                         number: 2,
                         transform_id: u8::from(TransformId::Esp3Des),
-                        attributes: vec![Attribute::short(u16::from(EspAttributeType::LifeType), 1)],
+                        attributes: vec![Attribute::short(
+                            u16::from(EspAttributeType::LifeType),
+                            1,
+                        )],
                     },
                 ],
             }],

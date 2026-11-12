@@ -4,7 +4,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::engine::{State, Tx, TrayCmd, UiMsg};
+use crate::engine::{State, TrayCmd, Tx, UiMsg};
 use crate::icon;
 
 pub struct VpnTray {
@@ -49,12 +49,20 @@ impl ksni::Tray for VpnTray {
         let desc = match &*self.state.lock().unwrap() {
             State::Connected => {
                 let p = self.profile.lock().unwrap().clone();
-                if p.is_empty() { "Connected".to_string() } else { p }
+                if p.is_empty() {
+                    "Connected".to_string()
+                } else {
+                    p
+                }
             }
             State::Connecting => "Connecting…".to_string(),
             State::Reconnecting => {
                 let p = self.profile.lock().unwrap().clone();
-                if p.is_empty() { "Reconnecting…".to_string() } else { format!("Reconnecting — {p}") }
+                if p.is_empty() {
+                    "Reconnecting…".to_string()
+                } else {
+                    format!("Reconnecting — {p}")
+                }
             }
             State::Disconnecting => "Disconnecting…".to_string(),
             State::Error(_) => "Error".to_string(),
@@ -74,7 +82,10 @@ impl ksni::Tray for VpnTray {
         use ksni::menu::*;
         let state = self.state.lock().unwrap().clone();
         let active = self.profile.lock().unwrap().clone();
-        let up = matches!(state, State::Connected | State::Connecting | State::Reconnecting);
+        let up = matches!(
+            state,
+            State::Connected | State::Connecting | State::Reconnecting
+        );
 
         let status = match &state {
             State::Connected => format!("Connected — {active}"),
@@ -85,14 +96,24 @@ impl ksni::Tray for VpnTray {
             State::Disconnected => "Disconnected".to_string(),
         };
         let mut items: Vec<MenuItem<Self>> = vec![
-            StandardItem { label: status, enabled: false, ..Default::default() }.into(),
+            StandardItem {
+                label: status,
+                enabled: false,
+                ..Default::default()
+            }
+            .into(),
             MenuItem::Separator,
         ];
 
         let profiles = self.profiles.lock().unwrap().clone();
         if profiles.is_empty() {
             items.push(
-                StandardItem { label: "No saved profiles".into(), enabled: false, ..Default::default() }.into(),
+                StandardItem {
+                    label: "No saved profiles".into(),
+                    enabled: false,
+                    ..Default::default()
+                }
+                .into(),
             );
         }
         // Picking the active profile disconnects it; picking another one switches.
@@ -105,7 +126,11 @@ impl ksni::Tray for VpnTray {
                     checked,
                     enabled: state != State::Disconnecting,
                     activate: Box::new(move |t: &mut Self| {
-                        t.send(if checked { TrayCmd::Disconnect } else { TrayCmd::ConnectProfile(name.clone()) })
+                        t.send(if checked {
+                            TrayCmd::Disconnect
+                        } else {
+                            TrayCmd::ConnectProfile(name.clone())
+                        })
                     }),
                     ..Default::default()
                 }

@@ -60,7 +60,9 @@ impl Status {
     pub fn decode(text: &str) -> Status {
         let mut s = Status::default();
         for line in text.lines() {
-            let Some((k, v)) = line.split_once('=') else { continue };
+            let Some((k, v)) = line.split_once('=') else {
+                continue;
+            };
             match k {
                 "pid" => s.pid = v.parse().unwrap_or(0),
                 "backend" => s.backend = v.to_string(),
@@ -69,7 +71,13 @@ impl Status {
                 "state" => s.state = State::parse(v).unwrap_or_default(),
                 "iface" => s.iface = v.to_string(),
                 "ip" => s.ip = v.to_string(),
-                "dns" => s.dns = v.split(',').filter(|d| !d.is_empty()).map(String::from).collect(),
+                "dns" => {
+                    s.dns = v
+                        .split(',')
+                        .filter(|d| !d.is_empty())
+                        .map(String::from)
+                        .collect()
+                }
                 "since" => s.since = v.parse().unwrap_or(0),
                 "error" => s.error = v.to_string(),
                 _ => {}
@@ -125,7 +133,9 @@ fn json_str(s: &str) -> String {
 /// The engines' sockets, oldest engine first. Includes sockets left behind by an
 /// engine that was killed; [`status`] fails on those.
 pub fn sockets() -> Vec<(u32, PathBuf)> {
-    let Ok(dir) = std::fs::read_dir(RUN_DIR) else { return Vec::new() };
+    let Ok(dir) = std::fs::read_dir(RUN_DIR) else {
+        return Vec::new();
+    };
     let mut v: Vec<(u32, PathBuf)> = dir
         .filter_map(|e| {
             let e = e.ok()?;
@@ -152,7 +162,10 @@ pub fn request(path: &Path, req: &str) -> std::io::Result<String> {
 pub fn status(path: &Path) -> std::io::Result<Status> {
     let text = request(path, "status")?;
     if !text.starts_with("pid=") {
-        return Err(std::io::Error::other(format!("unexpected answer: {}", text.lines().next().unwrap_or(""))));
+        return Err(std::io::Error::other(format!(
+            "unexpected answer: {}",
+            text.lines().next().unwrap_or("")
+        )));
     }
     Ok(Status::decode(&text))
 }
@@ -178,7 +191,10 @@ pub fn log(path: &Path, after: u64) -> std::io::Result<(u64, Vec<String>)> {
 
 /// Every engine answering on its socket, with its status, oldest first.
 pub fn running() -> Vec<(PathBuf, Status)> {
-    sockets().into_iter().filter_map(|(_, p)| status(&p).ok().map(|s| (p, s))).collect()
+    sockets()
+        .into_iter()
+        .filter_map(|(_, p)| status(&p).ok().map(|s| (p, s)))
+        .collect()
 }
 
 #[cfg(test)]
@@ -204,7 +220,10 @@ mod tests {
             s.to_json(),
             r#"{"pid":4242,"backend":"forti","label":"office \"eu\"","gateway":"vpn.example.com","state":"up","iface":"unvpn0","ip":"198.51.100.7","dns":["203.0.113.53","203.0.113.54"],"since":1700000000,"error":""}"#
         );
-        let odd = Status { label: "a\nstate=down".into(), ..Default::default() };
+        let odd = Status {
+            label: "a\nstate=down".into(),
+            ..Default::default()
+        };
         assert_eq!(Status::decode(&odd.encode()).state, State::Connecting);
         assert_eq!(json_str("a\u{1}b"), "\"a\\u0001b\"");
     }

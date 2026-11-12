@@ -23,9 +23,13 @@ static OV_STOP: AtomicBool = AtomicBool::new(false);
 const TUN_NAME: &str = "cpovpn0";
 const MAX_RECONNECT_TRIES: u32 = 10;
 /// Data-channel keepalive magic (`ping.c`): a 16-byte payload, not an IP packet.
-const PING_MAGIC: [u8; 16] = [0x2a, 0x18, 0x7b, 0xf3, 0x64, 0x1e, 0xb4, 0xcb, 0x07, 0xed, 0x2d, 0x0a, 0x98, 0x1f, 0xc7, 0x48];
+const PING_MAGIC: [u8; 16] = [
+    0x2a, 0x18, 0x7b, 0xf3, 0x64, 0x1e, 0xb4, 0xcb, 0x07, 0xed, 0x2d, 0x0a, 0x98, 0x1f, 0xc7, 0x48,
+];
 /// OCC message prefix (`occ.c`); `OCC_EXIT` (6) after it = explicit exit notify.
-const OCC_MAGIC: [u8; 16] = [0x28, 0x7f, 0x34, 0x6b, 0xd4, 0xef, 0x7a, 0x81, 0x2d, 0x56, 0xb8, 0xd3, 0xaf, 0xc5, 0x45, 0x9c];
+const OCC_MAGIC: [u8; 16] = [
+    0x28, 0x7f, 0x34, 0x6b, 0xd4, 0xef, 0x7a, 0x81, 0x2d, 0x56, 0xb8, 0xd3, 0xaf, 0xc5, 0x45, 0x9c,
+];
 const OCC_EXIT: u8 = 6;
 const DEFAULT_CIPHERS: &str = "AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305";
 const VERSION: &str = "2.6.14";
@@ -53,7 +57,12 @@ struct Established {
 
 enum EstablishError {
     /// AUTH_FAILED with a CRV1 dynamic challenge: answer, then reconnect.
-    Challenge { state: String, user: String, text: String, echo: bool },
+    Challenge {
+        state: String,
+        user: String,
+        text: String,
+        echo: bool,
+    },
     AuthFailed(String),
     Other(String),
 }
@@ -73,18 +82,34 @@ pub struct Prepared {
     pub creds: Option<Creds>,
 }
 
-pub fn prepare(cfg: Config, creds: Option<Creds>, key_pass: Option<&str>) -> Result<Prepared, String> {
+pub fn prepare(
+    cfg: Config,
+    creds: Option<Creds>,
+    key_pass: Option<&str>,
+) -> Result<Prepared, String> {
     let id = tls::load_client_id(&cfg, key_pass)?;
     let peer = Arc::new(Mutex::new(PeerInfo::default()));
     let ctx = tls::build_context(&cfg, &id, peer.clone())?;
     let tls_wrap_key = if let Some(t) = &cfg.tls_crypt {
-        Some((Key2::from_static_pem(t).map_err(|e| format!("tls-crypt key: {e}"))?, true))
+        Some((
+            Key2::from_static_pem(t).map_err(|e| format!("tls-crypt key: {e}"))?,
+            true,
+        ))
     } else if let Some(t) = &cfg.tls_auth {
-        Some((Key2::from_static_pem(t).map_err(|e| format!("tls-auth key: {e}"))?, false))
+        Some((
+            Key2::from_static_pem(t).map_err(|e| format!("tls-auth key: {e}"))?,
+            false,
+        ))
     } else {
         None
     };
-    Ok(Prepared { cfg, ctx, peer, tls_wrap_key, creds })
+    Ok(Prepared {
+        cfg,
+        ctx,
+        peer,
+        tls_wrap_key,
+        creds,
+    })
 }
 
 impl Prepared {
@@ -114,8 +139,14 @@ impl Prepared {
     }
 
     fn options_string(&self, remote: &Remote) -> String {
-        let cipher = self.cfg.cipher.clone().unwrap_or_else(|| "AES-256-GCM".into());
-        let keysize = crypto::cipher_by_name(&cipher).map(|(_, k, _)| k * 8).unwrap_or(256);
+        let cipher = self
+            .cfg
+            .cipher
+            .clone()
+            .unwrap_or_else(|| "AES-256-GCM".into());
+        let keysize = crypto::cipher_by_name(&cipher)
+            .map(|(_, k, _)| k * 8)
+            .unwrap_or(256);
         let proto = match remote.proto {
             super::config::Proto::Udp => "UDPv4",
             super::config::Proto::Tcp => "TCPv4_CLIENT",
@@ -129,7 +160,10 @@ impl Prepared {
                 s.push_str(&format!(",keydir {d}"));
             }
         }
-        s.push_str(&format!(",cipher {cipher},auth {},keysize {keysize}", self.cfg.auth));
+        s.push_str(&format!(
+            ",cipher {cipher},auth {},keysize {keysize}",
+            self.cfg.auth
+        ));
         if self.cfg.tls_auth.is_some() {
             s.push_str(",tls-auth");
         }
@@ -159,12 +193,34 @@ fn stopped() -> bool {
 }
 
 /// Runs through the final PUSH_REPLY, with data keys installed.
-fn establish(p: &Prepared, remote: &Remote, creds: Option<Creds>, prompter: &mut dyn Prompter) -> Result<Established, EstablishError> {
-    out!("# connecting to {}:{} ({}) …", remote.host, remote.port, remote.proto.as_str());
+fn establish(
+    p: &Prepared,
+    remote: &Remote,
+    creds: Option<Creds>,
+    prompter: &mut dyn Prompter,
+) -> Result<Established, EstablishError> {
+    out!(
+        "# connecting to {}:{} ({}) …",
+        remote.host,
+        remote.port,
+        remote.proto.as_str()
+    );
     let (link, server) = Link::open(remote, Duration::from_secs(15))?;
     *p.peer.lock().unwrap() = PeerInfo::default();
-    let mut eng = Engine::new(link, p.make_wrap()?, p.ctx.clone(), p.peer.clone(), creds, p.options_string(remote), p.peer_info())?;
-    out!("# {server}:{} — control channel wrap: {}", remote.port, eng.wrap_name());
+    let mut eng = Engine::new(
+        link,
+        p.make_wrap()?,
+        p.ctx.clone(),
+        p.peer.clone(),
+        creds,
+        p.options_string(remote),
+        p.peer_info(),
+    )?;
+    out!(
+        "# {server}:{} — control channel wrap: {}",
+        remote.port,
+        eng.wrap_name()
+    );
 
     let mut deadline = Instant::now() + Duration::from_secs(60);
     let mut push = PushConfig::default();
@@ -177,8 +233,15 @@ fn establish(p: &Prepared, remote: &Remote, creds: Option<Creds>, prompter: &mut
             return Err(EstablishError::Other("cancelled".into()));
         }
         if Instant::now() > deadline {
-            let what = if push_sent.is_some() { "no PUSH_REPLY (authentication not completed)" } else { "TLS handshake timed out" };
-            return Err(EstablishError::Other(format!("{what} — is the server reachable on {}?", remote.proto.as_str())));
+            let what = if push_sent.is_some() {
+                "no PUSH_REPLY (authentication not completed)"
+            } else {
+                "TLS handshake timed out"
+            };
+            return Err(EstablishError::Other(format!(
+                "{what} — is the server reachable on {}?",
+                remote.proto.as_str()
+            )));
         }
         eng.pump()?;
         wait_readable(eng.link.fd(), 200);
@@ -191,7 +254,9 @@ fn establish(p: &Prepared, remote: &Remote, creds: Option<Creds>, prompter: &mut
 
         while let Some(ev) = eng.events.pop_front() {
             match ev {
-                Event::TlsUp { version, cipher, .. } => {
+                Event::TlsUp {
+                    version, cipher, ..
+                } => {
                     let pi = p.peer.lock().unwrap().clone();
                     out!("# TLS up ({version}, {cipher}) — server \"{}\"", pi.subject);
                     if !pi.issuer.is_empty() {
@@ -214,11 +279,18 @@ fn establish(p: &Prepared, remote: &Remote, creds: Option<Creds>, prompter: &mut
                         auth_pending = true;
                         let timeout = r
                             .split(',')
-                            .find_map(|kv| kv.trim().strip_prefix("timeout ").and_then(|s| s.trim().parse::<u64>().ok()))
+                            .find_map(|kv| {
+                                kv.trim()
+                                    .strip_prefix("timeout ")
+                                    .and_then(|s| s.trim().parse::<u64>().ok())
+                            })
                             .unwrap_or(300);
                         deadline = Instant::now() + Duration::from_secs(timeout.clamp(60, 900));
                         out!("# server: authentication pending (up to {timeout}s) — complete it to continue");
-                    } else if let Some(info) = m.strip_prefix("INFO_PRE,").or_else(|| m.strip_prefix("INFO,")) {
+                    } else if let Some(info) = m
+                        .strip_prefix("INFO_PRE,")
+                        .or_else(|| m.strip_prefix("INFO,"))
+                    {
                         handle_info(&mut eng, info, prompter)?;
                     } else if m.starts_with("RESTART") || m.starts_with("HALT") {
                         return Err(EstablishError::Other(format!("server: {m}")));
@@ -243,14 +315,21 @@ fn establish(p: &Prepared, remote: &Remote, creds: Option<Creds>, prompter: &mut
 
 /// `INFO[_PRE],WEB_AUTH::<url>` / `OPEN_URL:<url>` / `CR_TEXT:<flags>:<text>`.
 fn handle_info(eng: &mut Engine, info: &str, prompter: &mut dyn Prompter) -> Result<(), String> {
-    if let Some(url) = info.strip_prefix("WEB_AUTH:").map(|r| r.splitn(2, ':').nth(1).unwrap_or(r)).or_else(|| info.strip_prefix("OPEN_URL:")) {
+    if let Some(url) = info
+        .strip_prefix("WEB_AUTH:")
+        .map(|r| r.splitn(2, ':').nth(1).unwrap_or(r))
+        .or_else(|| info.strip_prefix("OPEN_URL:"))
+    {
         out!("# server requests a web login: {}", sysnet::one_word(url));
         prompter.open_url(url);
     } else if let Some(r) = info.strip_prefix("CR_TEXT:") {
         // CR_TEXT:<flags>:<challenge> → answer with CR_RESPONSE,<base64>.
         let (flags, text) = r.split_once(':').unwrap_or(("", r));
         let resp = prompter.ask("code", text, flags.contains('E'))?;
-        eng.send_text(&format!("CR_RESPONSE,{}", openssl::base64::encode_block(resp.as_bytes())))?;
+        eng.send_text(&format!(
+            "CR_RESPONSE,{}",
+            openssl::base64::encode_block(resp.as_bytes())
+        ))?;
     } else {
         out!("# server info: {}", sysnet::one_line(info));
     }
@@ -262,7 +341,10 @@ fn parse_auth_failed(r: &str) -> EstablishError {
     if let Some(c) = r.strip_prefix("CRV1:") {
         let parts: Vec<&str> = c.splitn(4, ':').collect();
         if parts.len() == 4 {
-            let user = openssl::base64::decode_block(parts[2]).ok().and_then(|v| String::from_utf8(v).ok()).unwrap_or_default();
+            let user = openssl::base64::decode_block(parts[2])
+                .ok()
+                .and_then(|v| String::from_utf8(v).ok())
+                .unwrap_or_default();
             return EstablishError::Challenge {
                 state: parts[1].to_string(),
                 user,
@@ -271,10 +353,19 @@ fn parse_auth_failed(r: &str) -> EstablishError {
             };
         }
     }
-    EstablishError::AuthFailed(if r.is_empty() { "credentials rejected".into() } else { r.to_string() })
+    EstablishError::AuthFailed(if r.is_empty() {
+        "credentials rejected".into()
+    } else {
+        r.to_string()
+    })
 }
 
-fn finish(p: &Prepared, mut eng: Engine, push: PushConfig, server: Ipv4Addr) -> Result<Established, String> {
+fn finish(
+    p: &Prepared,
+    mut eng: Engine,
+    push: PushConfig,
+    server: Ipv4Addr,
+) -> Result<Established, String> {
     let cipher = push
         .cipher
         .clone()
@@ -282,25 +373,43 @@ fn finish(p: &Prepared, mut eng: Engine, push: PushConfig, server: Ipv4Addr) -> 
         .or_else(|| p.cfg.cipher.clone())
         .unwrap_or_else(|| "BF-CBC".into());
     if crypto::cipher_by_name(&cipher).is_none() {
-        return Err(format!("server uses data cipher {cipher}, which is not supported"));
+        return Err(format!(
+            "server uses data cipher {cipher}, which is not supported"
+        ));
     }
     let auth = push.auth.clone().unwrap_or_else(|| p.cfg.auth.clone());
     eng.peer_id = push.peer_id;
-    eng.install_initial_keys(DataParams { cipher: cipher.clone(), auth, ekm: push.tls_ekm })?;
+    eng.install_initial_keys(DataParams {
+        cipher: cipher.clone(),
+        auth,
+        ekm: push.tls_ekm,
+    })?;
     out!(
         "# data channel: {cipher}{} · key derivation {} · {}",
-        if crypto::cipher_by_name(&cipher).map(|c| c.2) == Some(crypto::CipherKind::Cbc) { format!("+HMAC-{}", eng.params.as_ref().unwrap().auth) } else { String::new() },
+        if crypto::cipher_by_name(&cipher).map(|c| c.2) == Some(crypto::CipherKind::Cbc) {
+            format!("+HMAC-{}", eng.params.as_ref().unwrap().auth)
+        } else {
+            String::new()
+        },
         if push.tls_ekm { "TLS-EKM" } else { "TLS1-PRF" },
         match push.peer_id {
             Some(id) => format!("P_DATA_V2 (peer-id {id})"),
             None => "P_DATA_V1".into(),
         }
     );
-    Ok(Established { engine: eng, push, server })
+    Ok(Established {
+        engine: eng,
+        push,
+        server,
+    })
 }
 
 /// One pass over the remotes from `start_at`, answering a CRV1 challenge if raised.
-fn establish_any(p: &mut Prepared, prompter: &mut dyn Prompter, start_at: usize) -> Result<(Established, usize), String> {
+fn establish_any(
+    p: &mut Prepared,
+    prompter: &mut dyn Prompter,
+    start_at: usize,
+) -> Result<(Established, usize), String> {
     let n = p.cfg.remotes.len();
     let mut last_err = String::new();
     for k in 0..n {
@@ -311,10 +420,18 @@ fn establish_any(p: &mut Prepared, prompter: &mut dyn Prompter, start_at: usize)
         for _round in 0..3 {
             match establish(p, &remote, creds.clone(), prompter) {
                 Ok(e) => return Ok((e, idx)),
-                Err(EstablishError::Challenge { state, user, text, echo }) => {
+                Err(EstablishError::Challenge {
+                    state,
+                    user,
+                    text,
+                    echo,
+                }) => {
                     out!("# server challenge: {text}");
                     let answer = prompter.ask("code", &text, echo)?;
-                    creds = Some(Creds { user, pass: format!("CRV1::{state}::{answer}") });
+                    creds = Some(Creds {
+                        user,
+                        pass: format!("CRV1::{state}::{answer}"),
+                    });
                 }
                 Err(EstablishError::AuthFailed(why)) => return Err(format!("AUTH FAILED: {why}")),
                 Err(EstablishError::Other(e)) => {
@@ -352,20 +469,40 @@ pub fn run(mut p: Prepared, prompter: &mut dyn Prompter, opts: RunOpts) -> Resul
         return Ok(());
     }
 
-    let Established { mut engine, mut push, server, .. } = est;
+    let Established {
+        mut engine,
+        mut push,
+        server,
+        ..
+    } = est;
     let (ifc_local, ifc_peer) = push.ifconfig.ok_or("server pushed no `ifconfig` address")?;
     let topology = push.topology();
     let mtu = tun_mtu(&p.cfg, &push);
     let compress = push.compress.or(p.cfg.compress).unwrap_or(Compress::None);
-    let dns = if p.cfg.route_nopull { Vec::new() } else { push.dns.clone() };
+    let dns = if p.cfg.route_nopull {
+        Vec::new()
+    } else {
+        push.dns.clone()
+    };
     out!("# OpenVPN up — IP {ifc_local}  DNS {:?}  (mtu {mtu})", dns);
 
     let (mut tun_file, tun_name) = tun::open_tun(TUN_NAME)?;
     tun::set_nonblocking(&tun_file);
     configure_addr(&tun_name, topology, ifc_local, ifc_peer, true)?;
-    tun::ip(&["link", "set", "dev", &tun_name, "up", "mtu", &mtu.to_string()])?;
+    tun::ip(&[
+        "link",
+        "set",
+        "dev",
+        &tun_name,
+        "up",
+        "mtu",
+        &mtu.to_string(),
+    ])?;
     crate::netmon::ignore_iface(&tun_name);
-    out!("# tun {tun_name} up — {}", addr_desc(topology, ifc_local, ifc_peer));
+    out!(
+        "# tun {tun_name} up — {}",
+        addr_desc(topology, ifc_local, ifc_peer)
+    );
 
     if stopped() {
         say_goodbye(&mut engine);
@@ -392,16 +529,30 @@ pub fn run(mut p: Prepared, prompter: &mut dyn Prompter, opts: RunOpts) -> Resul
     }
 
     let ping = push.ping.or(p.cfg.ping).unwrap_or(10).clamp(1, 60);
-    let ping_restart = push.ping_restart.or(p.cfg.ping_restart).unwrap_or(120).max(ping * 3);
+    let ping_restart = push
+        .ping_restart
+        .or(p.cfg.ping_restart)
+        .unwrap_or(120)
+        .max(ping * 3);
     let reneg = p.cfg.reneg_sec.filter(|&s| s > 0);
-    out!("# liveness: ping {ping}s, ping-restart {ping_restart}s{}", reneg.map(|r| format!(", reneg {r}s")).unwrap_or_default());
+    out!(
+        "# liveness: ping {ping}s, ping-restart {ping_restart}s{}",
+        reneg.map(|r| format!(", reneg {r}s")).unwrap_or_default()
+    );
     out!("# TUNNEL UP. (send 'disconnect' on stdin or SIGTERM to stop)");
     crate::report::gateway(&p.cfg.remotes[remote_idx].host);
     crate::report::up(&tun_name, Some(ifc_local.into()));
 
     let mut fail_streak = 0u32;
     let result: Result<(), String> = 'session: loop {
-        let outcome = data_loop(&mut engine, &mut tun_file, compress, ping, ping_restart, reneg);
+        let outcome = data_loop(
+            &mut engine,
+            &mut tun_file,
+            compress,
+            ping,
+            ping_restart,
+            reneg,
+        );
         if stopped() {
             break 'session Ok(());
         }
@@ -418,7 +569,11 @@ pub fn run(mut p: Prepared, prompter: &mut dyn Prompter, opts: RunOpts) -> Resul
                 break 'session Ok(());
             }
             fail_streak += 1;
-            let delay = if explicit_restart && fail_streak == 1 { 2 } else { reconnect_delay(fail_streak) };
+            let delay = if explicit_restart && fail_streak == 1 {
+                2
+            } else {
+                reconnect_delay(fail_streak)
+            };
             out!("# reconnecting in {delay}s (attempt {fail_streak}/{MAX_RECONNECT_TRIES}) …");
             if sysnet::sleep_interruptible(delay, &OV_STOP) {
                 break 'session Ok(());
@@ -443,13 +598,17 @@ pub fn run(mut p: Prepared, prompter: &mut dyn Prompter, opts: RunOpts) -> Resul
                     break;
                 }
                 Err(e) if e.starts_with("AUTH FAILED") => {
-                    break 'session Err(format!("{e} (session expired — reconnect with fresh credentials)"));
+                    break 'session Err(format!(
+                        "{e} (session expired — reconnect with fresh credentials)"
+                    ));
                 }
                 Err(e) => out!("# reconnect attempt {fail_streak} failed: {e}"),
             }
         }
         if !reconnected {
-            break 'session Err(format!("tunnel dropped ({reason}) and gave up after {MAX_RECONNECT_TRIES} attempts"));
+            break 'session Err(format!(
+                "tunnel dropped ({reason}) and gave up after {MAX_RECONNECT_TRIES} attempts"
+            ));
         }
         fail_streak = 0;
     };
@@ -488,28 +647,62 @@ fn adopt_auth_token(p: &mut Prepared, push: &PushConfig) {
 
 fn print_push(push: &PushConfig) {
     if let Some((a, b)) = push.ifconfig {
-        out!("# pushed: ifconfig {a} {b} (topology {:?})", push.topology());
+        out!(
+            "# pushed: ifconfig {a} {b} (topology {:?})",
+            push.topology()
+        );
     }
     out!(
         "# pushed: {} route(s){}, DNS {:?}{}",
         push.routes.len(),
-        if push.redirect_gateway { " + redirect-gateway (full tunnel)" } else { "" },
+        if push.redirect_gateway {
+            " + redirect-gateway (full tunnel)"
+        } else {
+            ""
+        },
         push.dns,
-        if push.domains.is_empty() { String::new() } else { format!(", domains {}", push.domains.join(" ")) }
+        if push.domains.is_empty() {
+            String::new()
+        } else {
+            format!(", domains {}", push.domains.join(" "))
+        }
     );
 }
 
 fn tun_mtu(cfg: &Config, push: &PushConfig) -> u16 {
     // Lower than OpenVPN's 1500 to stand in for its default `mssfix`: keeps the
     // encrypted UDP packets under a 1500-byte path MTU without IP fragmentation.
-    push.tun_mtu.or(cfg.tun_mtu).unwrap_or(1500).clamp(576, 1400)
+    push.tun_mtu
+        .or(cfg.tun_mtu)
+        .unwrap_or(1500)
+        .clamp(576, 1400)
 }
 
-fn configure_addr(dev: &str, topo: Topology, local: Ipv4Addr, other: Ipv4Addr, add: bool) -> Result<(), String> {
+fn configure_addr(
+    dev: &str,
+    topo: Topology,
+    local: Ipv4Addr,
+    other: Ipv4Addr,
+    add: bool,
+) -> Result<(), String> {
     let verb = if add { "add" } else { "del" };
     match topo {
-        Topology::Subnet => tun::ip(&["addr", verb, &format!("{local}/{}", tun::mask_to_prefix(other)), "dev", dev]),
-        _ => tun::ip(&["addr", verb, &local.to_string(), "peer", &other.to_string(), "dev", dev]),
+        Topology::Subnet => tun::ip(&[
+            "addr",
+            verb,
+            &format!("{local}/{}", tun::mask_to_prefix(other)),
+            "dev",
+            dev,
+        ]),
+        _ => tun::ip(&[
+            "addr",
+            verb,
+            &local.to_string(),
+            "peer",
+            &other.to_string(),
+            "dev",
+            dev,
+        ]),
     }
 }
 
@@ -571,7 +764,11 @@ fn frame_in(c: Compress, pkt: Vec<u8>) -> Option<Vec<u8>> {
 }
 
 fn wait_readable(fd: i32, ms: i32) {
-    let mut p = [libc::pollfd { fd, events: libc::POLLIN, revents: 0 }];
+    let mut p = [libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    }];
     unsafe { libc::poll(p.as_mut_ptr(), 1, ms) };
 }
 
@@ -600,12 +797,28 @@ fn data_loop(
         }
         let timeout_ms = eng
             .next_deadline()
-            .map(|d| d.saturating_duration_since(Instant::now()).as_millis().clamp(10, 1000) as i32)
+            .map(|d| {
+                d.saturating_duration_since(Instant::now())
+                    .as_millis()
+                    .clamp(10, 1000) as i32
+            })
             .unwrap_or(1000);
         let mut fds = [
-            libc::pollfd { fd: tun_fd, events: libc::POLLIN, revents: 0 },
-            libc::pollfd { fd: eng.link.fd(), events: libc::POLLIN, revents: 0 },
-            libc::pollfd { fd: kick_fd, events: libc::POLLIN, revents: 0 },
+            libc::pollfd {
+                fd: tun_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: eng.link.fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: kick_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
         ];
         let n = unsafe { libc::poll(fds.as_mut_ptr(), 3, timeout_ms) };
         if n < 0 {
@@ -670,7 +883,7 @@ fn data_loop(
                     } else if m.starts_with("AUTH_FAILED") {
                         return Err(format!("server revoked the session ({m})"));
                     } else if m.starts_with("PUSH_REPLY") {
-                    // Re-push after renegotiation: nothing to change for us.
+                        // Re-push after renegotiation: nothing to change for us.
                     } else {
                         out!("# server says: {}", sysnet::one_line(&m));
                     }
@@ -679,7 +892,9 @@ fn data_loop(
                     key_born = Instant::now();
                     out!("# data keys renegotiated (key id {key_id})");
                 }
-                Event::TlsUp { key_id, version, .. } if key_id != 0 => out!("# renegotiation: TLS up ({version})"),
+                Event::TlsUp {
+                    key_id, version, ..
+                } if key_id != 0 => out!("# renegotiation: TLS up ({version})"),
                 _ => {}
             }
         }
@@ -690,7 +905,9 @@ fn data_loop(
             last_tx = Instant::now();
         }
         if eng.last_rx.elapsed().as_secs() >= ping_restart {
-            return Err(format!("nothing from the server for {ping_restart}s (ping-restart)"));
+            return Err(format!(
+                "nothing from the server for {ping_restart}s (ping-restart)"
+            ));
         }
         if let Some(r) = reneg {
             if key_born.elapsed().as_secs() >= r {
@@ -702,7 +919,10 @@ fn data_loop(
             return Err("no usable data key".into());
         }
         if last_stats.elapsed().as_secs() >= 10 {
-            out!("#  stats: tun_in={tin} tun_out={tout} decrypt_err={}", eng.stats_decrypt_errors);
+            out!(
+                "#  stats: tun_in={tin} tun_out={tout} decrypt_err={}",
+                eng.stats_decrypt_errors
+            );
             last_stats = Instant::now();
         }
     }
@@ -728,10 +948,17 @@ fn setup_routes(server: Ipv4Addr, tun: &str, cfg: &Config, push: &PushConfig) ->
         del.push(format!("route del {net} {suffix}"));
     }
     let via = |dst: Ipv4Addr| {
-        original_path(dst).map(|(via, dev)| via.map(|v| format!("via {v} dev {dev}")).unwrap_or_else(|| format!("dev {dev}")))
+        original_path(dst).map(|(via, dev)| {
+            via.map(|v| format!("via {v} dev {dev}"))
+                .unwrap_or_else(|| format!("dev {dev}"))
+        })
     };
 
-    let mut routes: Vec<push::Route> = if cfg.route_nopull { Vec::new() } else { push.routes.clone() };
+    let mut routes: Vec<push::Route> = if cfg.route_nopull {
+        Vec::new()
+    } else {
+        push.routes.clone()
+    };
     for r in &cfg.routes {
         if let Some(rt) = push::parse_route(&r.iter().map(String::as_str).collect::<Vec<_>>()) {
             routes.push(rt);
@@ -776,21 +1003,42 @@ fn setup_routes(server: Ipv4Addr, tun: &str, cfg: &Config, push: &PushConfig) ->
         }
     }
     if !failed.is_empty() {
-        out!("# {} route(s) already existed — not ours, kept on disconnect", failed.len());
+        out!(
+            "# {} route(s) already existed — not ours, kept on disconnect",
+            failed.len()
+        );
     }
-    del.into_iter().enumerate().filter(|(i, _)| !failed.contains(i)).map(|(_, d)| d).collect()
+    del.into_iter()
+        .enumerate()
+        .filter(|(i, _)| !failed.contains(i))
+        .map(|(_, d)| d)
+        .collect()
 }
 
 /// Parse `ip route get <ip>` for the current `via`/`dev` of a destination.
 fn original_path(dst: Ipv4Addr) -> Option<(Option<String>, String)> {
-    let out = std::process::Command::new("ip").args(["route", "get", &dst.to_string()]).output().ok()?;
+    let out = std::process::Command::new("ip")
+        .args(["route", "get", &dst.to_string()])
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }
     let text = String::from_utf8_lossy(&out.stdout);
-    let toks: Vec<&str> = text.lines().next().unwrap_or("").split_whitespace().collect();
-    let via = toks.windows(2).find(|w| w[0] == "via").map(|w| w[1].to_string());
-    let dev = toks.windows(2).find(|w| w[0] == "dev").map(|w| w[1].to_string())?;
+    let toks: Vec<&str> = text
+        .lines()
+        .next()
+        .unwrap_or("")
+        .split_whitespace()
+        .collect();
+    let via = toks
+        .windows(2)
+        .find(|w| w[0] == "via")
+        .map(|w| w[1].to_string());
+    let dev = toks
+        .windows(2)
+        .find(|w| w[0] == "dev")
+        .map(|w| w[1].to_string())?;
     Some((via, dev))
 }
 
@@ -798,10 +1046,23 @@ fn original_path(dst: Ipv4Addr) -> Option<(Option<String>, String)> {
 /// the TLS parameters and whether the control-channel wrap key is right.
 pub fn probe(p: &Prepared) -> Result<(), String> {
     for remote in &p.cfg.remotes {
-        out!("# probing {}:{} ({}) …", remote.host, remote.port, remote.proto.as_str());
+        out!(
+            "# probing {}:{} ({}) …",
+            remote.host,
+            remote.port,
+            remote.proto.as_str()
+        );
         let r = (|| -> Result<(), String> {
             let (link, server) = Link::open(remote, Duration::from_secs(10))?;
-            let mut eng = Engine::new(link, p.make_wrap()?, p.ctx.clone(), p.peer.clone(), None, p.options_string(remote), p.peer_info())?;
+            let mut eng = Engine::new(
+                link,
+                p.make_wrap()?,
+                p.ctx.clone(),
+                p.peer.clone(),
+                None,
+                p.options_string(remote),
+                p.peer_info(),
+            )?;
             eng.probe_only = true;
             out!("#   {server} — wrap {}", eng.wrap_name());
             let deadline = Instant::now() + Duration::from_secs(15);
@@ -821,7 +1082,10 @@ pub fn probe(p: &Prepared) -> Result<(), String> {
                 }
                 eng.pump()?;
                 while let Some(ev) = eng.events.pop_front() {
-                    if let Event::TlsUp { version, cipher, .. } = ev {
+                    if let Event::TlsUp {
+                        version, cipher, ..
+                    } = ev
+                    {
                         let pi = p.peer.lock().unwrap().clone();
                         out!("#   TLS up: {version} {cipher}");
                         out!("#   server cert: {}", pi.subject);
@@ -830,7 +1094,11 @@ pub fn probe(p: &Prepared) -> Result<(), String> {
                     }
                 }
             }
-            Err(if got_reset { "TLS handshake did not complete".into() } else { "no answer (wrong port/proto, or tls-auth/tls-crypt key mismatch)".into() })
+            Err(if got_reset {
+                "TLS handshake did not complete".into()
+            } else {
+                "no answer (wrong port/proto, or tls-auth/tls-crypt key mismatch)".into()
+            })
         })();
         if let Err(e) = r {
             out!("#   failed: {e}");
@@ -846,10 +1114,22 @@ mod tests {
     #[test]
     fn compression_framing_roundtrips() {
         let pkt = vec![0x45, 1, 2, 3, 0x50];
-        for c in [Compress::None, Compress::Lzo, Compress::Stub, Compress::StubV2] {
-            assert_eq!(frame_in(c, frame_out(c, &pkt)).as_deref(), Some(&pkt[..]), "{c:?}");
+        for c in [
+            Compress::None,
+            Compress::Lzo,
+            Compress::Stub,
+            Compress::StubV2,
+        ] {
+            assert_eq!(
+                frame_in(c, frame_out(c, &pkt)).as_deref(),
+                Some(&pkt[..]),
+                "{c:?}"
+            );
         }
-        assert_eq!(frame_out(Compress::Stub, &pkt), vec![0xfb, 1, 2, 3, 0x50, 0x45]);
+        assert_eq!(
+            frame_out(Compress::Stub, &pkt),
+            vec![0xfb, 1, 2, 3, 0x50, 0x45]
+        );
         let v2 = vec![0x50, 9];
         assert_eq!(frame_out(Compress::StubV2, &v2), vec![0x50, 0, 0x50, 9]);
         assert_eq!(frame_in(Compress::Lzo, vec![0x66, 1, 2]), None); // LZO-compressed: dropped
@@ -859,12 +1139,23 @@ mod tests {
     fn auth_failed_crv1() {
         let user = openssl::base64::encode_block(b"alice");
         match parse_auth_failed(&format!("CRV1:R,E:abc123:{user}:Enter OTP")) {
-            EstablishError::Challenge { state, user, text, echo } => {
-                assert_eq!((state.as_str(), user.as_str(), text.as_str(), echo), ("abc123", "alice", "Enter OTP", true));
+            EstablishError::Challenge {
+                state,
+                user,
+                text,
+                echo,
+            } => {
+                assert_eq!(
+                    (state.as_str(), user.as_str(), text.as_str(), echo),
+                    ("abc123", "alice", "Enter OTP", true)
+                );
             }
             _ => panic!("expected challenge"),
         }
-        assert!(matches!(parse_auth_failed(""), EstablishError::AuthFailed(_)));
+        assert!(matches!(
+            parse_auth_failed(""),
+            EstablishError::AuthFailed(_)
+        ));
     }
 
     #[test]

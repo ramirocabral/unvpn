@@ -53,7 +53,10 @@ impl Backend {
     }
 
     pub fn has_sso(self) -> bool {
-        matches!(self, Backend::Forti | Backend::AnyConnect | Backend::GlobalProtect)
+        matches!(
+            self,
+            Backend::Forti | Backend::AnyConnect | Backend::GlobalProtect
+        )
     }
 
     /// Back-ends whose `group` field is in use: AnyConnect's tunnel group,
@@ -163,7 +166,9 @@ impl Profile {
         }
         if self.backend.uses_profile_file() {
             // `gateway` holds the.ovpn/.conf path — the file name is what identifies it.
-            let file = std::path::Path::new(&self.gateway).file_name().map(|f| f.to_string_lossy().into_owned());
+            let file = std::path::Path::new(&self.gateway)
+                .file_name()
+                .map(|f| f.to_string_lossy().into_owned());
             parts.extend(file);
         } else if !self.gateway.is_empty() {
             parts.push(self.gateway.clone());
@@ -176,7 +181,9 @@ impl Profile {
 /// (`auth-user-pass` without an inline/file credential), i.e. the GUI must ask.
 /// Unreadable file → false (the engine reports the real error).
 pub fn ovpn_needs_userpass(path: &str) -> bool {
-    let Ok(text) = std::fs::read_to_string(path) else { return false };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
     let mut needs = false;
     for l in text.lines().map(str::trim) {
         if l.starts_with("<auth-user-pass>") {
@@ -185,7 +192,9 @@ pub fn ovpn_needs_userpass(path: &str) -> bool {
         let mut w = l.split_whitespace();
         if w.next() == Some("auth-user-pass") {
             // `auth-user-pass <file>` with an existing file supplies them itself.
-            let dir = std::path::Path::new(path).parent().unwrap_or(std::path::Path::new("."));
+            let dir = std::path::Path::new(path)
+                .parent()
+                .unwrap_or(std::path::Path::new("."));
             needs = !w.next().is_some_and(|f| dir.join(f).is_file());
         }
     }
@@ -196,8 +205,12 @@ pub fn ovpn_needs_userpass(path: &str) -> bool {
 /// `<key>` (inline or file) or a PKCS#12 bundle (may or may not be protected).
 /// Unreadable file → false.
 pub fn ovpn_key_may_need_pass(path: &str) -> bool {
-    let Ok(text) = std::fs::read_to_string(path) else { return false };
-    let dir = std::path::Path::new(path).parent().unwrap_or(std::path::Path::new("."));
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let dir = std::path::Path::new(path)
+        .parent()
+        .unwrap_or(std::path::Path::new("."));
     let mut in_key = false;
     for l in text.lines().map(str::trim) {
         match l {
@@ -214,7 +227,9 @@ pub fn ovpn_key_may_need_pass(path: &str) -> bool {
                 match (w.next(), w.next()) {
                     (Some("pkcs12"), Some(_)) => return true,
                     (Some("key"), Some(f)) => {
-                        if std::fs::read_to_string(dir.join(f)).is_ok_and(|k| k.contains("ENCRYPTED")) {
+                        if std::fs::read_to_string(dir.join(f))
+                            .is_ok_and(|k| k.contains("ENCRYPTED"))
+                        {
                             return true;
                         }
                     }
@@ -283,7 +298,9 @@ pub fn load_from(path: &Path) -> Result<Vec<Profile>, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(format!("{}: {e}", path.display())),
     };
-    toml::from_str::<ProfileFile>(&text).map(|f| f.profiles).map_err(|e| format!("{}: {e}", path.display()))
+    toml::from_str::<ProfileFile>(&text)
+        .map(|f| f.profiles)
+        .map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// Move an unreadable profiles file out of the way, to the first free
@@ -291,7 +308,13 @@ pub fn load_from(path: &Path) -> Result<Vec<Profile>, String> {
 pub fn set_aside(path: &Path) -> Result<PathBuf, String> {
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     let bad = (0..1000)
-        .map(|i| path.with_file_name(if i == 0 { format!("{name}.bad") } else { format!("{name}.bad.{i}") }))
+        .map(|i| {
+            path.with_file_name(if i == 0 {
+                format!("{name}.bad")
+            } else {
+                format!("{name}.bad.{i}")
+            })
+        })
         .find(|p| !p.exists())
         .ok_or("no free name for the unreadable profiles file")?;
     std::fs::rename(path, &bad).map_err(|e| format!("move {} aside: {e}", path.display()))?;
@@ -313,7 +336,9 @@ pub fn save_to(path: &Path, profiles: &[Profile]) -> Result<(), String> {
     if path.exists() && load_from(path).is_err() {
         set_aside(path)?;
     }
-    let file = ProfileFile { profiles: profiles.to_vec() };
+    let file = ProfileFile {
+        profiles: profiles.to_vec(),
+    };
     let text = toml::to_string_pretty(&file).map_err(|e| e.to_string())?;
     let tmp = path.with_extension("toml.tmp");
     let written = std::fs::OpenOptions::new()
@@ -343,7 +368,9 @@ pub fn secret_get(name: &str) -> Option<String> {
 
 /// Returns false on failure (e.g. no Secret Service running).
 pub fn secret_set(name: &str, secret: &str) -> bool {
-    entry(name).map(|e| e.set_password(secret).is_ok()).unwrap_or(false)
+    entry(name)
+        .map(|e| e.set_password(secret).is_ok())
+        .unwrap_or(false)
 }
 
 pub fn secret_delete(name: &str) {
@@ -458,7 +485,11 @@ pub fn engine_args(p: &Profile, psk: bool) -> Vec<String> {
 pub fn gateway_endpoint(gateway: &str) -> String {
     let g = gateway.trim();
     let g = g.strip_prefix("https://").unwrap_or(g);
-    let hostport = g.split(['/', '?', '#']).next().unwrap_or_default().to_ascii_lowercase();
+    let hostport = g
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     match hostport.rsplit_once(':') {
         Some((_, p)) if p.parse::<u16>().is_ok() => hostport,
         _ => format!("{hostport}:443"),
@@ -468,7 +499,9 @@ pub fn gateway_endpoint(gateway: &str) -> String {
 /// The gateway (`host:port`) of an F5 webtop handoff link,
 /// `f5-vpn://…?server=<host>&port=<port>&…`.
 pub fn f5_launch_endpoint(url: &str) -> Option<String> {
-    let rest = url.strip_prefix("f5-vpn://").or_else(|| url.strip_prefix("f5-vpn:"))?;
+    let rest = url
+        .strip_prefix("f5-vpn://")
+        .or_else(|| url.strip_prefix("f5-vpn:"))?;
     let query = rest.split_once('?')?.1;
     let mut host = None;
     let mut port = 443u16;
@@ -479,7 +512,8 @@ pub fn f5_launch_endpoint(url: &str) -> Option<String> {
             _ => {}
         }
     }
-    let host = host.filter(|h| !h.is_empty() && !h.contains(|c: char| c.is_whitespace() || c == '/'))?;
+    let host =
+        host.filter(|h| !h.is_empty() && !h.contains(|c: char| c.is_whitespace() || c == '/'))?;
     Some(format!("{}:{port}", host.to_ascii_lowercase()))
 }
 
@@ -488,7 +522,10 @@ fn percent_decode(s: &str) -> String {
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
     while i < b.len() {
-        let hex = (b[i] == b'%').then(|| s.get(i + 1..i + 3)).flatten().and_then(|h| u8::from_str_radix(h, 16).ok());
+        let hex = (b[i] == b'%')
+            .then(|| s.get(i + 1..i + 3))
+            .flatten()
+            .and_then(|h| u8::from_str_radix(h, 16).ok());
         match hex {
             Some(v) => {
                 out.push(v);
@@ -533,7 +570,11 @@ impl TrustQuestion {
         let endpoint = it.next().filter(|e| e.contains(':'))?.to_string();
         let fingerprint = it.next().filter(|f| f.starts_with("sha256:"))?.to_string();
         let details = it.next().unwrap_or("").trim().to_string();
-        Some(TrustQuestion { endpoint, fingerprint, details })
+        Some(TrustQuestion {
+            endpoint,
+            fingerprint,
+            details,
+        })
     }
 
     /// The stdin line that answers it.
@@ -569,7 +610,10 @@ pub fn saml_entry(gateway: &str) -> String {
 /// The gateway omits the default port, so `:443` is dropped here too.
 pub fn anyconnect_saml_entry(gateway: &str) -> String {
     let g = gateway.trim();
-    let g = g.strip_prefix("https://").or_else(|| g.strip_prefix("http://")).unwrap_or(g);
+    let g = g
+        .strip_prefix("https://")
+        .or_else(|| g.strip_prefix("http://"))
+        .unwrap_or(g);
     let hostport = g.split(['/', '?', '#']).next().unwrap_or_default();
     let hostport = hostport.strip_suffix(":443").unwrap_or(hostport);
     format!("https://{hostport}/+CSCOE+/saml/")
@@ -580,7 +624,8 @@ mod tests {
     use super::*;
 
     fn profile(toml_body: &str) -> Profile {
-        let f: ProfileFile = toml::from_str(&format!("[[profile]]\nname = \"t\"\n{toml_body}")).unwrap();
+        let f: ProfileFile =
+            toml::from_str(&format!("[[profile]]\nname = \"t\"\n{toml_body}")).unwrap();
         f.profiles.into_iter().next().unwrap()
     }
 
@@ -598,10 +643,19 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(&path, "[[profile]]\nname = \"a\"\nbackend = 3\n").unwrap();
         assert!(load_from(&path).is_err());
-        save_to(&path, &[profile("backend = \"f5\"\ngateway = \"vpn.example.com\"")]).unwrap();
-        assert!(std::fs::read_to_string(dir.join("profiles.toml.bad")).unwrap().contains("backend = 3"));
+        save_to(
+            &path,
+            &[profile("backend = \"f5\"\ngateway = \"vpn.example.com\"")],
+        )
+        .unwrap();
+        assert!(std::fs::read_to_string(dir.join("profiles.toml.bad"))
+            .unwrap()
+            .contains("backend = 3"));
         assert_eq!(load_from(&path).unwrap()[0].gateway, "vpn.example.com");
-        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         std::fs::write(&path, "not toml [").unwrap();
         save_to(&path, &[]).unwrap();
         assert!(dir.join("profiles.toml.bad.1").exists());
@@ -636,7 +690,9 @@ mod tests {
             "gp -g vpn.example.com --gw gw-1 -u alice --connect"
         );
         assert_eq!(
-            args("backend = \"f5\"\ngateway = \"vpn.example.com\"\nuser = \"alice\"\nno_dtls = true"),
+            args(
+                "backend = \"f5\"\ngateway = \"vpn.example.com\"\nuser = \"alice\"\nno_dtls = true"
+            ),
             "f5 -g vpn.example.com -u alice --connect --no-dtls"
         );
         assert_eq!(
@@ -655,22 +711,44 @@ mod tests {
             engine_args(&p, false).join(" "),
             format!("f5 -g vpn.example.com -u alice --connect --pin 203.0.113.10:ike={fp} --pin vpn.example.com:443={fp}")
         );
-        let text = toml::to_string_pretty(&ProfileFile { profiles: vec![p.clone()] }).unwrap();
+        let text = toml::to_string_pretty(&ProfileFile {
+            profiles: vec![p.clone()],
+        })
+        .unwrap();
         let back: ProfileFile = toml::from_str(&text).unwrap();
         assert_eq!(back.profiles[0].pins, p.pins);
-        let plain = toml::to_string_pretty(&ProfileFile { profiles: vec![profile("backend = \"f5\"")] }).unwrap();
+        let plain = toml::to_string_pretty(&ProfileFile {
+            profiles: vec![profile("backend = \"f5\"")],
+        })
+        .unwrap();
         assert!(!plain.contains("pins"), "{plain}");
     }
 
     #[test]
     fn endpoints_of_gateways_and_f5_launch_links() {
         assert_eq!(gateway_endpoint("VPN.example.com"), "vpn.example.com:443");
-        assert_eq!(gateway_endpoint(" vpn.example.com:8443 "), "vpn.example.com:8443");
-        assert_eq!(gateway_endpoint("https://vpn.example.com/staff"), "vpn.example.com:443");
-        let link = "f5-vpn://./?server=VPN-F5.example.com&resourcename=%2FCommon%2FNA&port=443&otc=CCCC";
-        assert_eq!(f5_launch_endpoint(link).as_deref(), Some("vpn-f5.example.com:443"));
-        assert_eq!(f5_launch_endpoint("f5-vpn://x/?server=gw.example&port=8443&token=T").as_deref(), Some("gw.example:8443"));
-        assert_eq!(f5_launch_endpoint("f5-vpn://x/?server=gw%2Eexample&token=T").as_deref(), Some("gw.example:443"));
+        assert_eq!(
+            gateway_endpoint(" vpn.example.com:8443 "),
+            "vpn.example.com:8443"
+        );
+        assert_eq!(
+            gateway_endpoint("https://vpn.example.com/staff"),
+            "vpn.example.com:443"
+        );
+        let link =
+            "f5-vpn://./?server=VPN-F5.example.com&resourcename=%2FCommon%2FNA&port=443&otc=CCCC";
+        assert_eq!(
+            f5_launch_endpoint(link).as_deref(),
+            Some("vpn-f5.example.com:443")
+        );
+        assert_eq!(
+            f5_launch_endpoint("f5-vpn://x/?server=gw.example&port=8443&token=T").as_deref(),
+            Some("gw.example:8443")
+        );
+        assert_eq!(
+            f5_launch_endpoint("f5-vpn://x/?server=gw%2Eexample&token=T").as_deref(),
+            Some("gw.example:443")
+        );
         assert_eq!(f5_launch_endpoint("f5-vpn://x/?otc=C"), None);
         assert_eq!(f5_launch_endpoint("https://x/?server=gw"), None);
     }
@@ -683,14 +761,20 @@ mod tests {
         let mut b = profile("backend = \"forti\"");
         b.pins.insert("vpn.example.com:443".into(), fp("a"));
         b.pins.insert("other.example.com:443".into(), fp("b"));
-        assert_eq!(pins_for(&[a.clone(), b.clone()], "vpn.example.com:443"), [format!("vpn.example.com:443={}", fp("a"))]);
+        assert_eq!(
+            pins_for(&[a.clone(), b.clone()], "vpn.example.com:443"),
+            [format!("vpn.example.com:443={}", fp("a"))]
+        );
         assert!(pins_for(&[a, b], "vpn.example.com:8443").is_empty());
     }
 
     #[test]
     fn a_trust_question_parses_and_is_answered_with_its_fingerprint() {
         let fp = format!("sha256:{}", "0f".repeat(32));
-        let q = TrustQuestion::parse(&format!("vpn.example.com:443 {fp} self-signed certificate; subject CN=vpn")).unwrap();
+        let q = TrustQuestion::parse(&format!(
+            "vpn.example.com:443 {fp} self-signed certificate; subject CN=vpn"
+        ))
+        .unwrap();
         assert_eq!(q.endpoint, "vpn.example.com:443");
         assert_eq!(q.details, "self-signed certificate; subject CN=vpn");
         assert_eq!(q.answer(true), format!("{fp} yes"));
@@ -720,11 +804,26 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let with = dir.join("with.ovpn");
         let without = dir.join("without.ovpn");
-        std::fs::write(&with, "client\nremote vpn.example.com 1194\nauth-user-pass\n").unwrap();
+        std::fs::write(
+            &with,
+            "client\nremote vpn.example.com 1194\nauth-user-pass\n",
+        )
+        .unwrap();
         std::fs::write(&without, "client\nremote vpn.example.com 1194\n").unwrap();
-        let p = |f: &std::path::Path| profile(&format!("backend = \"openvpn\"\ngateway = \"{}\"\nuser = \"alice\"", f.display()));
-        assert_eq!(engine_args(&p(&with), false).join(" "), format!("openvpn -c {} -u alice --connect", with.display()));
-        assert_eq!(engine_args(&p(&without), false).join(" "), format!("openvpn -c {} --connect", without.display()));
+        let p = |f: &std::path::Path| {
+            profile(&format!(
+                "backend = \"openvpn\"\ngateway = \"{}\"\nuser = \"alice\"",
+                f.display()
+            ))
+        };
+        assert_eq!(
+            engine_args(&p(&with), false).join(" "),
+            format!("openvpn -c {} -u alice --connect", with.display())
+        );
+        assert_eq!(
+            engine_args(&p(&without), false).join(" "),
+            format!("openvpn -c {} --connect", without.display())
+        );
         assert!(takes_password(&p(&with)));
         assert!(!takes_password(&p(&without)));
         let _ = std::fs::remove_dir_all(&dir);
@@ -733,7 +832,9 @@ mod tests {
     #[test]
     fn password_is_read_unless_sso_or_keys_in_the_profile() {
         assert!(takes_password(&profile("backend = \"checkpoint\"")));
-        assert!(takes_password(&profile("backend = \"checkpoint\"\ncp_cert = true")));
+        assert!(takes_password(&profile(
+            "backend = \"checkpoint\"\ncp_cert = true"
+        )));
         assert!(takes_password(&profile("backend = \"fortiipsec\"")));
         assert!(!takes_password(&profile("backend = \"forti\"\nsso = true")));
         assert!(!takes_password(&profile("backend = \"wireguard\"")));
@@ -743,10 +844,25 @@ mod tests {
 
     #[test]
     fn sso_entry_points() {
-        assert_eq!(saml_entry("vpn.example.com"), "https://vpn.example.com:443/remote/saml/start?");
-        assert_eq!(saml_entry("vpn.example.com:10443"), "https://vpn.example.com:10443/remote/saml/start?");
-        assert_eq!(anyconnect_saml_entry("https://vpn.example.com/staff"), "https://vpn.example.com/+CSCOE+/saml/");
-        assert_eq!(anyconnect_saml_entry("vpn.example.com:443"), "https://vpn.example.com/+CSCOE+/saml/");
-        assert_eq!(anyconnect_saml_entry("vpn.example.com:8443"), "https://vpn.example.com:8443/+CSCOE+/saml/");
+        assert_eq!(
+            saml_entry("vpn.example.com"),
+            "https://vpn.example.com:443/remote/saml/start?"
+        );
+        assert_eq!(
+            saml_entry("vpn.example.com:10443"),
+            "https://vpn.example.com:10443/remote/saml/start?"
+        );
+        assert_eq!(
+            anyconnect_saml_entry("https://vpn.example.com/staff"),
+            "https://vpn.example.com/+CSCOE+/saml/"
+        );
+        assert_eq!(
+            anyconnect_saml_entry("vpn.example.com:443"),
+            "https://vpn.example.com/+CSCOE+/saml/"
+        );
+        assert_eq!(
+            anyconnect_saml_entry("vpn.example.com:8443"),
+            "https://vpn.example.com:8443/+CSCOE+/saml/"
+        );
     }
 }

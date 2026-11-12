@@ -86,7 +86,9 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
             "--group" => group = it.next().cloned(),
             "--sso-token" => sso_token = it.next().cloned(),
             "--sso" => sso = true,
-            "--user-agent" => user_agent = it.next().cloned().ok_or("--user-agent needs a value")?,
+            "--user-agent" => {
+                user_agent = it.next().cloned().ok_or("--user-agent needs a value")?
+            }
             "--probe" => action = Action::Probe,
             "--login" => action = Action::Login,
             "--connect" => action = Action::Connect,
@@ -99,19 +101,37 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
     if action != Action::Probe && user.is_empty() && sso_token.is_none() && !sso {
         return Err("anyconnect requires --user <user> (or --sso / --sso-token for SSO)".into());
     }
-    Ok(Args { url, user, password, code, group, sso_token, sso, user_agent, action, no_routes, no_dtls })
+    Ok(Args {
+        url,
+        user,
+        password,
+        code,
+        group,
+        sso_token,
+        sso,
+        user_agent,
+        action,
+        no_routes,
+        no_dtls,
+    })
 }
 
 fn usage() {
     eprintln!("usage:");
     eprintln!("  unvpn anyconnect -g <url> --probe");
-    eprintln!("  unvpn anyconnect -g <url> -u <user> [--password p] [--code otp] [--group G] --login");
-    eprintln!("  unvpn anyconnect -g <url> -u <user> [...] --connect     # brings up the tunnel (sudo)");
+    eprintln!(
+        "  unvpn anyconnect -g <url> -u <user> [--password p] [--code otp] [--group G] --login"
+    );
+    eprintln!(
+        "  unvpn anyconnect -g <url> -u <user> [...] --connect     # brings up the tunnel (sudo)"
+    );
     eprintln!("      [--group G]    pre-select a tunnel group (else the gateway's default)");
     eprintln!("  unvpn anyconnect -g <url> --sso [--group G] --connect   # SAML: browser login, paste the token");
     eprintln!("      [--sso-token T] supply a SAML sso-v2 token instead of password auth");
     eprintln!("      [--no-routes]  tunnel up but install no routes/DNS (safe data-plane test)");
-    eprintln!("  -g is the full gateway URL incl. any group path, e.g. https://vpn.example.com/GROUP");
+    eprintln!(
+        "  -g is the full gateway URL incl. any group path, e.g. https://vpn.example.com/GROUP"
+    );
     eprintln!("  password/OTP are read from stdin (no echo) when not given with --password/--code");
 }
 
@@ -121,7 +141,12 @@ fn timeout() -> Duration {
 
 fn make_session(a: &Args) -> Result<Session, String> {
     let (host, port, path) = http::split_url(&a.url)?;
-    let ep = Endpoint { host, port, user_agent: a.user_agent.clone(), timeout: timeout() };
+    let ep = Endpoint {
+        host,
+        port,
+        user_agent: a.user_agent.clone(),
+        timeout: timeout(),
+    };
     Ok(Session::new(ep, path, CLIENT_VERSION.to_string()))
 }
 
@@ -131,11 +156,19 @@ fn probe(a: &Args) -> Result<(), String> {
     let mut s = make_session(a)?;
     println!("# probing {} …", s.ep.base_url());
     let mut path = s.path.clone();
-    let body = auth::build_init(CLIENT_VERSION, &s.group_access(&path), a.group.as_deref(), false);
+    let body = auth::build_init(
+        CLIENT_VERSION,
+        &s.group_access(&path),
+        a.group.as_deref(),
+        false,
+    );
     let reply = s.post_xml(&mut path, &body)?;
     println!("# gateway answered config-auth type={:?}", reply.kind);
     if let Some(op) = &reply.opaque {
-        if let Some(tg) = xml::parse(op).ok().and_then(|e| e.child_text("tunnel-group")) {
+        if let Some(tg) = xml::parse(op)
+            .ok()
+            .and_then(|e| e.child_text("tunnel-group"))
+        {
             println!("#   tunnel-group: {tg}");
         }
     }
@@ -149,17 +182,33 @@ fn probe(a: &Args) -> Result<(), String> {
             }
             if let Some(sso) = &f.sso {
                 println!("#   SSO (sso-v2) login: {}", sso.login);
-                println!("#   → SSO login: unvpn anyconnect -g {} --sso --connect", a.url);
+                println!(
+                    "#   → SSO login: unvpn anyconnect -g {} --sso --connect",
+                    a.url
+                );
             }
             for fld in &f.fields {
-                println!("#   input: {} ({:?}) — {}", fld.name, fld.kind, crate::sysnet::one_line(&fld.label));
+                println!(
+                    "#   input: {} ({:?}) — {}",
+                    fld.name,
+                    fld.kind,
+                    crate::sysnet::one_line(&fld.label)
+                );
             }
             for sel in &f.selects {
                 let opts: Vec<_> = sel.choices.iter().map(|c| c.label.as_str()).collect();
-                println!("#   {} ({:?}): {}", sel.label.trim_end_matches(':'), sel.name, opts.join(", "));
+                println!(
+                    "#   {} ({:?}): {}",
+                    sel.label.trim_end_matches(':'),
+                    sel.name,
+                    opts.join(", ")
+                );
             }
             if f.sso.is_none() {
-                println!("#   (use: unvpn anyconnect -g {} -u <user> --connect)", a.url);
+                println!(
+                    "#   (use: unvpn anyconnect -g {} -u <user> --connect)",
+                    a.url
+                );
             }
         }
         None => println!("# no <auth> form (already authorised? or cert-only)"),
@@ -169,9 +218,21 @@ fn probe(a: &Args) -> Result<(), String> {
 
 fn do_login(a: &Args) -> Result<Session, String> {
     let mut s = make_session(a)?;
-    println!("# authenticating {} @ {} …", if a.user.is_empty() { "<SSO>" } else { &a.user }, s.ep.base_url());
-    let creds = Creds { user: a.user.clone(), password: a.password.clone(), group: a.group.clone() };
-    let mut p = CliPrompter { code: a.code.clone(), sso_token: a.sso_token.clone(), sso_only: a.sso };
+    println!(
+        "# authenticating {} @ {} …",
+        if a.user.is_empty() { "<SSO>" } else { &a.user },
+        s.ep.base_url()
+    );
+    let creds = Creds {
+        user: a.user.clone(),
+        password: a.password.clone(),
+        group: a.group.clone(),
+    };
+    let mut p = CliPrompter {
+        code: a.code.clone(),
+        sso_token: a.sso_token.clone(),
+        sso_only: a.sso,
+    };
     s.login(&creds, &mut p)?;
     println!("# authenticated — webvpn session acquired.");
     if let Some(g) = &s.group {
@@ -183,7 +244,14 @@ fn do_login(a: &Args) -> Result<Session, String> {
 /// Needs root.
 fn connect(a: &Args) -> Result<(), String> {
     let mut s = do_login(a)?;
-    cstp::run(&mut s, cstp::RunOpts { no_routes: a.no_routes, watch_stdin: true, no_dtls: a.no_dtls })
+    cstp::run(
+        &mut s,
+        cstp::RunOpts {
+            no_routes: a.no_routes,
+            watch_stdin: true,
+            no_dtls: a.no_dtls,
+        },
+    )
 }
 
 /// The CLI/GUI prompter: reads secrets from stdin (no echo on a TTY) and emits the
@@ -198,7 +266,9 @@ struct CliPrompter {
 impl Prompter for CliPrompter {
     fn password(&mut self) -> Result<String, String> {
         if self.sso_only {
-            return Err("the gateway asked for a password, not SSO — use password auth (-u <user>)".into());
+            return Err(
+                "the gateway asked for a password, not SSO — use password auth (-u <user>)".into(),
+            );
         }
         read_secret("Password: ").ok_or("no password provided".into())
     }
@@ -211,7 +281,8 @@ impl Prompter for CliPrompter {
         }
         // Harmless on a TTY (read_secret prints its own label).
         crate::report::prompt(kind, message);
-        read_secret(&format!("{message}: ")).ok_or_else(|| format!("{kind} required but none provided"))
+        read_secret(&format!("{message}: "))
+            .ok_or_else(|| format!("{kind} required but none provided"))
     }
 
     fn sso_token(&mut self, sso: &Sso) -> Result<String, String> {
@@ -221,7 +292,11 @@ impl Prompter for CliPrompter {
         // The engine runs as root and can't reach the user's browser session; emit
         // the login URL for the front-end to open, then wait for the token the user
         // pastes (the `<token_cookie>` value after completing the IdP login).
-        let cookie = if sso.token_cookie.is_empty() { "acSamlv2Token" } else { &sso.token_cookie };
+        let cookie = if sso.token_cookie.is_empty() {
+            "acSamlv2Token"
+        } else {
+            &sso.token_cookie
+        };
         // For a front-end with an embedded browser (the GUI): the page whose load
         // means "done", and the cookie that then holds the token. Before SAML-URL.
         if !sso.login_final.is_empty() {
@@ -248,7 +323,11 @@ impl Prompter for CliPrompter {
 fn clean_sso_token(raw: &str, cookie: &str) -> Option<String> {
     let mut t = raw.trim();
     if !cookie.is_empty() {
-        if let Some(v) = t.split(';').map(str::trim).find_map(|kv| kv.strip_prefix(cookie)?.strip_prefix('=')) {
+        if let Some(v) = t
+            .split(';')
+            .map(str::trim)
+            .find_map(|kv| kv.strip_prefix(cookie)?.strip_prefix('='))
+        {
             t = v;
         }
     }
@@ -264,7 +343,11 @@ pub(crate) fn read_secret(prompt: &str) -> Option<String> {
         eprint!("{prompt}");
         let _ = std::io::stderr().flush();
     }
-    let _echo = if is_tty { Some(crate::sysnet::EchoOff::new()) } else { None };
+    let _echo = if is_tty {
+        Some(crate::sysnet::EchoOff::new())
+    } else {
+        None
+    };
     match crate::sysnet::stdin_next(None) {
         crate::sysnet::StdinEvent::Line(l) => {
             let t = l.trim_end_matches(['\n', '\r']).to_string();
@@ -308,12 +391,24 @@ mod tests {
     #[test]
     fn login_requires_user_or_sso() {
         assert!(parse_args(&["-g".into(), "https://gw".into(), "--login".into()]).is_err());
-        assert!(parse_args(&["-g".into(), "https://gw".into(), "--sso-token".into(), "T".into()]).is_ok());
+        assert!(parse_args(&[
+            "-g".into(),
+            "https://gw".into(),
+            "--sso-token".into(),
+            "T".into()
+        ])
+        .is_ok());
     }
 
     #[test]
     fn sso_needs_no_user() {
-        let a = parse_args(&["-g".into(), "https://gw/G".into(), "--sso".into(), "--connect".into()]).unwrap();
+        let a = parse_args(&[
+            "-g".into(),
+            "https://gw/G".into(),
+            "--sso".into(),
+            "--connect".into(),
+        ])
+        .unwrap();
         assert!(a.sso && a.user.is_empty() && a.action == Action::Connect);
     }
 
@@ -321,8 +416,14 @@ mod tests {
     fn sso_token_paste_is_normalized() {
         let c = "acSamlv2Token";
         assert_eq!(clean_sso_token("  ABC123 \n", c).as_deref(), Some("ABC123"));
-        assert_eq!(clean_sso_token("acSamlv2Token=ABC123", c).as_deref(), Some("ABC123"));
-        assert_eq!(clean_sso_token("webvpn=x; acSamlv2Token=ABC123; path=/", c).as_deref(), Some("ABC123"));
+        assert_eq!(
+            clean_sso_token("acSamlv2Token=ABC123", c).as_deref(),
+            Some("ABC123")
+        );
+        assert_eq!(
+            clean_sso_token("webvpn=x; acSamlv2Token=ABC123; path=/", c).as_deref(),
+            Some("ABC123")
+        );
         assert_eq!(clean_sso_token("\"ABC123\"", c).as_deref(), Some("ABC123"));
         assert_eq!(clean_sso_token("   ", c), None);
     }

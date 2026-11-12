@@ -33,12 +33,16 @@ pub fn open_tun(name: &str) -> Result<(File, String), String> {
         Err(e) if e.raw_os_error() == Some(libc::EBUSY) => {
             let base = name.trim_end_matches(|c: char| c.is_ascii_digit());
             let template = format!("{}%d", if base.is_empty() { "tun" } else { base });
-            tunsetiff(&file, &template).map_err(|e| format!("TUNSETIFF (fallback {template}): {e}"))?
+            tunsetiff(&file, &template)
+                .map_err(|e| format!("TUNSETIFF (fallback {template}): {e}"))?
         }
         Err(e) => return Err(format!("TUNSETIFF: {e}")),
     };
     // Best-effort: absent when the kernel has no IPv6 at all, which is fine too.
-    let _ = std::fs::write(format!("/proc/sys/net/ipv6/conf/{actual}/disable_ipv6"), "1");
+    let _ = std::fs::write(
+        format!("/proc/sys/net/ipv6/conf/{actual}/disable_ipv6"),
+        "1",
+    );
     Ok((file, actual))
 }
 
@@ -101,7 +105,7 @@ pub fn ip_batch(lines: &[String]) -> Result<(), String> {
         for l in lines {
             let _ = writeln!(si, "{l}");
         }
-    // si dropped here → EOF, so `ip` processes the batch and exits.
+        // si dropped here → EOF, so `ip` processes the batch and exits.
     }
     child.wait().map_err(|e| format!("ip -batch wait: {e}"))?;
     Ok(())
@@ -131,7 +135,9 @@ pub fn ip_batch_failed(lines: &[String]) -> Result<std::collections::HashSet<usi
             let _ = writeln!(si, "{l}");
         }
     }
-    let out = child.wait_with_output().map_err(|e| format!("ip -batch wait: {e}"))?;
+    let out = child
+        .wait_with_output()
+        .map_err(|e| format!("ip -batch wait: {e}"))?;
     for line in String::from_utf8_lossy(&out.stderr).lines() {
         if let Some(n) = line.split("Command failed -:").nth(1) {
             if let Ok(n) = n.trim().parse::<usize>() {
@@ -167,7 +173,11 @@ pub fn range_to_prefixes(from: Ipv4Addr, to: Ipv4Addr) -> Vec<(Ipv4Addr, u8)> {
     let (mut lo, hi) = (u64::from(u32::from(from)), u64::from(u32::from(to)));
     let mut out = Vec::new();
     while lo <= hi {
-        let mut bits = if lo == 0 { 32 } else { lo.trailing_zeros().min(32) };
+        let mut bits = if lo == 0 {
+            32
+        } else {
+            lo.trailing_zeros().min(32)
+        };
         while bits > 0 && lo + (1u64 << bits) - 1 > hi {
             bits -= 1;
         }
@@ -184,14 +194,28 @@ mod tests {
     #[test]
     fn ranges_become_minimal_prefixes() {
         let ip = |s: &str| s.parse::<Ipv4Addr>().unwrap();
-        let p = |v: Vec<(Ipv4Addr, u8)>| v.iter().map(|(n, l)| format!("{n}/{l}")).collect::<Vec<_>>().join(" ");
-        assert_eq!(p(range_to_prefixes(ip("10.0.0.0"), ip("10.255.255.255"))), "10.0.0.0/8");
-        assert_eq!(p(range_to_prefixes(ip("198.51.100.5"), ip("198.51.100.5"))), "198.51.100.5/32");
+        let p = |v: Vec<(Ipv4Addr, u8)>| {
+            v.iter()
+                .map(|(n, l)| format!("{n}/{l}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        assert_eq!(
+            p(range_to_prefixes(ip("10.0.0.0"), ip("10.255.255.255"))),
+            "10.0.0.0/8"
+        );
+        assert_eq!(
+            p(range_to_prefixes(ip("198.51.100.5"), ip("198.51.100.5"))),
+            "198.51.100.5/32"
+        );
         assert_eq!(
             p(range_to_prefixes(ip("198.51.100.5"), ip("198.51.100.20"))),
             "198.51.100.5/32 198.51.100.6/31 198.51.100.8/29 198.51.100.16/30 198.51.100.20/32"
         );
-        assert_eq!(p(range_to_prefixes(ip("0.0.0.0"), ip("255.255.255.255"))), "0.0.0.0/0");
+        assert_eq!(
+            p(range_to_prefixes(ip("0.0.0.0"), ip("255.255.255.255"))),
+            "0.0.0.0/0"
+        );
         assert!(range_to_prefixes(ip("10.0.0.2"), ip("10.0.0.1")).is_empty());
     }
 

@@ -79,7 +79,10 @@ pub fn bit_string(b: &[u8]) -> Vec<u8> {
 }
 
 pub fn oid(dotted: &str) -> Vec<u8> {
-    let arcs: Vec<u64> = dotted.split('.').map(|a| a.parse().expect("OID arc")).collect();
+    let arcs: Vec<u64> = dotted
+        .split('.')
+        .map(|a| a.parse().expect("OID arc"))
+        .collect();
     let mut out = vec![(arcs[0] * 40 + arcs[1]) as u8];
     for &a in &arcs[2..] {
         let mut enc = vec![(a & 0x7f) as u8];
@@ -114,7 +117,10 @@ impl<'a> Tlv<'a> {
 
     pub fn children(&self) -> Result<Vec<Tlv<'a>>, String> {
         if !self.is_constructed() {
-            return Err(format!("element with tag {:#04x} is not constructed", self.tag));
+            return Err(format!(
+                "element with tag {:#04x} is not constructed",
+                self.tag
+            ));
         }
         parse_all(self.content)
     }
@@ -154,7 +160,11 @@ impl<'a> Tlv<'a> {
                 v = 0;
             }
         }
-        Ok(arcs.iter().map(u64::to_string).collect::<Vec<_>>().join("."))
+        Ok(arcs
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join("."))
     }
 
     /// OCTET STRING value; a BER constructed OCTET STRING is reassembled.
@@ -192,14 +202,25 @@ pub fn parse<'a>(b: &'a [u8]) -> Result<(Tlv<'a>, &'a [u8]), String> {
         if n > 4 || b.len() < 2 + n {
             return Err("bad ASN.1 length".into());
         }
-        (2 + n, Some(b[2..2 + n].iter().fold(0usize, |a, &x| (a << 8) | x as usize)))
+        (
+            2 + n,
+            Some(
+                b[2..2 + n]
+                    .iter()
+                    .fold(0usize, |a, &x| (a << 8) | x as usize),
+            ),
+        )
     };
     match len {
         Some(l) => {
             if b.len() < hdr + l {
                 return Err("truncated ASN.1 content".into());
             }
-            let t = Tlv { tag, content: &b[hdr..hdr + l], raw: &b[..hdr + l] };
+            let t = Tlv {
+                tag,
+                content: &b[hdr..hdr + l],
+                raw: &b[..hdr + l],
+            };
             Ok((t, &b[hdr + l..]))
         }
         None => {
@@ -210,7 +231,11 @@ pub fn parse<'a>(b: &'a [u8]) -> Result<(Tlv<'a>, &'a [u8]), String> {
             loop {
                 if rest.len() >= 2 && rest[0] == 0 && rest[1] == 0 {
                     let clen = b.len() - hdr - rest.len();
-                    let t = Tlv { tag, content: &b[hdr..hdr + clen], raw: &b[..hdr + clen + 2] };
+                    let t = Tlv {
+                        tag,
+                        content: &b[hdr..hdr + clen],
+                        raw: &b[..hdr + clen + 2],
+                    };
                     return Ok((t, &rest[2..]));
                 }
                 let (_, r) = parse(rest)?;
@@ -245,11 +270,19 @@ mod tests {
 
     #[test]
     fn oid_roundtrip() {
-        for o in ["1.2.840.113549.1.7.2", "1.3.6.1.5.5.7.7.3", "1.3.14.3.2.26", "2.5.4.3"] {
+        for o in [
+            "1.2.840.113549.1.7.2",
+            "1.3.6.1.5.5.7.7.3",
+            "1.3.14.3.2.26",
+            "2.5.4.3",
+        ] {
             let e = oid(o);
             assert_eq!(parse_single(&e).unwrap().as_oid().unwrap(), o);
         }
-        assert_eq!(oid("1.3.6.1.5.5.7.7.3"), [0x06, 0x08, 0x2b, 6, 1, 5, 5, 7, 7, 3]);
+        assert_eq!(
+            oid("1.3.6.1.5.5.7.7.3"),
+            [0x06, 0x08, 0x2b, 6, 1, 5, 5, 7, 7, 3]
+        );
     }
 
     #[test]
@@ -258,7 +291,10 @@ mod tests {
         assert_eq!(uint(12345), [0x02, 0x02, 0x30, 0x39]);
         assert_eq!(uint(200), [0x02, 0x02, 0x00, 0xc8]);
         assert_eq!(uint(0), [0x02, 0x01, 0x00]);
-        assert_eq!(parse_single(&uint(1 << 40)).unwrap().as_u64().unwrap(), 1 << 40);
+        assert_eq!(
+            parse_single(&uint(1 << 40)).unwrap().as_u64().unwrap(),
+            1 << 40
+        );
     }
 
     #[test]
@@ -272,7 +308,9 @@ mod tests {
     #[test]
     fn indefinite_and_constructed_octets() {
         // SEQUENCE (indefinite) { OCTET STRING (constructed, indefinite) { "ab", "c" } }
-        let b = [0x30, 0x80, 0x24, 0x80, 0x04, 0x02, b'a', b'b', 0x04, 0x01, b'c', 0, 0, 0, 0];
+        let b = [
+            0x30, 0x80, 0x24, 0x80, 0x04, 0x02, b'a', b'b', 0x04, 0x01, b'c', 0, 0, 0, 0,
+        ];
         let s = parse_single(&b).unwrap();
         let kids = s.children().unwrap();
         assert_eq!(kids.len(), 1);
