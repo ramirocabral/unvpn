@@ -6,6 +6,8 @@
 //! OpenVPN private-key passphrase likewise, under `<name>#keypass`. A 2FA token is
 //! single-use and never stored.
 
+use std::path::{Path, PathBuf};
+
 use serde::{Deserialize, Serialize};
 
 const KEYRING_SERVICE: &str = "unvpn";
@@ -253,29 +255,66 @@ pub fn remove_owned_files(p: &Profile) {
     }
 }
 
-pub fn load() -> Vec<Profile> {
+/// The saved profiles. No file is an empty list; a file that can't be read or
+/// parsed is an error, so it is never mistaken for an empty list and overwritten.
+pub fn load() -> Result<Vec<Profile>, String> {
     load_from(&profiles_path())
 }
 
-pub fn load_from(path: &std::path::Path) -> Vec<Profile> {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return Vec::new();
+pub fn load_from(path: &Path) -> Result<Vec<Profile>, String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
     };
-    match toml::from_str::<ProfileFile>(&text) {
-        Ok(f) => f.profiles,
-        Err(e) => {
-            eprintln!("unvpn: ignoring unreadable profiles.toml: {e}");
-            Vec::new()
-        }
-    }
+    toml::from_str::<ProfileFile>(&text).map(|f| f.profiles).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Move an unreadable profiles file out of the way, to the first free
+/// `<name>.bad`, `<name>.bad.1`, …, and return where it went.
+pub fn set_aside(path: &Path) -> Result<PathBuf, String> {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let bad = (0..1000)
+        .map(|i| path.with_file_name(if i == 0 { format!("{name}.bad") } else { format!("{name}.bad.{i}") }))
+        .find(|p| !p.exists())
+        .ok_or("no free name for the unreadable profiles file")?;
+    std::fs::rename(path, &bad).map_err(|e| format!("move {} aside: {e}", path.display()))?;
+    Ok(bad)
 }
 
 pub fn save(profiles: &[Profile]) -> Result<(), String> {
-    let dir = config_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir {}: {e}", dir.display()))?;
+    save_to(&profiles_path(), profiles)
+}
+
+/// Write `profiles` atomically (temporary file + rename, mode 0600). A file
+/// already there that does not load is first moved aside with [`set_aside`].
+pub fn save_to(path: &Path, profiles: &[Profile]) -> Result<(), String> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("mkdir {}: {e}", dir.display()))?;
+    }
+    if path.exists() && load_from(path).is_err() {
+        set_aside(path)?;
+    }
     let file = ProfileFile { profiles: profiles.to_vec() };
     let text = toml::to_string_pretty(&file).map_err(|e| e.to_string())?;
-    std::fs::write(profiles_path(), text).map_err(|e| e.to_string())
+    let tmp = path.with_extension("toml.tmp");
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&tmp)
+        .and_then(|mut f| {
+            f.write_all(text.as_bytes())?;
+            f.sync_all()
+        })
+        .and_then(|()| std::fs::rename(&tmp, path));
+    written.map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("{}: {e}", path.display())
+    })
 }
 
 fn entry(name: &str) -> Option<keyring::Entry> {
@@ -438,6 +477,27 @@ mod tests {
 
     fn args(toml_body: &str) -> String {
         engine_args(&profile(toml_body), false).join(" ")
+    }
+
+    #[test]
+    fn a_broken_profiles_file_is_an_error_and_is_set_aside_on_save() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("unvpn-profiles-load-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("profiles.toml");
+        assert_eq!(load_from(&path).unwrap().len(), 0);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&path, "[[profile]]\nname = \"a\"\nbackend = 3\n").unwrap();
+        assert!(load_from(&path).is_err());
+        save_to(&path, &[profile("backend = \"f5\"\ngateway = \"vpn.example.com\"")]).unwrap();
+        assert!(std::fs::read_to_string(dir.join("profiles.toml.bad")).unwrap().contains("backend = 3"));
+        assert_eq!(load_from(&path).unwrap()[0].gateway, "vpn.example.com");
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        std::fs::write(&path, "not toml [").unwrap();
+        save_to(&path, &[]).unwrap();
+        assert!(dir.join("profiles.toml.bad.1").exists());
+        assert!(!dir.join("profiles.toml.tmp").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

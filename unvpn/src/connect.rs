@@ -74,7 +74,10 @@ pub fn cmd_connect(args: &[String], killswitch: bool, allow_ipv6: bool) {
     }
 
     drop_sudo();
-    let profs = profiles::load();
+    let profs = profiles::load().unwrap_or_else(|e| {
+        eprintln!("unvpn: can't read the saved profiles: {e}");
+        std::process::exit(1);
+    });
     let Some(name) = o.name.as_deref().filter(|_| !o.list) else {
         list(&profs);
         if o.name.is_none() && !o.list {
@@ -699,7 +702,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("unvpn-connect-test-{}-{}", std::process::id(), names.len()));
         std::fs::create_dir_all(dir.join("unvpn")).unwrap();
         std::fs::write(dir.join("unvpn/profiles.toml"), body).unwrap();
-        let profs = profiles::load_from(&dir.join("unvpn/profiles.toml"));
+        let profs = profiles::load_from(&dir.join("unvpn/profiles.toml")).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
         profs
     }

@@ -435,6 +435,17 @@ impl App {
 
         let toolbar = adw::ToolbarView::new();
         toolbar.add_top_bar(&header);
+        // A profiles file that doesn't load is moved aside rather than replaced
+        // by the next save; say so, and where it went.
+        let loaded = profiles::load().map_err(|e| match profiles::set_aside(&profiles::profiles_path()) {
+            Ok(bad) => format!("Saved profiles couldn't be read and were moved to {} ({e})", bad.display()),
+            Err(e2) => format!("Saved profiles couldn't be read ({e}); saving is disabled ({e2})"),
+        });
+        if let Err(msg) = &loaded {
+            let banner = adw::Banner::builder().title(msg.as_str()).button_label("Dismiss").revealed(true).build();
+            banner.connect_button_clicked(|b| b.set_revealed(false));
+            toolbar.add_top_bar(&banner);
+        }
         toolbar.set_content(Some(&toast));
 
         let window = adw::ApplicationWindow::builder()
@@ -452,7 +463,7 @@ impl App {
             status_pill,
             profiles_group,
             profile_rows: RefCell::new(Vec::new()),
-            profiles: RefCell::new(profiles::load()),
+            profiles: RefCell::new(loaded.unwrap_or_default()),
             form_group,
             name_row,
             backend_row,
