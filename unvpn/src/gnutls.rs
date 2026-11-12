@@ -63,6 +63,7 @@ struct Gnutls {
     bye: unsafe extern "C" fn(GnutlsSession, c_int) -> c_int,
     error_is_fatal: unsafe extern "C" fn(c_int) -> c_int,
     strerror: unsafe extern "C" fn(c_int) -> *const c_char,
+    certificate_get_peers: unsafe extern "C" fn(GnutlsSession, *mut c_uint) -> *const GnutlsDatum,
 }
 
 // Only ever read (immutable fn pointers into a library we never unload).
@@ -125,6 +126,7 @@ fn load_gnutls() -> Option<Gnutls> {
             bye: sym!("gnutls_bye"),
             error_is_fatal: sym!("gnutls_error_is_fatal"),
             strerror: sym!("gnutls_strerror"),
+            certificate_get_peers: sym!("gnutls_certificate_get_peers"),
         };
         (g.global_init)(); // idempotent on modern GnuTLS
         Some(g)
@@ -212,12 +214,10 @@ impl DtlsSession {
         Ok(s)
     }
 
-    /// Fortinet / F5: an ordinary certificate-based handshake. The server certificate
-    /// is not verified — consistent with the TLS side, which accepts the gateway's
-    /// (typically self-signed) certificate; the tunnel itself is authenticated by the
-    /// vendor hello carrying the session cookie. `dtls12 = false` caps at DTLS 1.0
-    /// (old BIG-IPs choke on even being offered 1.2).
-    pub fn connect_cert(gw: IpAddr, port: u16, dtls12: bool, timeout: Duration) -> Result<Self, String> {
+    /// Fortinet / F5: an ordinary certificate-based handshake. The gateway must
+    /// present a certificate already trusted for `host` over TLS in this run.
+    /// `dtls12 = false` caps at DTLS 1.0 (old BIG-IPs choke on even being offered 1.2).
+    pub fn connect_cert(gw: IpAddr, port: u16, dtls12: bool, timeout: Duration, host: &str) -> Result<Self, String> {
         let mut s = Self::new_raw(gw, port)?;
         let g = s.g;
         unsafe {
@@ -238,7 +238,23 @@ impl DtlsSession {
         };
         s.set_priority(&prio)?;
         s.handshake(timeout)?;
+        let der = s.peer_certificate().ok_or("the gateway sent no DTLS certificate")?;
+        crate::net::trust::require_known(host, &der).map_err(|e| format!("DTLS refused: {e}"))?;
         Ok(s)
+    }
+
+    /// The DER of the peer's leaf certificate.
+    fn peer_certificate(&self) -> Option<Vec<u8>> {
+        let mut n: c_uint = 0;
+        let list = unsafe { (self.g.certificate_get_peers)(self.session, &mut n) };
+        if list.is_null() || n == 0 {
+            return None;
+        }
+        let leaf = unsafe { &*list };
+        if leaf.data.is_null() || leaf.size == 0 {
+            return None;
+        }
+        Some(unsafe { std::slice::from_raw_parts(leaf.data, leaf.size as usize) }.to_vec())
     }
 
     fn new_raw(gw: IpAddr, port: u16) -> Result<Self, String> {
@@ -451,13 +467,19 @@ mod tests {
     use std::io::{Read, Write};
 
     /// Live check of the certificate handshake + record I/O against a local DTLS echo
-    /// server: `gnutls-serv --udp --echo -p 4433 …` then
-    /// `UNVPN_DTLS_ECHO_PORT=4433 cargo test dtls_cert_echo -- --ignored`.
+    /// server: `gnutls-serv --udp --echo -p 4433 --x509certfile cert.pem …` then
+    /// `UNVPN_DTLS_ECHO_PORT=4433 UNVPN_DTLS_ECHO_CERT=cert.pem cargo test dtls_cert_echo -- --ignored`.
     #[test]
     #[ignore]
     fn dtls_cert_echo() {
         let port: u16 = std::env::var("UNVPN_DTLS_ECHO_PORT").unwrap().parse().unwrap();
-        let s = DtlsSession::connect_cert("127.0.0.1".parse().unwrap(), port, true, Duration::from_secs(5)).unwrap();
+        let pem = std::fs::read(std::env::var("UNVPN_DTLS_ECHO_CERT").unwrap()).unwrap();
+        let der = openssl::x509::X509::from_pem(&pem).unwrap().to_der().unwrap();
+        let gw = "127.0.0.1".parse().unwrap();
+        let refused = DtlsSession::connect_cert(gw, port, true, Duration::from_secs(5), "dtls-test.invalid");
+        assert!(refused.err().unwrap().contains("not the one trusted"));
+        crate::net::trust::note_verified("dtls-test.invalid:443", &der);
+        let s = DtlsSession::connect_cert(gw, port, true, Duration::from_secs(5), "dtls-test.invalid").unwrap();
         let mtu = s.data_mtu();
         assert!(mtu > 1300 && mtu < 1472, "data mtu {mtu}");
         let mut st = DtlsStream::new(s);

@@ -327,7 +327,7 @@ fn header_ip(headers: &[(String, String)]) -> Option<Ipv4Addr> {
 fn open_dtls(session: &Session, cfg: &F5Options) -> Result<Channel, String> {
     let gw = resolve_v4(&session.host, session.port)?;
     println!("# trying DTLS (UDP {gw}:{}, {}) …", cfg.dtls_port, if cfg.dtls12 { "DTLSv1.2" } else { "DTLSv1.0" });
-    let dtls = gnutls::DtlsSession::connect_cert(IpAddr::V4(gw), cfg.dtls_port, cfg.dtls12, Duration::from_secs(4))?;
+    let dtls = gnutls::DtlsSession::connect_cert(IpAddr::V4(gw), cfg.dtls_port, cfg.dtls12, Duration::from_secs(4), &session.host)?;
     let record_mtu = dtls.data_mtu();
     let mut st = gnutls::DtlsStream::new(dtls);
 

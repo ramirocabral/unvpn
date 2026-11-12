@@ -143,6 +143,21 @@ pub fn accept(endpoint: &str, cert: &X509Ref, why: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Another channel to `host` (DTLS) must present a certificate already trusted
+/// for it in this run.
+pub fn require_known(host: &str, der: &[u8]) -> Result<(), String> {
+    let fp = fingerprint(der);
+    if known(&policy(), host, &fp) {
+        Ok(())
+    } else {
+        Err(format!("its certificate ({fp}) is not the one trusted for {host}"))
+    }
+}
+
+fn known(p: &Policy, host: &str, fp: &str) -> bool {
+    p.insecure || p.trusted.get(&host.to_ascii_lowercase()).is_some_and(|s| s.contains(fp))
+}
+
 /// Show the certificate and ask whether to trust it: on a terminal, y/N; for a
 /// front-end, `# AUTH-PROMPT: trust: <endpoint> <fingerprint> <details>`, answered
 /// with `<fingerprint> yes|no`.
@@ -259,6 +274,18 @@ mod tests {
         p.refused.insert(format!("vpn.example.com:443 {FP}"));
         assert!(matches!(decide(&p, "vpn.example.com:443", FP, "self-signed certificate"), Decision::Refuse(_)));
         assert!(matches!(decide(&p, "vpn.example.com:443", FP2, "self-signed certificate"), Decision::Ask));
+    }
+
+    #[test]
+    fn a_second_channel_needs_the_certificate_already_trusted() {
+        let mut p = policy_with(&[]);
+        assert!(!known(&p, "vpn.example.com", FP));
+        p.trusted.entry("vpn.example.com".into()).or_default().insert(FP.into());
+        assert!(known(&p, "VPN.example.com", FP));
+        assert!(!known(&p, "vpn.example.com", FP2));
+        assert!(!known(&p, "other.example.com", FP));
+        p.insecure = true;
+        assert!(known(&p, "other.example.com", FP2));
     }
 
     #[test]

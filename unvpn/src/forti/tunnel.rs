@@ -281,7 +281,7 @@ fn open_dtls(session: &Session) -> Result<Up, String> {
     let cookie = session.svpncookie().ok_or("no SVPNCOOKIE")?.to_string();
     let gw = resolve_v4(&session.host, session.port)?;
     println!("# trying DTLS (UDP {gw}:{}) …", session.port);
-    let dtls = gnutls::DtlsSession::connect_cert(IpAddr::V4(gw), session.port, true, Duration::from_secs(4))?;
+    let dtls = gnutls::DtlsSession::connect_cert(IpAddr::V4(gw), session.port, true, Duration::from_secs(4), &session.host)?;
     let record_mtu = dtls.data_mtu();
     let mut st = gnutls::DtlsStream::new(dtls);
 
