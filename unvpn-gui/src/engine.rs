@@ -325,7 +325,7 @@ impl Vpn {
                     // Markers come only from the engine's stdout.
                     let m = if is_err { None } else { marker::parse(&line) };
                     let Some(m) = m else {
-                        if is_err && line.contains("No authentication agent found") {
+                        if is_err && line.contains("authentication agent") {
                             set_state(State::Error(NO_POLKIT_AGENT.into()), &[State::Connecting]);
                         }
                         send(EngineEvent::Log(clean));
