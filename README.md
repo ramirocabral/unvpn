@@ -119,6 +119,15 @@ The new key and the request are saved before anything is sent, and the CA's answ
 before it is processed, so an interrupted enrollment can be finished with `--resume`
 (or `--resend` when no answer arrived) instead of needing a new key.
 
+## Development
+
+```sh
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+The parsers that read gateway data have fuzz targets: see [fuzz/](fuzz/README.md).
+
 ## Legal
 
 Only use unvpn to connect to VPNs you are allowed to use.
