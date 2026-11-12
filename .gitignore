@@ -13,5 +13,5 @@ captures/
 *~
 .DS_Store
 
-# Confidential client docs — never commit (public repo)
+# Confidential docs
 *.pdf
