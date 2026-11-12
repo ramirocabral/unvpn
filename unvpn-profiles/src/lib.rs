@@ -6,6 +6,7 @@
 //! OpenVPN private-key passphrase likewise, under `<name>#keypass`. A 2FA token is
 //! single-use and never stored.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -124,6 +125,11 @@ pub struct Profile {
     /// profile's keyring secret.
     #[serde(default)]
     pub cert_path: String,
+    /// Gateway certificates the user chose to trust although no system CA vouches
+    /// for them: endpoint (`host:port`, or `host:ike`) → `sha256:<hex>`. Passed to
+    /// the engine as `--pin`; a different certificate there is then refused.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pins: BTreeMap<String, String>,
 }
 
 impl Profile {
@@ -434,7 +440,39 @@ pub fn engine_args(p: &Profile, psk: bool) -> Vec<String> {
     if p.no_dtls && p.backend.uses_dtls() {
         a.push("--no-dtls");
     }
-    a.into_iter().map(String::from).collect()
+    let mut out: Vec<String> = a.into_iter().map(String::from).collect();
+    for (endpoint, fp) in &p.pins {
+        out.extend(["--pin".to_string(), format!("{endpoint}={fp}")]);
+    }
+    out
+}
+
+/// The engine asking whether to trust a gateway certificate no system CA vouches
+/// for: `# AUTH-PROMPT: trust: <endpoint> <fingerprint> <details>`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TrustQuestion {
+    /// `host:port`, or `host:ike` for an IKE certificate.
+    pub endpoint: String,
+    /// `sha256:<hex>`.
+    pub fingerprint: String,
+    /// Why it isn't trusted, and the certificate's subject and issuer.
+    pub details: String,
+}
+
+impl TrustQuestion {
+    /// From the prompt's message (what follows `trust: `).
+    pub fn parse(message: &str) -> Option<TrustQuestion> {
+        let mut it = message.trim().splitn(3, ' ');
+        let endpoint = it.next().filter(|e| e.contains(':'))?.to_string();
+        let fingerprint = it.next().filter(|f| f.starts_with("sha256:"))?.to_string();
+        let details = it.next().unwrap_or("").trim().to_string();
+        Some(TrustQuestion { endpoint, fingerprint, details })
+    }
+
+    /// The stdin line that answers it.
+    pub fn answer(&self, trust: bool) -> String {
+        format!("{} {}", self.fingerprint, if trust { "yes" } else { "no" })
+    }
 }
 
 /// Whether connecting `p` reads a secret as the engine's first stdin line: the
@@ -538,6 +576,35 @@ mod tests {
             args("backend = \"wireguard\"\ngateway = \"/x/wg0.conf\"\nkillswitch = true"),
             "wireguard -c /x/wg0.conf --connect"
         );
+    }
+
+    #[test]
+    fn pins_go_to_the_engine_and_round_trip_through_the_file() {
+        let fp = format!("sha256:{}", "ab".repeat(32));
+        let mut p = profile("backend = \"f5\"\ngateway = \"vpn.example.com\"\nuser = \"alice\"");
+        p.pins.insert("vpn.example.com:443".into(), fp.clone());
+        p.pins.insert("203.0.113.10:ike".into(), fp.clone());
+        assert_eq!(
+            engine_args(&p, false).join(" "),
+            format!("f5 -g vpn.example.com -u alice --connect --pin 203.0.113.10:ike={fp} --pin vpn.example.com:443={fp}")
+        );
+        let text = toml::to_string_pretty(&ProfileFile { profiles: vec![p.clone()] }).unwrap();
+        let back: ProfileFile = toml::from_str(&text).unwrap();
+        assert_eq!(back.profiles[0].pins, p.pins);
+        let plain = toml::to_string_pretty(&ProfileFile { profiles: vec![profile("backend = \"f5\"")] }).unwrap();
+        assert!(!plain.contains("pins"), "{plain}");
+    }
+
+    #[test]
+    fn a_trust_question_parses_and_is_answered_with_its_fingerprint() {
+        let fp = format!("sha256:{}", "0f".repeat(32));
+        let q = TrustQuestion::parse(&format!("vpn.example.com:443 {fp} self-signed certificate; subject CN=vpn")).unwrap();
+        assert_eq!(q.endpoint, "vpn.example.com:443");
+        assert_eq!(q.details, "self-signed certificate; subject CN=vpn");
+        assert_eq!(q.answer(true), format!("{fp} yes"));
+        assert_eq!(q.answer(false), format!("{fp} no"));
+        assert!(TrustQuestion::parse("vpn.example.com:443").is_none());
+        assert!(TrustQuestion::parse(&format!("vpn.example.com {fp}")).is_none());
     }
 
     #[test]

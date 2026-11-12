@@ -78,6 +78,17 @@ sudo unvpn wireguard -c wg0.conf --connect                           # WireGuard
 
 `--killswitch` enables a fail-closed firewall; `--allow-ipv6` keeps IPv6 instead of blocking it.
 
+### Gateway certificates
+
+The gateway's certificate is checked against the system's CAs. When they don't
+vouch for it (a self-signed certificate, or one from the company's own CA), unvpn
+shows its subject, issuer and SHA-256 fingerprint and asks whether to trust it.
+The app and `unvpn connect` keep the answer with the profile; from then on, a
+different certificate on that gateway is refused rather than asked about (if the
+gateway really got a new one, **Forget** the trusted certificates in the profile).
+On the command line, `--pin <host>:<port>=sha256:<hex>` trusts a certificate
+without asking, and `--insecure` turns the check off.
+
 ### Check Point certificates
 
 A Check Point user certificate is obtained once with the registration key the

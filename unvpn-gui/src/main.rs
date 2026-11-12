@@ -157,6 +157,8 @@ struct App {
     remember_row: adw::SwitchRow,
     killswitch_row: adw::SwitchRow,
     no_dtls_row: adw::SwitchRow,
+    /// The gateway certificates the saved profile trusts, with a button to forget them.
+    pins_row: adw::ActionRow,
     save_btn: gtk::Button,
 
     connect_btn: gtk::Button,
@@ -324,6 +326,14 @@ impl App {
             .subtitle_lines(0)
             .build();
 
+        let forget_pins_btn = gtk::Button::builder().label("Forget").valign(gtk::Align::Center).build();
+        let pins_row = adw::ActionRow::builder()
+            .title("Trusted certificates")
+            .subtitle_lines(0)
+            .visible(false)
+            .build();
+        pins_row.add_suffix(&forget_pins_btn);
+
         let save_btn = gtk::Button::builder().label("Save").css_classes(["flat"]).build();
         let form_group = adw::PreferencesGroup::builder().title("Connection").build();
         form_group.set_header_suffix(Some(&save_btn));
@@ -347,6 +357,7 @@ impl App {
         form_group.add(&killswitch_row);
         form_group.add(&no_dtls_row);
         form_group.add(&advanced_row);
+        form_group.add(&pins_row);
 
         let connect_btn = gtk::Button::builder()
             .label("Connect")
@@ -490,6 +501,7 @@ impl App {
             remember_row,
             killswitch_row,
             no_dtls_row,
+            pins_row,
             save_btn,
             connect_btn,
             status_group,
@@ -525,14 +537,14 @@ impl App {
         });
         *this.me.borrow_mut() = Rc::downgrade(&this);
 
-        Self::wire(&this, &add_btn, &ext_disconnect);
+        Self::wire(&this, &add_btn, &ext_disconnect, &forget_pins_btn);
         this.refresh_profiles_list();
         this.update_form_visibility();
         this.sync_ui();
         this
     }
 
-    fn wire(app: &Rc<Self>, add_btn: &gtk::Button, ext_disconnect: &gtk::Button) {
+    fn wire(app: &Rc<Self>, add_btn: &gtk::Button, ext_disconnect: &gtk::Button, forget_pins: &gtk::Button) {
         app.backend_row.connect_selected_notify(glib::clone!(#[strong] app, move |_| {
             app.update_form_visibility();
             app.sync_ui();
@@ -564,6 +576,9 @@ impl App {
         app.token_row.connect_changed(glib::clone!(#[strong] app, move |_| app.sync_ui()));
         app.password_row.connect_changed(glib::clone!(#[strong] app, move |_| app.sync_ui()));
         app.psk_row.connect_changed(glib::clone!(#[strong] app, move |_| app.sync_ui()));
+
+        app.name_row.connect_changed(glib::clone!(#[strong] app, move |_| app.update_pins_row()));
+        forget_pins.connect_clicked(glib::clone!(#[strong] app, move |_| app.forget_pins()));
 
         app.connect_btn.connect_clicked(glib::clone!(#[strong] app, move |_| app.on_connect_clicked()));
         app.save_btn.connect_clicked(glib::clone!(#[strong] app, move |_| app.save_profile()));
@@ -1092,6 +1107,7 @@ impl App {
         self.key_pass_row.set_text(&key_pass);
         self.remember_key_pass_row.set_active(p.remember_key_pass);
         self.update_form_visibility();
+        self.update_pins_row();
         self.sync_ui();
     }
 
@@ -1099,8 +1115,10 @@ impl App {
     fn form_profile(&self) -> Profile {
         let backend = self.backend();
         let realm_field = self.realm_row.text().trim().to_string();
+        let name = self.name_row.text().trim().to_string();
         Profile {
-            name: self.name_row.text().trim().to_string(),
+            pins: self.profiles.borrow().iter().find(|p| p.name == name).map(|p| p.pins.clone()).unwrap_or_default(),
+            name,
             backend,
             gateway: self.gateway_row.text().trim().to_string(),
             user: self.user_row.text().trim().to_string(),
@@ -1181,7 +1199,60 @@ impl App {
             }
         }
         self.refresh_profiles_list();
+        self.update_pins_row();
         self.toast(&format!("Saved profile “{name}”"));
+    }
+
+    /// Show the saved profile's trusted gateway certificates, if any.
+    fn update_pins_row(&self) {
+        let name = self.name_row.text().trim().to_string();
+        let pins: Vec<String> = self
+            .profiles
+            .borrow()
+            .iter()
+            .find(|p| p.name == name)
+            .map(|p| p.pins.keys().cloned().collect())
+            .unwrap_or_default();
+        self.pins_row.set_visible(!pins.is_empty());
+        self.pins_row.set_subtitle(&pins.join(", "));
+    }
+
+    /// Drop the saved profile's trusted certificates: the next connect asks again.
+    fn forget_pins(&self) {
+        let name = self.name_row.text().trim().to_string();
+        {
+            let mut profs = self.profiles.borrow_mut();
+            let Some(p) = profs.iter_mut().find(|p| p.name == name) else { return };
+            p.pins.clear();
+            if let Err(e) = profiles::save(&profs) {
+                drop(profs);
+                self.toast(&format!("Couldn't save: {e}"));
+                return;
+            }
+        }
+        self.update_pins_row();
+        self.toast(&format!("“{name}” will ask again about the gateway's certificate"));
+    }
+
+    /// Keep a certificate the user trusted with the profile being connected.
+    fn remember_pin(&self, q: &profiles::TrustQuestion) {
+        let name = self.active_profile.lock().unwrap().clone();
+        {
+            let mut profs = self.profiles.borrow_mut();
+            let Some(p) = profs.iter_mut().find(|p| p.name == name) else {
+                drop(profs);
+                self.append_log("→ certificate trusted for this connection (save the profile to keep it)");
+                return;
+            };
+            p.pins.insert(q.endpoint.clone(), q.fingerprint.clone());
+            if let Err(e) = profiles::save(&profs) {
+                drop(profs);
+                self.toast(&format!("Couldn't save: {e}"));
+                return;
+            }
+        }
+        self.append_log(&format!("→ certificate of {} trusted and saved with “{name}”", q.endpoint));
+        self.update_pins_row();
     }
 
     fn confirm_delete_profile(&self, name: &str) {
@@ -1746,6 +1817,12 @@ impl App {
 
     fn show_prompt(&self, p: AuthPrompt) {
         self.clear_prompt();
+        if p.kind == "trust" {
+            if let Some(q) = profiles::TrustQuestion::parse(&p.message) {
+                self.show_trust_prompt(q);
+            }
+            return;
+        }
 
         // OpenVPN key passphrase saved in the profile: answer without asking (once —
         // if it's wrong, the engine asks again and the card below shows).
@@ -1884,6 +1961,46 @@ impl App {
             let d = do_send.clone();
             er.connect_entry_activated(move |_| d());
         }
+    }
+
+    /// The engine met a gateway certificate no trusted authority vouches for.
+    fn show_trust_prompt(&self, q: profiles::TrustQuestion) {
+        if !self.window.is_visible() {
+            self.show_window();
+        }
+        self.prompt_group.set_title("Unknown gateway certificate");
+        self.prompt_group.set_description(Some(&format!(
+            "{} presents a certificate no trusted authority vouches for. Continue only if you expect it \
+             — for example, a gateway with its own certificate; your administrator can confirm the fingerprint.\n\n{}\n{}",
+            q.endpoint, q.details, q.fingerprint
+        )));
+        let btns = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .halign(gtk::Align::End)
+            .margin_top(8)
+            .build();
+        let cancel = gtk::Button::with_label("Cancel");
+        let trust = gtk::Button::builder().label("Trust").css_classes(["suggested-action"]).build();
+        btns.append(&cancel);
+        btns.append(&trust);
+        self.prompt_group.add(&btns);
+        self.prompt_rows.borrow_mut().push(btns.upcast());
+        self.prompt_group.set_visible(true);
+
+        let app = self.rc();
+        let q2 = q.clone();
+        trust.connect_clicked(move |_| {
+            app.vpn.borrow_mut().answer_prompt(&q2.answer(true));
+            app.remember_pin(&q2);
+            app.clear_prompt();
+        });
+        let app = self.rc();
+        cancel.connect_clicked(move |_| {
+            app.vpn.borrow_mut().answer_prompt(&q.answer(false));
+            app.append_log("→ certificate not trusted");
+            app.clear_prompt();
+        });
     }
 
     /// Persist a key passphrase the user asked to remember in the prompt card — only

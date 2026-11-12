@@ -30,7 +30,8 @@ pub enum State {
 /// What the engine is asking mid-login. `kind` is `code` (OTP / email / SMS
 /// token), `code2` (next token code, drift resync), `answer` (challenge),
 /// `newpass` (password expired), `renew` (password change the user may skip —
-/// an empty answer) or `push` (approve in the app — or type a code).
+/// an empty answer), `push` (approve in the app — or type a code) or `trust` (a
+/// gateway certificate no trusted CA vouches for, see `TrustQuestion`).
 #[derive(Clone)]
 pub struct AuthPrompt {
     pub kind: String,

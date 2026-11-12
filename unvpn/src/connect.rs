@@ -299,8 +299,8 @@ fn run(p: &Profile, o: &Opts) -> Result<i32, String> {
     let done = Arc::new(AtomicBool::new(false));
     let (ptx, prx) = mpsc::channel::<Prompt>();
     {
-        let (stdin, gen, done) = (stdin.clone(), gen.clone(), done.clone());
-        std::thread::spawn(move || answer_prompts(prx, term, stdin, gen, done, key_pass));
+        let (stdin, gen, done, name) = (stdin.clone(), gen.clone(), done.clone(), p.name.clone());
+        std::thread::spawn(move || answer_prompts(prx, term, stdin, gen, done, key_pass, &name));
     }
 
     let mut sso = Sso::new(p);
@@ -426,6 +426,7 @@ fn answer_prompts(
     gen: Arc<AtomicU64>,
     done: Arc<AtomicBool>,
     mut key_pass: Option<String>,
+    profile: &str,
 ) {
     let send = |s: &str| {
         let mut si = stdin.lock().unwrap_or_else(|e| e.into_inner());
@@ -433,6 +434,36 @@ fn answer_prompts(
         let _ = si.flush();
     };
     for pr in prompts {
+        let cancelled = || done.load(Ordering::SeqCst) || gen.load(Ordering::SeqCst) != pr.id;
+        if pr.kind == "trust" {
+            let Some(q) = profiles::TrustQuestion::parse(&pr.message) else { continue };
+            say!("# {} presents a certificate no trusted authority vouches for: {}", q.endpoint, q.details);
+            say!("#   {}", q.fingerprint);
+            let label = format!("Trust it and remember it for “{profile}”? [y/N]");
+            let trust = loop {
+                match term.ask(&label, false, cancelled) {
+                    Answer::Line(l) => match l.trim().to_ascii_lowercase().as_str() {
+                        "y" | "yes" => break Some(true),
+                        "" | "n" | "no" => break Some(false),
+                        _ => {}
+                    },
+                    Answer::Cancelled => break None,
+                    Answer::Eof => {
+                        send("disconnect");
+                        return;
+                    }
+                }
+            };
+            let Some(trust) = trust else { continue };
+            send(&q.answer(trust));
+            if trust {
+                match remember_pin(profile, &q) {
+                    Ok(()) => say!("# certificate saved with “{profile}”"),
+                    Err(e) => say!("# couldn't save the certificate with the profile: {e}"),
+                }
+            }
+            continue;
+        }
         if pr.kind == "keypass" {
             if let Some(k) = key_pass.take() {
                 say!("# saved key passphrase sent");
@@ -441,7 +472,6 @@ fn answer_prompts(
             }
         }
         let (label, masked, confirm, empty_ok) = prompt_spec(&pr.kind);
-        let cancelled = || done.load(Ordering::SeqCst) || gen.load(Ordering::SeqCst) != pr.id;
         if !pr.message.is_empty() {
             say!("{}", pr.message);
         }
@@ -481,6 +511,15 @@ fn answer_prompts(
             break;
         }
     }
+}
+
+/// Keep a certificate the user trusted with the profile, so the next connect
+/// passes it as `--pin` instead of asking.
+fn remember_pin(name: &str, q: &profiles::TrustQuestion) -> Result<(), String> {
+    let mut profs = profiles::load()?;
+    let p = profs.iter_mut().find(|p| p.name == name).ok_or("the profile is gone")?;
+    p.pins.insert(q.endpoint.clone(), q.fingerprint.clone());
+    profiles::save(&profs)
 }
 
 enum Answer {
