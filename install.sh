@@ -22,7 +22,8 @@ uninstall() {
     for sz in 32 48 64 128 256; do
         $S rm -f "$PREFIX/share/icons/hicolor/${sz}x${sz}/apps/unvpn.png"
     done
-    [ -f /etc/polkit-1/rules.d/49-unvpn.rules ] && sudo rm -f /etc/polkit-1/rules.d/49-unvpn.rules || true
+    # Not readable without root, so it can't be tested for first.
+    if [ -n "$S" ] || [ "$(id -u)" -eq 0 ]; then $S rm -f /etc/polkit-1/rules.d/49-unvpn.rules; fi
     rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/autostart/unvpn.desktop"
     [ -f /etc/xdg/autostart/unvpn.desktop ] && sudo rm -f /etc/xdg/autostart/unvpn.desktop || true
     echo "Done."
@@ -30,7 +31,10 @@ uninstall() {
 
 [ "${1:-}" = "--uninstall" ] && { uninstall; exit 0; }
 
-command -v cargo >/dev/null || { echo "Need Rust/cargo — see https://rustup.rs"; exit 1; }
+missing() { echo "Missing $1 — see Install in README.md for your distro's packages." >&2; exit 1; }
+command -v cargo >/dev/null || missing "Rust (cargo)"
+pkg-config --exists 'gtk4 >= 4.12' 'libadwaita-1 >= 1.5' webkitgtk-6.0 dbus-1 2>/dev/null ||
+    missing "build dependencies (GTK 4.12+, libadwaita 1.5+, webkitgtk-6.0, dbus)"
 
 echo "==> Building engine (static OpenSSL, portable)…"
 cargo build --release --manifest-path "$REPO/Cargo.toml" -p unvpn --features vendored
@@ -56,7 +60,7 @@ rm -f "$wtmp"
 $S install -Dm644 "$REPO/packaging/unvpn-f5-handler.desktop" "$PREFIX/share/applications/unvpn-f5-handler.desktop"
 
 printf "Install polkit rule (connect prompts for admin once, then caches)? [y/N] "
-read -r ans
+read -r ans || ans=
 if [ "$ans" = y ] || [ "$ans" = Y ]; then
     tmp="$(mktemp)"
     sed "s#/usr/local/bin/unvpn#$PREFIX/bin/unvpn#" "$REPO/packaging/49-unvpn.rules" > "$tmp"

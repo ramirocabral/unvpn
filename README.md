@@ -46,12 +46,30 @@ Supported VPNs:
 
 ## Install
 
-Needs Rust, a C toolchain, GTK4, libadwaita, webkitgtk-6.0, polkit, iproute2 and
-nftables. On Arch:
+Needs Rust 1.92+, a C toolchain, GTK 4.12+, libadwaita 1.5+, webkitgtk-6.0,
+polkit, iproute2 and nftables. Install them for your distro:
 
 ```sh
+# Arch
 sudo pacman -S --needed rust base-devel perl gtk4 libadwaita webkitgtk-6.0 polkit iproute2 nftables
+
+# Debian 13, Ubuntu 24.04 or newer (their Rust is too old, so it comes from rustup)
+sudo apt install build-essential perl pkg-config curl libssl-dev libdbus-1-dev \
+    libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev pkexec iproute2 nftables
+curl https://sh.rustup.rs -sSf | sh
+
+# Fedora
+sudo dnf install gcc make perl pkgconf-pkg-config openssl-devel dbus-devel \
+    gtk4-devel libadwaita-devel webkitgtk6.0-devel polkit iproute nftables
+curl https://sh.rustup.rs -sSf | sh
+
+# RHEL, AlmaLinux, Rocky 10: enable CRB and EPEL, then as Fedora
+sudo dnf install epel-release && sudo dnf config-manager --set-enabled crb
 ```
+
+Debian 12, Ubuntu 22.04 and RHEL 9 ship a GTK and libadwaita too old for the app.
+
+Then build and install:
 
 ```sh
 ./install.sh                    # installs to /usr/local (asks for sudo)
