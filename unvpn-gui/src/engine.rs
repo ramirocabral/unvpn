@@ -103,7 +103,7 @@ fn sso_origin(url: &str) -> Option<&str> {
 
 /// Resolve the engine binary to an absolute path (pkexec requires absolute).
 /// Order: $UNVPN_BIN, the engine built in the same source tree as this GUI
-/// (running from `unvpn-gui/target/<profile>/`), $PATH, then a sensible default.
+/// (running from `<repo>/target/<profile>/`), $PATH, then a sensible default.
 pub fn unvpn_bin() -> String {
     if let Ok(p) = std::env::var("UNVPN_BIN") {
         return p;
@@ -122,12 +122,16 @@ pub fn unvpn_bin() -> String {
     "/usr/local/bin/unvpn".to_string()
 }
 
-/// `<repo>/unvpn/target/release/unvpn`, when this GUI runs from
-/// `<repo>/unvpn-gui/target/<profile>/unvpn-gui` (a development checkout).
+/// `<repo>/target/release/unvpn`, when this GUI runs from
+/// `<repo>/target/<profile>/unvpn-gui` (a development checkout).
 fn dev_engine() -> Option<std::path::PathBuf> {
     let exe = std::env::current_exe().ok()?;
-    let repo = exe.parent()?.parent()?.parent()?.parent()?; // <profile> → target → unvpn-gui → repo
-    let cand = repo.join("unvpn/target/release/unvpn");
+    let target = exe.parent()?.parent()?;
+    let repo = target.parent()?;
+    if !repo.join("unvpn/Cargo.toml").is_file() {
+        return None;
+    }
+    let cand = target.join("release/unvpn");
     cand.is_file().then_some(cand)
 }
 

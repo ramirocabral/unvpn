@@ -122,3 +122,8 @@ before it is processed, so an interrupted enrollment can be finished with `--res
 ## Legal
 
 Only use unvpn to connect to VPNs you are allowed to use.
+
+## License
+
+unvpn is free software, licensed under the [GNU General Public License v3.0 or
+later](LICENSE).

@@ -1,0 +1,20 @@
+[workspace]
+members = ["unvpn", "unvpn-profiles", "unvpn-gui"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/ramirocabral/unvpn"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+unvpn-profiles = { path = "unvpn-profiles" }
+
+# The GUI derives the vault key with Argon2; unoptimised it takes seconds.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3

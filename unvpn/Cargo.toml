@@ -1,14 +1,16 @@
 [package]
 name = "unvpn"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
 description = "Native Linux multi-vendor VPN client engine (Check Point / Fortinet / F5 / AnyConnect / GlobalProtect / OpenVPN, plus kernel WireGuard)."
 
 [dependencies]
 openssl = "0.10"
 openssl-probe = "0.2"
 libc = "0.2"
-unvpn-profiles = { path = "../unvpn-profiles" }
+unvpn-profiles.workspace = true
 
 [features]
 # Statically link OpenSSL (built from source) for a distro-agnostic binary.

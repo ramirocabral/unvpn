@@ -15,4 +15,3 @@ captures/
 
 # Confidential client docs — never commit (public repo)
 *.pdf
-unvpn-profiles/Cargo.lock

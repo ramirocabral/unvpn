@@ -33,14 +33,14 @@ uninstall() {
 command -v cargo >/dev/null || { echo "Need Rust/cargo — see https://rustup.rs"; exit 1; }
 
 echo "==> Building engine (static OpenSSL, portable)…"
-cargo build --release --features vendored --manifest-path "$REPO/unvpn/Cargo.toml"
+cargo build --release --manifest-path "$REPO/Cargo.toml" -p unvpn --features vendored
 echo "==> Building GUI…"
-cargo build --release --manifest-path "$REPO/unvpn-gui/Cargo.toml"
+cargo build --release --manifest-path "$REPO/Cargo.toml" -p unvpn-gui
 
 S="$(sudo_if_needed "$PREFIX/bin")"
 [ -n "$S" ] && echo "==> Installing to $PREFIX (sudo)…" || echo "==> Installing to $PREFIX …"
-$S install -Dm755 "$REPO/unvpn/target/release/unvpn"    "$PREFIX/bin/unvpn"
-$S install -Dm755 "$REPO/unvpn-gui/target/release/unvpn-gui"        "$PREFIX/bin/unvpn-gui"
+$S install -Dm755 "$REPO/target/release/unvpn"     "$PREFIX/bin/unvpn"
+$S install -Dm755 "$REPO/target/release/unvpn-gui" "$PREFIX/bin/unvpn-gui"
 for sz in 32 48 64 128 256; do
     $S install -Dm644 "$REPO/packaging/icons/unvpn-$sz.png" \
         "$PREFIX/share/icons/hicolor/${sz}x${sz}/apps/unvpn.png"
