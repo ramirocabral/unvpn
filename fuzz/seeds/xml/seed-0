@@ -1,0 +1,1 @@
+<?xml version="1.0"?><config-auth client="vpn" type="auth-request"><opaque is-for="sg"><tunnel-group>G</tunnel-group></opaque><auth id="main"><form><input type="text" name="username" label="User:"/><select name="group_list"><option>A</option></select></form></auth></config-auth>

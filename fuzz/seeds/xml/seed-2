@@ -1,0 +1,1 @@
+<?xml version="1.0" encoding="utf-8"?><sslvpn-tunnel ver="2" dtls="1"><ipv4><dns ip="198.51.100.53"/><assigned-addr ipv4="198.51.100.7"/><split-tunnel-info><addr ip="10.0.0.0" mask="255.0.0.0"/></split-tunnel-info></ipv4></sslvpn-tunnel>

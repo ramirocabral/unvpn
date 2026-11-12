@@ -1,0 +1,18 @@
+(CCCserverResponse
+	:ResponseHeader (
+		:id (1)
+		:type (ClientHello)
+		:return_code (600)
+	)
+	:ResponseData (
+		:connectivity_info (
+			:server_ip (203.0.113.1)
+		)
+		:ranges (
+			: (
+				:from (10.0.0.0)
+				:to (10.0.0.255)
+			)
+		)
+	)
+)

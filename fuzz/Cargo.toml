@@ -1,0 +1,72 @@
+[package]
+name = "unvpn-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+unvpn = { path = "../unvpn" }
+
+# Not part of the main workspace: cargo-fuzz builds it with its own flags.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "http"
+path = "fuzz_targets/http.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ppp"
+path = "fuzz_targets/ppp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ikev1"
+path = "fuzz_targets/ikev1.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ikev2"
+path = "fuzz_targets/ikev2.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ccc"
+path = "fuzz_targets/ccc.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "der"
+path = "fuzz_targets/der.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "xml"
+path = "fuzz_targets/xml.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tunnel_config"
+path = "fuzz_targets/tunnel_config.rs"
+test = false
+doc = false
+bench = false

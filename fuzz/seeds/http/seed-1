@@ -1,0 +1,5 @@
+HTTP/1.1 302 Found
+Location: https://gw.example.com:443/x
+Content-Length: 2
+
+ok

@@ -1,0 +1,6 @@
+HTTP/1.1 200 OK
+X-CSTP-Address: 198.51.100.7
+X-CSTP-Netmask: 255.255.255.0
+X-CSTP-Split-Include: 10.0.0.0/255.0.0.0
+X-DTLS-Session-ID: 00ff
+
