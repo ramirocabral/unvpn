@@ -142,6 +142,9 @@ fn dev_engine() -> Option<std::path::PathBuf> {
     cand.is_file().then_some(cand)
 }
 
+const NO_POLKIT_AGENT: &str = "no polkit authentication agent is running in this session — \
+     install one (e.g. polkit-gnome) and start it at login";
+
 /// How to run the engine as root. `pkexec` needs a PolicyKit agent (GNOME/KDE
 /// have one); minimal WMs (Sway/i3/…) often don't, but frequently have
 /// passwordless sudo, which needs no agent. Auto-picks; override with
@@ -322,6 +325,9 @@ impl Vpn {
                     // Markers come only from the engine's stdout.
                     let m = if is_err { None } else { marker::parse(&line) };
                     let Some(m) = m else {
+                        if is_err && line.contains("No authentication agent found") {
+                            set_state(State::Error(NO_POLKIT_AGENT.into()), &[State::Connecting]);
+                        }
                         send(EngineEvent::Log(clean));
                         continue;
                     };

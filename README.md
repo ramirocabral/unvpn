@@ -56,6 +56,9 @@ curl https://sh.rustup.rs -sSf | sh
 sudo dnf install epel-release && sudo dnf config-manager --set-enabled crb
 ```
 
+The app asks for admin rights through polkit, which needs an authentication
+agent running in your session.
+
 Build and install:
 
 ```sh
