@@ -27,9 +27,10 @@
 //! Two requirements:
 //!   1. The body MUST be multi-line with tab indentation. A single-line body is
 //! rejected with `return_code (504)`.
-//! 2. The RequestHeader carries NO `protocol_version`: that is a field the server
-//! returns, nested as `:protocol_version (:protocol_version (100))`. Sending it
-//! in the request is rejected as a bad protocol version.
+//! 2. A ClientHello header carries NO `protocol_version`: that is a field the
+//! server returns, nested as `:protocol_version (:protocol_version (100))`.
+//! Sending it there is rejected as a bad protocol version. `ClientSettings`
+//! does carry `:protocol_version (100)`.
 
 use std::fmt::Write as _;
 
@@ -40,6 +41,8 @@ pub enum Value {
     Str(String),
     Sym(String),
     Map(Vec<(String, Value)>),
+    /// A map that carries a type name: `(Name :k (v) ...)`.
+    Named(String, Box<Value>),
 }
 
 impl Value {
@@ -63,6 +66,7 @@ impl Value {
     pub fn get(&self, key: &str) -> Option<&Value> {
         match self {
             Value::Map(entries) => entries.iter().find(|(k, _)| k == key).map(|(_, v)| v),
+            Value::Named(_, inner) => inner.get(key),
             _ => None,
         }
     }
@@ -106,6 +110,13 @@ impl Value {
                 let _ = write!(out, "({})", s);
             }
             Value::Map(entries) if entries.is_empty() => out.push_str("()"),
+            Value::Named(name, inner) => {
+                let name = if name.bytes().all(|b| b.is_ascii_graphic() && b != b'"') { name.clone() } else { format!("\"{}\"", escape(name)) };
+                let mut body = String::new();
+                inner.write_indented(&mut body, level);
+                let body = body.strip_prefix('(').unwrap_or(&body);
+                let _ = write!(out, "({name}{body}");
+            }
             Value::Map(entries) => {
                 out.push_str("(\n");
                 for (k, v) in entries {
@@ -127,6 +138,7 @@ impl Value {
             Value::Num(n) => n.to_string(),
             Value::Str(s) => format!("\"{}\"", s),
             Value::Sym(s) => s.clone(),
+            Value::Named(name, inner) => format!("{name} {}", inner.pretty(indent)),
             Value::Map(entries) => {
                 let mut out = String::from("{\n");
                 for (k, v) in entries {
@@ -324,20 +336,20 @@ pub fn multi_challenge(request_id: i64, session_id: &str, user_input: &str) -> P
 
 /// Build a CCC `ClientSettings` request for the session Office Mode handed out;
 /// the answer carries the site's policies, among them its encryption domain.
-pub fn client_settings(request_id: i64, session_id: &str, policies: &[&str], with_version: bool) -> Packet {
-    let mut header = vec![
+pub fn client_settings(request_id: i64, session_id: &str) -> Packet {
+    let header = Value::map(vec![
         ("id", Value::Num(request_id)),
         ("type", Value::sym("ClientSettings")),
         ("session_id", Value::sym(session_id)),
-    ];
-    if with_version {
-        header.push(("protocol_version", Value::Num(100)));
-    }
-    let header = Value::map(header);
-    let data = Value::map(vec![(
-        "requested_policies_and_current_versions",
-        Value::map(policies.iter().map(|p| (*p, Value::Empty)).collect()),
-    )]);
+        ("protocol_version", Value::Num(100)),
+    ]);
+    let data = Value::Named(
+        "ClientSettings".into(),
+        Box::new(Value::map(vec![(
+            "requested_policies_and_current_versions",
+            Value::map(vec![("range", Value::Empty)]),
+        )])),
+    );
     Packet {
         name: "CCCclientRequest".to_string(),
         body: Value::map(vec![("RequestHeader", header), ("RequestData", data)]),
@@ -467,12 +479,18 @@ impl<'a> Parser<'a> {
             Some(b'"') => {
                 let s = self.read_quoted()?;
                 self.skip_ws();
+                if self.peek() == Some(b':') {
+                    return self.read_named(s);
+                }
                 self.expect(b')')?;
                 Ok(Value::Str(s))
             }
             _ => {
                 let t = self.read_bare()?;
                 self.skip_ws();
+                if self.peek() == Some(b':') {
+                    return self.read_named(t);
+                }
                 self.expect(b')')?;
                 Ok(match t.parse::<i64>() {
                     Ok(n) => Value::Num(n),
@@ -480,6 +498,13 @@ impl<'a> Parser<'a> {
                 })
             }
         }
+    }
+
+    fn read_named(&mut self, name: String) -> Result<Value, String> {
+        let m = self.read_map_body()?;
+        self.skip_ws();
+        self.expect(b')')?;
+        Ok(Value::Named(name, Box::new(m)))
     }
 
     fn read_map_body(&mut self) -> Result<Value, String> {
@@ -521,9 +546,9 @@ mod tests {
 
     #[test]
     fn client_settings_answer_yields_the_encryption_domain() {
-        let req = client_settings(3, "abc123", &["range"], false).serialize();
-        assert!(req.contains("\t\t:type (ClientSettings)\n\t\t:session_id (abc123)\n"));
-        assert!(req.contains(":requested_policies_and_current_versions (\n\t\t\t:range ()\n"));
+        let req = client_settings(3, "abc123").serialize();
+        assert!(req.contains("\t\t:type (ClientSettings)\n\t\t:session_id (abc123)\n\t\t:protocol_version (100)\n"), "{req}");
+        assert!(req.contains("\t:RequestData (ClientSettings\n\t\t:requested_policies_and_current_versions (\n\t\t\t:range ()\n\t\t)\n\t)"), "{req}");
         let answer = "(CCCserverResponse\n\t:ResponseHeader (\n\t\t:id (3)\n\t\t:type (ClientSettings)\n\t\t:return_code (600)\n\t)\n\t:ResponseData (\n\t\t:updated_policies (\n\t\t\t:range (\n\t\t\t\t:settings (\n\t\t\t\t\t: (\n\t\t\t\t\t\t:from (10.0.0.0)\n\t\t\t\t\t\t:to (10.255.255.255)\n\t\t\t\t\t)\n\t\t\t\t\t: (\n\t\t\t\t\t\t:from (198.51.100.0)\n\t\t\t\t\t\t:to (198.51.100.127)\n\t\t\t\t\t)\n\t\t\t\t)\n\t\t\t)\n\t\t)\n\t)\n)";
         let ranges = encryption_domain(&parse(answer).unwrap()).unwrap();
         assert_eq!(ranges.len(), 2);
@@ -533,8 +558,8 @@ mod tests {
         let refused = "(CCCserverResponse\n\t:ResponseHeader (\n\t\t:return_code (501)\n\t)\n\t:ResponseData (\n\t\t:error_message (\"no session\")\n\t)\n)";
         let err = encryption_domain(&parse(refused).unwrap()).unwrap_err();
         assert!(err.starts_with("return_code 501: ") && err.contains("no session"), "{err}");
-        let versioned = client_settings(4, "abc123", &["range", "nemo_client_1"], true).serialize();
-        assert!(versioned.contains(":protocol_version (100)") && versioned.contains(":nemo_client_1 ()"));
+        let rules = "(CCCserverResponse\n\t:ResponseHeader (\n\t\t:return_code (600)\n\t)\n\t:ResponseData (\n\t\t:updated_policies (\n\t\t\t:desktop (\n\t\t\t\t:settings (\n\t\t\t\t\t: (Rules\n\t\t\t\t\t\t:rule-1 (\n\t\t\t\t\t\t\t:dst (\n\t\t\t\t\t\t\t\t: (\"All Users\"\n\t\t\t\t\t\t\t\t\t:type (usrgroup)\n\t\t\t\t\t\t\t\t)\n\t\t\t\t\t\t\t)\n\t\t\t\t\t\t)\n\t\t\t\t\t)\n\t\t\t\t)\n\t\t\t)\n\t\t\t:range (\n\t\t\t\t:settings (\n\t\t\t\t\t: (\n\t\t\t\t\t\t:from (192.0.2.0)\n\t\t\t\t\t\t:to (192.0.2.255)\n\t\t\t\t\t)\n\t\t\t\t)\n\t\t\t)\n\t\t)\n\t)\n)";
+        assert_eq!(encryption_domain(&parse(rules).unwrap()).unwrap(), vec![("192.0.2.0".parse().unwrap(), "192.0.2.255".parse().unwrap())]);
     }
 
     #[test]
