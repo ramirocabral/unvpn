@@ -469,11 +469,25 @@ const CP_FALLBACK_ROUTE: (std::net::Ipv4Addr, u8) = (std::net::Ipv4Addr::new(10,
 /// The site's encryption domain as prefixes, from a CCC `ClientSettings` request
 /// on the session Office Mode handed out.
 fn fetch_encryption_domain(host: &str, session_id: &str) -> Result<Vec<(std::net::Ipv4Addr, u8)>, String> {
-    let body = ccc::client_settings(new_request_id(), session_id).serialize();
-    let raw = post(host, &http_request(host, CCC_PATH, &body))?;
-    let pkt = ccc::parse(split_http_body(&raw)).map_err(|e| format!("bad ClientSettings answer: {e}"))?;
+    const SHAPES: [(&[&str], bool); 3] = [(&["range"], false), (&["range", "nemo_client_1"], false), (&["range"], true)];
+    let cookie = format!("CPCVPN_SESSION_ID={session_id}");
+    let mut refused = Vec::new();
+    let mut ranges = None;
+    for (policies, with_version) in SHAPES {
+        let body = ccc::client_settings(new_request_id(), session_id, policies, with_version).serialize();
+        let raw = post(host, &http_request_with_cookie(host, CCC_PATH, &body, Some(&cookie)))?;
+        let pkt = ccc::parse(split_http_body(&raw)).map_err(|e| format!("bad ClientSettings answer: {e}"))?;
+        match ccc::encryption_domain(&pkt) {
+            Ok(r) => {
+                ranges = Some(r);
+                break;
+            }
+            Err(e) => refused.push(e),
+        }
+    }
+    let ranges = ranges.ok_or_else(|| refused.join(" / "))?;
     let mut nets: Vec<(std::net::Ipv4Addr, u8)> =
-        ccc::encryption_domain(&pkt)?.into_iter().flat_map(|(f, t)| tun::range_to_prefixes(f, t)).collect();
+        ranges.into_iter().flat_map(|(f, t)| tun::range_to_prefixes(f, t)).collect();
     nets.sort();
     nets.dedup();
     Ok(nets)
@@ -1827,10 +1841,16 @@ fn extract_cookie(resp: &str, name: &str) -> Option<String> {
 }
 
 fn http_request(host: &str, path: &str, body: &str) -> String {
+    http_request_with_cookie(host, path, body, None)
+}
+
+fn http_request_with_cookie(host: &str, path: &str, body: &str, cookie: Option<&str>) -> String {
+    let cookie = cookie.map(|c| format!("Cookie: {c}\r\n")).unwrap_or_default();
     format!(
         "POST {path} HTTP/1.1\r\n\
          Host: {host}\r\n\
          User-Agent: {USER_AGENT}\r\n\
+         {cookie}\
          Content-Type: application/x-www-form-urlencoded\r\n\
          Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5\r\n\
          Content-Length: {len}\r\n\
