@@ -1766,16 +1766,21 @@ impl App {
             "newpass" => ("Password expired", "New password"),
             "renew" => ("Change your password?", "New password"),
             "answer" => ("Additional verification", "Answer"),
+            "sso" if self.backend() == Backend::GlobalProtect => ("Finish the browser sign-in", "Callback link or prelogin-cookie"),
             "sso" => ("Finish the browser sign-in", "SSO token"),
+            "username" => ("Sign-in name", "Username"),
             "code2" => ("Second code", "Next code"),
             "keypass" => ("Private key passphrase", "Passphrase"),
             _ => ("Two-factor authentication", "Code"),
         };
         self.prompt_group.set_title(title);
         let message = if p.kind == "sso" && self.sso_window_open() {
-            "Sign in in the window that opened — the VPN connects on its own. \
-             (Or paste the acSamlv2Token cookie here.)"
-                .to_string()
+            let fallback = match self.backend() {
+                Backend::GlobalProtect => "the globalprotectcallback: link or the prelogin-cookie",
+                Backend::AnyConnect => "the SSO token cookie",
+                _ => "the SSO token",
+            };
+            format!("Sign in in the window that opened — the VPN connects on its own. (Or paste {fallback} here.)")
         } else if p.kind == "keypass" && !p.message.starts_with("Wrong") {
             "The profile's private key is encrypted.".to_string()
         } else {
@@ -1988,6 +1993,10 @@ impl App {
         if changed {
             let down = matches!(state, State::Disconnected | State::Error(_));
             let switch = if down { self.pending_switch.take() } else { None };
+            // A push approved on the phone leaves its card up; the tunnel answers it.
+            if state == State::Connected {
+                self.clear_prompt();
+            }
             if let State::Error(e) = &state {
                 self.toast(e);
                 if self.from_tray.get() && switch.is_none() {
