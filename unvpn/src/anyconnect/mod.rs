@@ -7,11 +7,10 @@ pub mod auth;
 pub mod config;
 pub mod cstp;
 pub mod dtls;
-pub mod http;
 pub mod xml;
 
+use crate::net::http::{self, Endpoint};
 use auth::{Creds, Prompter, Session, Sso};
-use http::Endpoint;
 use std::io::Write;
 use std::time::Duration;
 
@@ -141,12 +140,11 @@ fn timeout() -> Duration {
 
 fn make_session(a: &Args) -> Result<Session, String> {
     let (host, port, path) = http::split_url(&a.url)?;
-    let ep = Endpoint {
-        host,
-        port,
-        user_agent: a.user_agent.clone(),
-        timeout: timeout(),
-    };
+    let mut ep = Endpoint::new(&host, port, &a.user_agent, timeout());
+    ep.headers = vec![
+        "X-Transcend-Version: 1".into(),
+        "X-Aggregate-Auth: 1".into(),
+    ];
     Ok(Session::new(ep, path, CLIENT_VERSION.to_string()))
 }
 

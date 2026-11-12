@@ -13,9 +13,9 @@
 //! ```
 
 use super::auth::{classify, Reply, Session};
-use super::http::Form;
 use crate::anyconnect::config::Route;
 use crate::anyconnect::xml::Element;
+use crate::net::http::Form;
 use std::net::Ipv4Addr;
 
 #[derive(Debug, Clone, Default)]

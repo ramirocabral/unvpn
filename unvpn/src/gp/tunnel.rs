@@ -22,8 +22,8 @@
 use super::auth::Session;
 use super::config::{self, GpConfig};
 use super::hip;
-use super::http;
 use crate::ike::esp::EspSa;
+use crate::net::http;
 use crate::net::tls::TlsStream;
 use crate::sysnet;
 use crate::tun;
@@ -511,7 +511,7 @@ struct SslLink {
 impl SslLink {
     fn open(s: &Session, cfg: &GpConfig) -> Result<Self, String> {
         let auth = s.auth.as_ref().ok_or("not authenticated")?;
-        let mut tls = http::connect_tls(&s.ep.host, s.ep.port, s.ep.timeout)?;
+        let mut tls = s.ep.connect()?;
         let fd = tls.get_ref().as_raw_fd();
         let q = format!(
             "authcookie={}&user={}",

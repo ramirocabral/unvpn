@@ -10,9 +10,9 @@
 
 use super::auth::Session;
 use super::config::{self, F5Options};
-use super::http;
 use super::ppp::{self, Framing};
 use crate::gnutls;
+use crate::net::http::{self, Request};
 use crate::sysnet;
 use crate::tun;
 use std::io::{Read, Write};
@@ -91,15 +91,10 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
     let no_routes = opts.no_routes;
 
     println!("# fetching VPN profile ({PROFILE_PATH}) …");
-    let resp = http::request(
-        &session.host,
-        session.port,
-        "GET",
-        PROFILE_PATH,
+    let resp = http::send(
+        &session.ep(),
+        Request::get(PROFILE_PATH),
         &mut session.cookies,
-        &[],
-        b"",
-        session.timeout,
     )?;
     if resp.status != 200 {
         return Err(format!("profile request failed: HTTP {}", resp.status));
@@ -109,16 +104,7 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
     println!("# profile params: {params}");
 
     let opt_path = format!("/vdesk/vpn/connect.php3?{params}&outform=xml&client_version=2.0");
-    let resp = http::request(
-        &session.host,
-        session.port,
-        "GET",
-        &opt_path,
-        &mut session.cookies,
-        &[],
-        b"",
-        session.timeout,
-    )?;
+    let resp = http::send(&session.ep(), Request::get(&opt_path), &mut session.cookies)?;
     if resp.status != 200 {
         return Err(format!("options request failed: HTTP {}", resp.status));
     }
@@ -331,15 +317,10 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
     let _ = conn.send(ppp::PPP_LCP, &ppp::terminate_request(0xfe));
     drop(conn); // close the tunnel socket before asking the gateway to hang up
                 // Tell the gateway to drop the session server-side via /vdesk/hangup.php3.
-    let _ = http::request(
-        &session.host,
-        session.port,
-        "GET",
-        "/vdesk/hangup.php3?hangup_error=1",
+    let _ = http::send(
+        &session.ep(),
+        Request::get("/vdesk/hangup.php3?hangup_error=1"),
         &mut session.cookies,
-        &[],
-        b"",
-        session.timeout,
     );
     drop(restore);
     final_result
@@ -373,16 +354,9 @@ fn open_channel(session: &Session, cfg: &F5Options, try_dtls: bool) -> Result<Ch
 /// TLS and DTLS send the same bytes; no cookies — they could outgrow a datagram and
 /// aren't needed.
 fn myvpn_request(session: &Session, cfg: &F5Options) -> Vec<u8> {
-    let empty = http::Cookies::new();
-    http::build_request(
-        "GET",
-        &session.host,
-        &build_myvpn_path(cfg),
-        &empty,
-        &[],
-        b"",
-        true,
-    )
+    Request::get(&build_myvpn_path(cfg))
+        .without_cookies()
+        .encode(&session.ep(), &session.cookies, true)
 }
 
 fn header_ip(headers: &[(String, String)]) -> Option<Ipv4Addr> {
@@ -479,30 +453,18 @@ fn parse_dtls_probe(rec: &[u8]) -> Probe {
     if !rec.starts_with(b"HTTP/") {
         return Probe::Other;
     }
-    let text = String::from_utf8_lossy(rec);
-    let mut lines = text.split("\r\n");
-    let status = lines
-        .next()
-        .and_then(|l| l.split_whitespace().nth(1))
-        .and_then(|s| s.parse::<u16>().ok())
-        .unwrap_or(0);
-    if status != 200 {
-        return Probe::Refused(status);
+    let head = &rec[..http::head_end(rec).unwrap_or(rec.len())];
+    match http::parse_head(head) {
+        Ok((200, headers)) => Probe::Accepted(headers),
+        Ok((status, _)) => Probe::Refused(status),
+        Err(_) => Probe::Refused(0),
     }
-    let headers = lines
-        .take_while(|l| !l.is_empty())
-        .filter_map(|l| {
-            l.split_once(':')
-                .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
-        })
-        .collect();
-    Probe::Accepted(headers)
 }
 
 /// PPP over the TLS stream: `GET /myvpn` → 200/201 + `X-VPN-client-IP` → PPP.
 fn open_tls(session: &Session, cfg: &F5Options) -> Result<Channel, String> {
     println!("# opening tunnel (GET /myvpn?sess=…&Z=…) …");
-    let mut tls = http::connect_tls(&session.host, session.port, session.timeout)?;
+    let mut tls = session.ep().connect()?;
     // Pin the address this very socket reached (not a second DNS answer).
     let gw_peer = tls.get_ref().peer_addr().ok().map(|a| a.ip());
     tls.write_all(&myvpn_request(session, cfg))
@@ -512,7 +474,8 @@ fn open_tls(session: &Session, cfg: &F5Options) -> Result<Channel, String> {
     tls.get_ref()
         .set_read_timeout(Some(Duration::from_secs(20)))
         .ok();
-    let (status, headers, leftover) = read_http_response(&mut tls)?;
+    let resp = http::read_response(&mut tls, false)?;
+    let (status, headers, leftover) = (resp.status, resp.headers, resp.body);
     if status != 200 && status != 201 {
         return Err(format!("tunnel setup failed: HTTP {status}"));
     }
@@ -614,44 +577,6 @@ fn build_myvpn_path(cfg: &F5Options) -> String {
         cfg.ur_z,
         base64(local_hostname().as_bytes()),
     )
-}
-
-/// The leftover is any bytes already read past the header terminator — the first
-/// PPP bytes of the tunnel.
-fn read_http_response<S: Read>(s: &mut S) -> Result<(u16, Vec<(String, String)>, Vec<u8>), String> {
-    let mut raw = Vec::new();
-    let mut tmp = [0u8; 4096];
-    let header_end = loop {
-        if let Some(p) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
-            break p + 4;
-        }
-        match s.read(&mut tmp) {
-            Ok(0) => return Err("tunnel closed before HTTP response".into()),
-            Ok(n) => raw.extend_from_slice(&tmp[..n]),
-            Err(e) => return Err(format!("tunnel response read: {e}")),
-        }
-        if raw.len() > 1 << 16 {
-            return Err("tunnel HTTP response headers too large".into());
-        }
-    };
-    let text = String::from_utf8_lossy(&raw[..header_end]);
-    let mut lines = text.split("\r\n");
-    let status_line = lines.next().unwrap_or("");
-    let status = status_line
-        .split_whitespace()
-        .nth(1)
-        .and_then(|s| s.parse::<u16>().ok())
-        .ok_or_else(|| format!("bad tunnel status line: {status_line:?}"))?;
-    let mut headers = Vec::new();
-    for line in lines {
-        if line.is_empty() {
-            continue;
-        }
-        if let Some((k, v)) = line.split_once(':') {
-            headers.push((k.trim().to_string(), v.trim().to_string()));
-        }
-    }
-    Ok((status, headers, raw[header_end..].to_vec()))
 }
 
 /// Returns Ok on clean stop, Err on tunnel failure.
@@ -1068,7 +993,8 @@ mod tests {
         let mut stream = std::io::Cursor::new(
             b"HTTP/1.1 200 OK\r\nX-VPN-client-IP: 10.1.2.3\r\n\r\n\xf5\x00\x00\x06".to_vec(),
         );
-        let (status, headers, leftover) = read_http_response(&mut stream).unwrap();
+        let r = http::read_response(&mut stream, false).unwrap();
+        let (status, headers, leftover) = (r.status, r.headers, r.body);
         assert_eq!(status, 200);
         assert_eq!(
             headers

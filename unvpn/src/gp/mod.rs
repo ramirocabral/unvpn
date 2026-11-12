@@ -8,12 +8,14 @@
 pub mod auth;
 pub mod config;
 pub mod hip;
-pub mod http;
 pub mod tunnel;
 
+use crate::net::http::{self, Endpoint};
 use auth::{Creds, GpError, Prompter, Role, Saml, SamlResult, Session};
-use http::Endpoint;
 use std::time::Duration;
+
+/// Some older PAN-OS releases reject any other User-Agent.
+const USER_AGENT: &str = "PAN GlobalProtect";
 
 /// `app-version` when the portal didn't tell us its own.
 pub const DEFAULT_APP_VERSION: &str = "6.3.0-33";
@@ -71,7 +73,7 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
     let mut role = None;
     let mut saml = false;
     let mut saml_cookie = None;
-    let mut user_agent = http::USER_AGENT.to_string();
+    let mut user_agent = USER_AGENT.to_string();
     let mut action = Action::Login;
     let (mut no_routes, mut no_esp, mut no_hip) = (false, false, false);
 
@@ -154,12 +156,7 @@ fn usage() {
 
 fn make_session(a: &Args) -> Result<Session, String> {
     let (host, port, _) = http::split_url(&a.host)?;
-    let ep = Endpoint {
-        host,
-        port,
-        user_agent: a.user_agent.clone(),
-        timeout: Duration::from_secs(20),
-    };
+    let ep = Endpoint::new(&host, port, &a.user_agent, Duration::from_secs(20));
     Ok(Session::new(ep, CLIENT_OS, OS_VERSION, &local_hostname()))
 }
 

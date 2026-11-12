@@ -22,7 +22,7 @@
 //! final `http://127.0.0.1:…/?id=…` URL — or just the id — on stdin.
 
 use super::auth::Session;
-use super::http;
+use crate::net::http::{self, Request};
 use crate::sysnet::{self, StdinEvent};
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -50,15 +50,10 @@ pub struct SamlOpts {
 
 pub fn remote_info(host: &str, port: u16) -> Result<RemoteInfo, String> {
     let mut cookies = http::Cookies::new();
-    let resp = http::request(
-        host,
-        port,
-        "GET",
-        INFO_PATH,
+    let resp = http::send(
+        &super::endpoint(host, port, Duration::from_secs(20)),
+        Request::get(INFO_PATH),
         &mut cookies,
-        &[],
-        b"",
-        Duration::from_secs(20),
     )?;
     if resp.status != 200 {
         return Err(format!("GET {INFO_PATH} → HTTP {}", resp.status));
@@ -184,16 +179,7 @@ pub fn login(host: &str, port: u16, realm: &str, opts: &SamlOpts) -> Result<Sess
         Duration::from_secs(20),
     );
     let path = format!("{AUTH_ID_PATH}{}", http::urlencode(&id));
-    let resp = http::request(
-        host,
-        port,
-        "GET",
-        &path,
-        &mut s.cookies,
-        &[],
-        b"",
-        Duration::from_secs(20),
-    )?;
+    let resp = http::send(&s.ep(), Request::get(&path), &mut s.cookies)?;
     if s.svpncookie().is_none() {
         // One sanitized line: this is gateway text and ends up in the GUI's parser.
         let snippet: String = sysnet::one_line(&resp.body_str())

@@ -10,8 +10,9 @@
 //! the tunnel comes up over TLS instead; if DTLS dies later we reconnect over TLS.
 
 use super::auth::Session;
-use super::{config, http, ppp};
+use super::{config, ppp};
 use crate::gnutls;
+use crate::net::http::{self, Request};
 use crate::sysnet;
 use crate::tun;
 use std::io::{Read, Write};
@@ -270,16 +271,8 @@ pub fn run(
 /// `GET /remote/fortisslvpn_xml`: the tunnel's IP, DNS, routes and DTLS offer.
 fn fetch_config(session: &mut Session) -> Result<config::TunnelConfig, String> {
     println!("# fetching tunnel config ({XML_PATH}) …");
-    let resp = http::request(
-        &session.host,
-        session.port,
-        "GET",
-        XML_PATH,
-        &mut session.cookies,
-        &[],
-        b"",
-        Duration::from_secs(20),
-    )?;
+    let ep = super::endpoint(&session.host, session.port, Duration::from_secs(20));
+    let resp = http::send(&ep, Request::get(XML_PATH), &mut session.cookies)?;
     if resp.status != 200 {
         return Err(format!("config request failed: HTTP {}", resp.status));
     }
@@ -402,7 +395,8 @@ fn open_dtls(session: &Session) -> Result<Up, String> {
 /// PPP over the TLS tunnel stream (`GET /remote/sslvpn-tunnel`).
 fn open_tls(session: &Session) -> Result<Up, String> {
     println!("# opening tunnel ({TUNNEL_PATH}) …");
-    let mut tls = http::connect_tls(&session.host, session.port, Duration::from_secs(20))?;
+    let ep = super::endpoint(&session.host, session.port, Duration::from_secs(20));
+    let mut tls = ep.connect()?;
     // The address this very socket reached is the one to pin (a second DNS lookup
     // may pick another A record of a dual-WAN/HA gateway).
     let gw = match tls.get_ref().peer_addr().ok().map(|a| a.ip()) {
@@ -410,15 +404,12 @@ fn open_tls(session: &Session) -> Result<Up, String> {
         Some(IpAddr::V6(v6)) => v6.to_ipv4_mapped(), // a v6 transport can't loop into IPv4 routes
         None => None,
     };
-    let req = http::build_request(
-        "GET",
-        "sslvpn", // Fortinet wants Host: sslvpn on the tunnel request
-        TUNNEL_PATH,
-        &session.cookies,
-        &["Connection: Upgrade".to_string()],
-        b"",
-        true,
-    );
+    let upgrade = ["Connection: Upgrade".to_string()];
+    // Fortinet wants Host: sslvpn on the tunnel request.
+    let req = Request::get(TUNNEL_PATH)
+        .host("sslvpn")
+        .headers(&upgrade)
+        .encode(&ep, &session.cookies, true);
     tls.write_all(&req)
         .map_err(|e| format!("tunnel request: {e}"))?;
     tls.flush().ok();

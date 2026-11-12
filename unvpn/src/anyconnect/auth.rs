@@ -13,8 +13,8 @@
 //! `whichpin` → `<password>`; `verify_*` dropped; everything else →
 //! `<name>value</name>` under `<auth>`.
 
-use super::http::{self, Cookies, Endpoint};
 use super::xml::{self, Element};
+use crate::net::http::{self, Cookies, Endpoint, Request};
 
 /// `<device-id>`: what the 64-bit Linux AnyConnect client reports.
 pub const DEVICE_ID: &str = "linux-64";
@@ -403,15 +403,12 @@ impl Session {
     /// ASA); we report it.
     pub fn post_xml(&mut self, path: &mut String, body: &str) -> Result<Reply, String> {
         for _ in 0..5 {
-            let resp = http::request(
+            let resp = http::send(
                 &self.ep,
-                "POST",
-                path,
+                Request::post(path, Some(XML_CT), body.as_bytes()),
                 &mut self.cookies,
-                Some(XML_CT),
-                body.as_bytes(),
             )?;
-            if (300..400).contains(&resp.status) {
+            if resp.is_redirect() {
                 let loc = resp
                     .header("location")
                     .ok_or("redirect without Location")?

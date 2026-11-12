@@ -13,7 +13,10 @@
 //!
 //! The `DSID` cookie is what the data plane carries to open the tunnel.
 
-use super::http::{self, Cookies, Endpoint, Form, Response};
+use crate::net::http::{self, Cookies, Endpoint, Form, Request, Response};
+
+/// Base path of the web-auth endpoints.
+const AUTH_BASE: &str = "/dana-na/auth";
 
 #[derive(Debug)]
 pub enum IvantiError {
@@ -86,12 +89,16 @@ impl Session {
     }
 
     fn auth_path(&self, page: &str) -> String {
-        format!("{}/{}/{}", http::AUTH_BASE, self.url, page)
+        format!("{AUTH_BASE}/{}/{page}", self.url)
     }
 
     /// GET the login page and read what it asks for.
     pub fn prelogin(&mut self) -> Result<Prelogin> {
-        let resp = http::get(&self.ep, &self.auth_path("welcome.cgi"), &mut self.cookies)?;
+        let resp = http::send(
+            &self.ep,
+            Request::get(&self.auth_path("welcome.cgi")),
+            &mut self.cookies,
+        )?;
         let body = resp.body_str();
         if !looks_like_ivanti(&resp, &body) {
             return Err(IvantiError::NotHere(format!(
@@ -116,7 +123,11 @@ impl Session {
         p: &mut dyn Prompter,
     ) -> Result<()> {
         // Prime the form page for cookies and hidden fields.
-        let page = http::get(&self.ep, &self.auth_path("welcome.cgi"), &mut self.cookies)?;
+        let page = http::send(
+            &self.ep,
+            Request::get(&self.auth_path("welcome.cgi")),
+            &mut self.cookies,
+        )?;
         if !looks_like_ivanti(&page, &page.body_str()) {
             return Err(IvantiError::NotHere(format!(
                 "{} is not an Ivanti sign-in page",
@@ -140,11 +151,10 @@ impl Session {
             form.add(&k, &v);
         }
 
-        let resp = http::post_form(
+        let resp = http::send(
             &self.ep,
-            &self.auth_path("login.cgi"),
+            Request::form(&self.auth_path("login.cgi"), &form.encode()),
             &mut self.cookies,
-            &form.encode(),
         )?;
         self.absorb_dsid();
         if self.dsid.is_some() {

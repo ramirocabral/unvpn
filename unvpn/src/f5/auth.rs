@@ -9,7 +9,7 @@
 //! Some portals build the form in JavaScript with no static HTML; there we fall back
 //! to a plain username+password form.
 
-use super::http::{self, Cookies};
+use crate::net::http::{self, Cookies, Request};
 use std::time::Duration;
 
 /// Redirects to the logon page (`/my.policy`).
@@ -74,6 +74,10 @@ pub enum Outcome {
 }
 
 impl Session {
+    pub fn ep(&self) -> http::Endpoint {
+        super::endpoint(&self.host, self.port, self.timeout)
+    }
+
     pub fn new(host: String, port: u16, timeout: Duration) -> Self {
         Session {
             host,
@@ -97,16 +101,11 @@ impl Session {
         token: &str,
     ) -> Result<Session, String> {
         let mut cookies = Cookies::new();
-        let extra = vec![format!("X-ACCESS-Session-Token: {token}")];
-        let resp = http::request(
-            &host,
-            port,
-            "GET",
-            "/vdesk/get_sessid_for_token.php3",
+        let extra = [format!("X-ACCESS-Session-Token: {token}")];
+        let resp = http::send(
+            &super::endpoint(&host, port, timeout),
+            Request::get("/vdesk/get_sessid_for_token.php3").headers(&extra),
             &mut cookies,
-            &extra,
-            b"",
-            timeout,
         )?;
         if resp.status != 200 {
             return Err(format!(
@@ -121,7 +120,7 @@ impl Session {
             .ok_or("token handoff: server returned no X-ACCESS-Session-ID")?
             .to_string();
         let mut s = Session::new(host, port, timeout);
-        s.cookies.0.insert("MRHSession".to_string(), sid);
+        s.cookies.set("MRHSession", &sid);
         Ok(s)
     }
 
@@ -138,17 +137,8 @@ impl Session {
     }
 
     pub fn start(&mut self) -> Result<LoginForm, String> {
-        let resp = http::request_follow(
-            &self.host,
-            self.port,
-            "GET",
-            START_PATH,
-            &mut self.cookies,
-            &[],
-            b"",
-            self.timeout,
-            5,
-        )?;
+        let resp =
+            http::send_following(&self.ep(), Request::get(START_PATH), &mut self.cookies, 5)?;
         let body = resp.body_str();
         Ok(parse_form(&body).unwrap_or_else(fallback_form))
     }
@@ -179,15 +169,10 @@ impl Session {
         } else {
             form.action.trim()
         };
-        let resp = http::request_follow(
-            &self.host,
-            self.port,
-            "POST",
-            action,
+        let resp = http::send_following(
+            &self.ep(),
+            Request::form(action, &body),
             &mut self.cookies,
-            &[],
-            body.as_bytes(),
-            self.timeout,
             5,
         )?;
 

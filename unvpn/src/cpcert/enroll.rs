@@ -21,6 +21,7 @@ use openssl::x509::X509;
 
 use super::cmc::{self, RegKey};
 use super::{p12, rfc1751};
+use crate::net::http::{self, Framing};
 
 pub const ICA_PORT: u16 = 18264;
 const MIN_PASSWORD_LEN: usize = 6;
@@ -49,64 +50,24 @@ pub fn http_request(host: &str, body: &[u8]) -> Vec<u8> {
     r
 }
 
-/// Split a raw HTTP response into (status code, body). Handles Content-Length,
-/// chunked and read-until-close bodies.
+/// Split a raw HTTP response into (status code, body).
 pub fn http_body(raw: &[u8]) -> Result<(u16, Vec<u8>), String> {
-    let (head_end, sep) = match find(raw, b"\r\n\r\n") {
-        Some(i) => (i, 4),
-        None => (
-            find(raw, b"\n\n").ok_or("no HTTP header in the CA answer")?,
-            2,
-        ),
-    };
-    let head = String::from_utf8_lossy(&raw[..head_end]);
-    let mut lines = head.lines();
-    let status_line = lines.next().unwrap_or_default();
-    let code: u16 = status_line
-        .split_whitespace()
-        .nth(1)
-        .and_then(|c| c.parse().ok())
-        .ok_or(format!("bad HTTP status line: {status_line:?}"))?;
-    let mut clen = None;
-    let mut chunked = false;
-    for l in lines {
-        let (k, v) = l.split_once(':').unwrap_or((l, ""));
-        match k.trim().to_ascii_lowercase().as_str() {
-            "content-length" => clen = v.trim().parse::<usize>().ok(),
-            "transfer-encoding" => chunked = v.to_ascii_lowercase().contains("chunked"),
-            _ => {}
-        }
-    }
-    let rest = &raw[head_end + sep..];
-    let body = if chunked {
-        let mut out = Vec::new();
-        let mut p = rest;
-        loop {
-            let le = find(p, b"\r\n").ok_or("truncated chunked body")?;
-            let size_s = String::from_utf8_lossy(&p[..le]);
-            let size = usize::from_str_radix(size_s.split(';').next().unwrap_or("").trim(), 16)
-                .map_err(|_| "bad chunk size")?;
-            p = &p[le + 2..];
-            if size == 0 {
-                break;
-            }
-            if p.len() < size {
-                return Err("truncated chunk".into());
-            }
-            out.extend_from_slice(&p[..size]);
-            p = p.get(size + 2..).unwrap_or_default();
-        }
-        out
-    } else if let Some(n) = clen {
-        if rest.len() < n {
-            return Err(format!(
+    let head_end = http::head_end(raw)
+        .or_else(|| find(raw, b"\n\n").map(|i| i + 2))
+        .ok_or("no HTTP header in the CA answer")?;
+    let (code, headers) =
+        http::parse_head(&raw[..head_end]).map_err(|e| format!("CA answer: {e}"))?;
+    let rest = &raw[head_end..];
+    let body = match http::body_framing(&headers) {
+        Framing::Chunked => http::dechunk(rest).ok_or("truncated chunked body")?,
+        Framing::Length(n) => rest
+            .get(..n)
+            .ok_or(format!(
                 "CA answer truncated ({} of {n} body bytes)",
                 rest.len()
-            ));
-        }
-        rest[..n].to_vec()
-    } else {
-        rest.to_vec()
+            ))?
+            .to_vec(),
+        Framing::Close => rest.to_vec(),
     };
     Ok((code, body))
 }
@@ -117,19 +78,17 @@ fn find(h: &[u8], n: &[u8]) -> Option<usize> {
 
 /// Whether a raw HTTP response is complete (to stop reading on a kept-alive socket).
 fn response_complete(raw: &[u8]) -> bool {
-    let Some(i) = find(raw, b"\r\n\r\n") else {
+    let Some(i) = http::head_end(raw) else {
         return false;
     };
-    let head = String::from_utf8_lossy(&raw[..i]).to_ascii_lowercase();
-    if let Some(v) = head.lines().find_map(|l| l.strip_prefix("content-length:")) {
-        if let Ok(n) = v.trim().parse::<usize>() {
-            return raw.len() >= i + 4 + n;
-        }
+    let Ok((_, headers)) = http::parse_head(&raw[..i]) else {
+        return false;
+    };
+    match http::body_framing(&headers) {
+        Framing::Length(n) => raw.len() >= i + n,
+        Framing::Chunked => http::dechunk(&raw[i..]).is_some(),
+        Framing::Close => false,
     }
-    if head.contains("transfer-encoding:") && head.contains("chunked") {
-        return raw.ends_with(b"0\r\n\r\n");
-    }
-    false
 }
 
 fn post(host: &str, port: u16, request: &[u8], raw_out: &Path) -> Result<Vec<u8>, String> {
@@ -171,7 +130,7 @@ fn post(host: &str, port: u16, request: &[u8], raw_out: &Path) -> Result<Vec<u8>
                 let waited = start.elapsed();
                 if !raw.is_empty()
                     && waited > Duration::from_secs(10)
-                    && find(&raw, b"\r\n\r\n").is_some()
+                    && http::head_end(&raw).is_some()
                 {
                     break;
                 }
@@ -399,4 +358,28 @@ pub fn validate_password(p: &str) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ca_answer_framings() {
+        let len = b"HTTP/1.0 200 OK\r\nContent-Length: 3\r\n\r\nabcdef";
+        assert_eq!(http_body(len).unwrap(), (200, b"abc".to_vec()));
+        assert!(response_complete(len));
+        assert!(!response_complete(&len[..len.len() - 4]));
+        assert!(http_body(&len[..len.len() - 4]).is_err());
+
+        let chunked = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\n";
+        assert_eq!(http_body(chunked).unwrap(), (200, b"abc".to_vec()));
+        assert!(response_complete(chunked));
+        assert!(!response_complete(&chunked[..chunked.len() - 5]));
+
+        let bare_lf = b"HTTP/1.0 500 Error\nServer: x\n\nboom";
+        assert_eq!(http_body(bare_lf).unwrap(), (500, b"boom".to_vec()));
+        assert!(!response_complete(bare_lf));
+        assert!(http_body(b"no header").is_err());
+    }
 }

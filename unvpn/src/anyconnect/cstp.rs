@@ -17,7 +17,7 @@
 use super::auth::Session;
 use super::config::{self, TunnelConfig};
 use super::dtls;
-use super::http;
+use crate::net::http::{self, Request};
 use crate::net::tls::TlsStream;
 use crate::sysnet;
 use crate::tun;
@@ -290,13 +290,10 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
     let _ = chan.send(AC_DISCONN, &[0xb0]);
     drop(dtls);
     drop(chan);
-    let _ = http::request(
+    let _ = http::send(
         &session.ep,
-        "POST",
-        "/+webvpn+/webvpn_logout.html",
+        Request::post("/+webvpn+/webvpn_logout.html", None, b""),
         &mut session.cookies,
-        None,
-        b"",
     );
     drop(restore);
     final_result
@@ -313,7 +310,7 @@ fn open_channel(
         .or_else(|| session.cookies.get("webvpn").map(str::to_string))
         .ok_or("no webvpn cookie for the tunnel")?;
 
-    let mut tls = http::connect_tls(&session.ep.host, session.ep.port, session.ep.timeout)?;
+    let mut tls = session.ep.connect()?;
     let fd = tls.get_ref().as_raw_fd();
 
     let mut req = format!("CONNECT {TUNNEL_PATH} HTTP/1.1\r\n");

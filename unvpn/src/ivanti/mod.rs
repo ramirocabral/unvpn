@@ -8,13 +8,14 @@
 
 pub mod auth;
 pub mod config;
-pub mod http;
 pub mod ift;
 pub mod tunnel;
 
+use crate::net::http::{self, Endpoint};
 use auth::{Creds, IvantiError, Prompter, Session};
-use http::Endpoint;
 use std::time::Duration;
+
+const USER_AGENT: &str = "Pulse-Secure/9.1 (Linux) unvpn";
 
 /// Default sign-in policy URL segment.
 const DEFAULT_URL: &str = "url_default";
@@ -65,7 +66,7 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
     let mut password = None;
     let mut code = None;
     let mut realm = None;
-    let mut user_agent = http::USER_AGENT.to_string();
+    let mut user_agent = USER_AGENT.to_string();
     let mut action = Action::Login;
     let (mut no_routes, mut no_esp) = (false, false);
 
@@ -125,12 +126,7 @@ fn usage() {
 
 fn make_session(a: &Args) -> Result<Session, String> {
     let (host, port, _) = http::split_url(&a.host)?;
-    let ep = Endpoint {
-        host,
-        port,
-        user_agent: a.user_agent.clone(),
-        timeout: Duration::from_secs(20),
-    };
+    let ep = Endpoint::new(&host, port, &a.user_agent, Duration::from_secs(20));
     Ok(Session::new(ep, &a.url))
 }
 

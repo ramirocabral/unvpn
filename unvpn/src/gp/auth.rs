@@ -18,8 +18,8 @@
 //! that JavaScript wrapped in HTML. The answer is re-posted as `passwd` together
 //! with the challenge's `inputStr`.
 
-use super::http::{self, Cookies, Endpoint, Form};
 use crate::anyconnect::xml::{self, Element};
+use crate::net::http::{self, Cookies, Endpoint, Form, Request};
 
 /// Reported as `clientVer`; every client since GP 4.1 sends this literal.
 const CLIENT_VER: &str = "4100";
@@ -468,7 +468,7 @@ impl Session {
         } else {
             self.ep.clone()
         };
-        http::post_form(&ep, path, &mut self.cookies, body)
+        http::send(&ep, Request::form(path, body), &mut self.cookies)
     }
 
     pub fn prelogin(&mut self, portal: bool) -> Result<Prelogin, GpError> {

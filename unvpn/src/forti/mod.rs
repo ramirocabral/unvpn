@@ -4,11 +4,11 @@
 
 pub mod auth;
 pub mod config;
-pub mod http;
 pub mod ppp;
 pub mod saml;
 pub mod tunnel;
 
+use crate::net::http::{self, Request};
 use crate::sysnet::{self, StdinEvent};
 use auth::{AuthOutcome, Challenge, ChallengeKind, Session};
 use std::io::{IsTerminal, Write};
@@ -16,6 +16,11 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 const INFO_PATH: &str = "/remote/info";
+const USER_AGENT: &str = "Mozilla/5.0 SV1";
+
+pub fn endpoint(host: &str, port: u16, timeout: Duration) -> http::Endpoint {
+    http::Endpoint::new(host, port, USER_AGENT, timeout)
+}
 const SAML_START: &str = "/remote/saml/start?redirect=1";
 
 #[derive(Clone)]
@@ -175,15 +180,10 @@ fn timeout() -> Duration {
 fn probe(a: &Args) -> Result<(), String> {
     let mut cookies = http::Cookies::new();
     println!("# probing {}:{} …", a.host, a.port);
-    let resp = http::request(
-        &a.host,
-        a.port,
-        "GET",
-        INFO_PATH,
+    let resp = http::send(
+        &endpoint(&a.host, a.port, timeout()),
+        Request::get(INFO_PATH),
         &mut cookies,
-        &[],
-        b"",
-        timeout(),
     )?;
     let server = resp.header("server").unwrap_or("(no Server header)");
     println!(
@@ -229,15 +229,10 @@ fn probe(a: &Args) -> Result<(), String> {
 /// `Some(idp_url)` if `/remote/saml/start` sends the browser to an IdP.
 fn saml_idp(a: &Args) -> Result<Option<String>, String> {
     let mut c = http::Cookies::new();
-    let r = http::request(
-        &a.host,
-        a.port,
-        "GET",
-        SAML_START,
+    let r = http::send(
+        &endpoint(&a.host, a.port, timeout()),
+        Request::get(SAML_START),
         &mut c,
-        &[],
-        b"",
-        timeout(),
     )?;
     Ok(saml::idp_redirect(&r))
 }

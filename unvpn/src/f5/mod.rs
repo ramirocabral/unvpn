@@ -2,12 +2,20 @@
 
 pub mod auth;
 pub mod config;
-pub mod http;
 pub mod ppp;
 pub mod tunnel;
 
+use crate::net::http::{self, Request};
 use auth::{Outcome, Session};
 use std::time::Duration;
+
+/// Some APM access policies branch on "F5 Networks Client" in the User-Agent.
+const USER_AGENT: &str =
+    "Mozilla/5.0 (compatible; MSIE 10.0; Windows NT 6.1; Trident/6.0; F5 Networks Client)";
+
+pub fn endpoint(host: &str, port: u16, timeout: Duration) -> http::Endpoint {
+    http::Endpoint::new(host, port, USER_AGENT, timeout)
+}
 
 struct Args {
     host: String,
@@ -174,15 +182,10 @@ fn timeout() -> Duration {
 fn probe(a: &Args) -> Result<(), String> {
     let mut cookies = http::Cookies::new();
     println!("# probing {}:{} …", a.host, a.port);
-    let resp = http::request_follow(
-        &a.host,
-        a.port,
-        "GET",
-        "/",
+    let resp = http::send_following(
+        &endpoint(&a.host, a.port, timeout()),
+        Request::get("/"),
         &mut cookies,
-        &[],
-        b"",
-        timeout(),
         5,
     )?;
     let server = resp.header("server").unwrap_or("(no Server header)");
@@ -357,7 +360,7 @@ fn parse_launch_url(url: &str) -> Result<LaunchUrl, String> {
             Some(p) => p,
             None => continue,
         };
-        let v = percent_decode(v);
+        let v = http::form_decode(v);
         match k {
             "server" => server = Some(v),
             "port" => port = v.parse().unwrap_or(443),
@@ -384,43 +387,6 @@ fn parse_launch_url(url: &str) -> Result<LaunchUrl, String> {
     })
 }
 
-fn percent_decode(s: &str) -> String {
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        match b[i] {
-            b'%' if i + 2 < b.len() => {
-                let hex = |c: u8| match c {
-                    b'0'..=b'9' => Some(c - b'0'),
-                    b'a'..=b'f' => Some(c - b'a' + 10),
-                    b'A'..=b'F' => Some(c - b'A' + 10),
-                    _ => None,
-                };
-                match (hex(b[i + 1]), hex(b[i + 2])) {
-                    (Some(h), Some(l)) => {
-                        out.push((h << 4) | l);
-                        i += 3;
-                    }
-                    _ => {
-                        out.push(b'%');
-                        i += 1;
-                    }
-                }
-            }
-            b'+' => {
-                out.push(b' ');
-                i += 1;
-            }
-            c => {
-                out.push(c);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
 fn form_has_username(form: &auth::LoginForm) -> bool {
     username_field(form).is_some()
 }
@@ -443,18 +409,6 @@ fn username_field(form: &auth::LoginForm) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn percent_decode_basics() {
-        assert_eq!(percent_decode("abc"), "abc");
-        assert_eq!(percent_decode("a%2Fb"), "a/b");
-        assert_eq!(
-            percent_decode("%2FCommon%2FNetwork_Access"),
-            "/Common/Network_Access"
-        );
-        assert_eq!(percent_decode("a+b"), "a b");
-        assert_eq!(percent_decode("%zz"), "%zz");
-    }
 
     #[test]
     fn launch_url_parsed() {

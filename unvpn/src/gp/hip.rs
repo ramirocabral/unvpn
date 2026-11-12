@@ -13,7 +13,7 @@
 //! spoof.
 
 use super::auth::{classify, Reply, Session};
-use super::http::Form;
+use crate::net::http::Form;
 use std::net::Ipv4Addr;
 
 /// The md5 the check and the report must agree on.
@@ -171,17 +171,17 @@ fn now_stamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::super::auth::AuthCookie;
-    use super::super::http::Endpoint;
     use super::*;
+    use crate::net::http::Endpoint;
     use std::time::Duration;
 
     fn session() -> Session {
-        let ep = Endpoint {
-            host: "gw.example.com".into(),
-            port: 443,
-            user_agent: "PAN GlobalProtect".into(),
-            timeout: Duration::from_secs(1),
-        };
+        let ep = Endpoint::new(
+            "gw.example.com",
+            443,
+            "PAN GlobalProtect",
+            Duration::from_secs(1),
+        );
         let mut s = Session::new(ep, "Linux", "linux-64", "myhost");
         s.auth = Some(AuthCookie {
             authcookie: "secret".into(),

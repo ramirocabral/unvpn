@@ -31,6 +31,7 @@ mod sysnet;
 mod tun;
 mod wireguard;
 
+use net::http;
 use std::io::{Read, Write};
 use std::time::Duration;
 
@@ -484,9 +485,9 @@ fn fetch_encryption_domain(
     session_id: &str,
 ) -> Result<Vec<(std::net::Ipv4Addr, u8)>, String> {
     let body = ccc::client_settings(new_request_id(), session_id).serialize();
-    let raw = post(host, &http_request(host, CCC_PATH, &body))?;
+    let resp = ccc_post(host, &body)?;
     let pkt =
-        ccc::parse(split_http_body(&raw)).map_err(|e| format!("bad ClientSettings answer: {e}"))?;
+        ccc::parse(&resp.body_str()).map_err(|e| format!("bad ClientSettings answer: {e}"))?;
     let ranges = ccc::encryption_domain(&pkt)?;
     let mut nets: Vec<(std::net::Ipv4Addr, u8)> = ranges
         .into_iter()
@@ -1937,21 +1938,25 @@ fn cmd_hello(args: &[String]) {
         }
     };
 
-    let request = http_request(&host, CCC_PATH, &body);
+    let request = http::Request::form(CCC_PATH, &body).encode(
+        &ccc_endpoint(&host),
+        &http::Cookies::new(),
+        false,
+    );
     println!("# HTTP request that would be sent to {host}:443 :");
-    println!("{}", preview(&request));
+    println!("{}", preview(&String::from_utf8_lossy(&request)));
 
     if !send {
         println!("(dry run; add --send to actually POST to the gateway)");
         return;
     }
 
-    match post(&host, &request) {
+    match ccc_post(&host, &body) {
         Ok(resp) => {
-            let parsed_body = split_http_body(&resp);
+            let parsed_body = resp.body_str();
             println!("\n# raw response ({} bytes of body):", parsed_body.len());
-            println!("{}\n", preview(parsed_body));
-            match ccc::parse(parsed_body) {
+            println!("{}\n", preview(&parsed_body));
+            match ccc::parse(&parsed_body) {
                 Ok(p) => {
                     println!("# parsed CCCserverResponse:");
                     println!("{} {}", p.name, p.body.pretty(0));
@@ -2020,7 +2025,7 @@ fn cmd_login(args: &[String]) {
             .and_then(|v| v.text())
             .unwrap_or_default();
         println!("# response: return_code={rc} authn_status={status}");
-        if let Some(c) = extract_cookie(&raw, "CPCVPN_SESSION_ID") {
+        if let Some(c) = raw.set_cookie("CPCVPN_SESSION_ID") {
             println!("# Set-Cookie CPCVPN_SESSION_ID = {c}");
         }
 
@@ -2028,7 +2033,7 @@ fn cmd_login(args: &[String]) {
             "done" => {
                 if verbose {
                     println!("\n# ---- full 'done' response headers ----");
-                    println!("{}", http_headers(&raw));
+                    println!("{}", raw.head_text());
                     println!("\n# ---- full 'done' response body (parsed) ----");
                     println!("{}\n", resp.body.pretty(0));
                 }
@@ -2040,7 +2045,7 @@ fn cmd_login(args: &[String]) {
                     .path(&["ResponseData", "session_id"])
                     .and_then(|v| v.text())
                     .unwrap_or_default();
-                let cookie = extract_cookie(&raw, "CPCVPN_SESSION_ID");
+                let cookie = raw.set_cookie("CPCVPN_SESSION_ID");
 
                 if authed == "true" {
                     println!("\nAUTH OK (is_authenticated=true).");
@@ -2132,89 +2137,44 @@ fn cmd_login(args: &[String]) {
     }
 }
 
-/// POST a CCC packet; return the raw HTTP response (headers+body) and the
-/// parsed body. Exits on transport/parse failure.
-fn post_ccc(host: &str, pkt: &ccc::Packet, verbose: bool) -> (String, ccc::Packet) {
-    let body = pkt.serialize();
-    let request = http_request(host, CCC_PATH, &body);
-    let raw = post(host, &request).unwrap_or_else(|e| {
+/// POST a CCC packet; return the HTTP response and its parsed body. Exits on
+/// transport/parse failure.
+fn post_ccc(host: &str, pkt: &ccc::Packet, verbose: bool) -> (http::Response, ccc::Packet) {
+    let resp = ccc_post(host, &pkt.serialize()).unwrap_or_else(|e| {
         eprintln!("send failed: {e}");
         std::process::exit(1);
     });
+    let body = resp.body_str().into_owned();
     if verbose {
-        println!("# ---- raw HTTP response ----\n{raw}\n# ----");
+        println!(
+            "# ---- raw HTTP response ----\n{}\n\n{body}\n# ----",
+            resp.head_text()
+        );
     }
-    let b = split_http_body(&raw);
-    let parsed = ccc::parse(b).unwrap_or_else(|e| {
-        eprintln!("parse failed: {e}\n--- raw body ---\n{b}");
+    let parsed = ccc::parse(&body).unwrap_or_else(|e| {
+        eprintln!("parse failed: {e}\n--- raw body ---\n{body}");
         std::process::exit(1);
     });
-    (raw, parsed)
+    (resp, parsed)
 }
 
-fn http_headers(resp: &str) -> &str {
-    match resp.find("\r\n\r\n") {
-        Some(i) => &resp[..i],
-        None => resp,
-    }
+fn ccc_endpoint(host: &str) -> http::Endpoint {
+    let mut ep = http::Endpoint::new(host, 443, USER_AGENT, Duration::from_secs(15));
+    ep.headers = vec!["Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5".into()];
+    ep
 }
 
-fn extract_cookie(resp: &str, name: &str) -> Option<String> {
-    let pat = format!("{name}=");
-    for line in http_headers(resp).lines() {
-        let l = line.trim();
-        let rest = match l
-            .strip_prefix("Set-Cookie:")
-            .or_else(|| l.strip_prefix("set-cookie:"))
-        {
-            Some(r) => r.trim(),
-            None => continue,
-        };
-        if let Some(v) = rest.strip_prefix(&pat) {
-            return Some(v.split(';').next().unwrap_or("").trim().to_string());
-        }
-    }
-    None
-}
-
-fn http_request(host: &str, path: &str, body: &str) -> String {
-    format!(
-        "POST {path} HTTP/1.1\r\n\
-         Host: {host}\r\n\
-         User-Agent: {USER_AGENT}\r\n\
-         Content-Type: application/x-www-form-urlencoded\r\n\
-         Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5\r\n\
-         Content-Length: {len}\r\n\
-         Connection: close\r\n\
-         \r\n\
-         {body}",
-        len = body.len(),
-    )
-}
-
-/// One CCC request over TLS to the gateway's port 443.
-fn post(host: &str, request: &str) -> Result<String, String> {
-    let mut tls = net::tls::connect(host, 443, Duration::from_secs(15))?;
-    tls.write_all(request.as_bytes())
-        .map_err(|e| e.to_string())?;
-
-    let mut buf = Vec::new();
-    tls.read_to_end(&mut buf).map_err(|e| e.to_string())?;
-    Ok(String::from_utf8_lossy(&buf).into_owned())
+/// One CCC request to the gateway's port 443.
+fn ccc_post(host: &str, body: &str) -> Result<http::Response, String> {
+    let req = http::Request::form(CCC_PATH, body);
+    http::send(&ccc_endpoint(host), req, &mut http::Cookies::new())
 }
 
 /// The gateway's CCC ClientHello answer (site information, login options).
 pub(crate) fn gateway_hello(host: &str) -> Result<ccc::Packet, String> {
     let body = ccc::client_hello(new_request_id()).serialize();
-    let raw = post(host, &http_request(host, CCC_PATH, &body))?;
-    ccc::parse(split_http_body(&raw)).map_err(|e| format!("bad ClientHello answer: {e}"))
-}
-
-fn split_http_body(resp: &str) -> &str {
-    match resp.find("\r\n\r\n") {
-        Some(i) => &resp[i + 4..],
-        None => resp,
-    }
+    let resp = ccc_post(host, &body)?;
+    ccc::parse(&resp.body_str()).map_err(|e| format!("bad ClientHello answer: {e}"))
 }
 
 fn preview(s: &str) -> String {

@@ -12,7 +12,7 @@
 //!
 //! Success is a non-empty `Set-Cookie: SVPNCOOKIE=…` and nothing else — not `ret=1`.
 
-use super::http::{self, Cookies};
+use crate::net::http::{self, Cookies, Request};
 use crate::sysnet;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -190,6 +190,10 @@ impl Session {
         }
     }
 
+    pub fn ep(&self) -> http::Endpoint {
+        super::endpoint(&self.host, self.port, self.timeout)
+    }
+
     pub fn svpncookie(&self) -> Option<&str> {
         self.cookies.get("SVPNCOOKIE").filter(|v| !v.is_empty())
     }
@@ -217,14 +221,11 @@ impl Session {
                 }
             });
         }
-        let r = http::request_cancellable(
-            &self.host,
-            self.port,
-            "POST",
-            LOGINCHECK,
+        let ep = super::endpoint(&self.host, self.port, t);
+        let r = http::send_cancellable(
+            &ep,
+            Request::form(LOGINCHECK, &body),
             &mut self.cookies,
-            body.as_bytes(),
-            t,
             &cancel,
         );
         done.store(true, Ordering::SeqCst);
@@ -239,15 +240,10 @@ impl Session {
         // Warm-up GET so the gateway sets any initial session cookie it expects
         // echoed on the logincheck POST (some FortiOS builds reject a cold POST).
         // Its `<!--remoteauthtimeout=N-->` sets our auth budget, like FortiClient.
-        let page = http::request(
-            &self.host,
-            self.port,
-            "GET",
-            "/remote/login?lang=en",
+        let page = http::send(
+            &self.ep(),
+            Request::get("/remote/login?lang=en"),
             &mut self.cookies,
-            &[],
-            b"",
-            self.timeout,
         )
         .map(|r| r.body_str().into_owned())
         .unwrap_or_default();
@@ -292,14 +288,11 @@ impl Session {
             .min(AUTH_BUDGET_MAX);
         let body = self.push_body(ch);
         let started = std::time::Instant::now();
-        let resp = http::request_cancellable(
-            &self.host,
-            self.port,
-            "POST",
-            LOGINCHECK,
+        let ep = super::endpoint(&self.host, self.port, Duration::from_secs(secs + 5));
+        let resp = http::send_cancellable(
+            &ep,
+            Request::form(LOGINCHECK, &body),
             &mut self.cookies,
-            body.as_bytes(),
-            Duration::from_secs(secs + 5),
             cancel,
         )
         .map_err(|e| {
@@ -442,7 +435,7 @@ impl Session {
     }
 
     fn interpret(&mut self, resp: &http::Response) -> AuthOutcome {
-        // The cookie jar already absorbed any Set-Cookie in http::request.
+        // The cookie jar already absorbed any Set-Cookie in http::send.
         if self.svpncookie().is_some() {
             return AuthOutcome::Authenticated;
         }
