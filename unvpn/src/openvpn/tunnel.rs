@@ -417,7 +417,7 @@ pub fn run(mut p: Prepared, prompter: &mut dyn Prompter, opts: RunOpts) -> Resul
             fail_streak += 1;
             let delay = if explicit_restart && fail_streak == 1 { 2 } else { reconnect_delay(fail_streak) };
             out!("# reconnecting in {delay}s (attempt {fail_streak}/{MAX_RECONNECT_TRIES}) …");
-            if sleep_interruptible(delay) {
+            if sysnet::sleep_interruptible(delay, &OV_STOP) {
                 break 'session Ok(());
             }
             match establish_any(&mut p, prompter, remote_idx) {
@@ -710,16 +710,6 @@ fn reconnect_delay(attempt: u32) -> u64 {
         3 => 5,
         _ => 10,
     }
-}
-
-fn sleep_interruptible(secs: u64) -> bool {
-    for _ in 0..(secs * 10) {
-        if stopped() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    stopped()
 }
 
 /// Pin the server to its pre-VPN path, keep `net_gateway` routes outside the

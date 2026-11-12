@@ -161,7 +161,7 @@ pub fn run(s: &mut Session, opts: RunOpts) -> Result<(), String> {
             if reason != "rekey" || fail_streak > 1 {
                 let delay = reconnect_delay(fail_streak);
                 out!("# reconnecting in {delay}s (attempt {fail_streak}/{MAX_RECONNECT_TRIES}) …");
-                if sleep_interruptible(delay) {
+                if sysnet::sleep_interruptible(delay, &GP_STOP) {
                     break 'session Ok(());
                 }
             }
@@ -627,16 +627,6 @@ fn reconnect_delay(attempt: u32) -> u64 {
         3 => 5,
         _ => 10,
     }
-}
-
-fn sleep_interruptible(secs: u64) -> bool {
-    for _ in 0..(secs * 10) {
-        if GP_STOP.load(Ordering::SeqCst) {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    GP_STOP.load(Ordering::SeqCst)
 }
 
 /// Pin the gateway to its pre-VPN path (ESP/TLS must not loop into the tun),

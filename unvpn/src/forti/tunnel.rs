@@ -162,7 +162,7 @@ pub fn run(
             if attempt > MAX_RECONNECT_TRIES {
                 break 'session Err(format!("tunnel lost ({e}); reconnect failed {MAX_RECONNECT_TRIES} times"));
             }
-            if !relogin && sleep_interruptible(attempt as u64) {
+            if !relogin && sysnet::sleep_interruptible(attempt as u64, &FORTI_STOP) {
                 break 'session Ok(());
             }
             if relogin {
@@ -260,17 +260,6 @@ fn path(dtls: bool) -> &'static str {
     } else {
         "TLS"
     }
-}
-
-/// Sleep `secs`, waking early on a stop request. True if a stop was requested.
-fn sleep_interruptible(secs: u64) -> bool {
-    for _ in 0..secs * 10 {
-        if FORTI_STOP.load(Ordering::SeqCst) || sysnet::stop_requested() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    false
 }
 
 fn open_link(session: &Session, try_dtls: bool) -> Result<Up, String> {

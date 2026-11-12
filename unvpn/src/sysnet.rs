@@ -299,6 +299,19 @@ pub fn stop_requested() -> bool {
     STOP_REQUESTED.load(Ordering::SeqCst)
 }
 
+/// Sleep up to `secs`, returning early with `true` once `flag` is set or a
+/// disconnect was requested on stdin.
+pub fn sleep_interruptible(secs: u64, flag: &AtomicBool) -> bool {
+    let stopped = || flag.load(Ordering::SeqCst) || stop_requested();
+    for _ in 0..secs * 10 {
+        if stopped() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    stopped()
+}
+
 fn stdin_rx() -> &'static Mutex<mpsc::Receiver<String>> {
     STDIN_RX.get_or_init(|| {
         let (tx, rx) = mpsc::channel();

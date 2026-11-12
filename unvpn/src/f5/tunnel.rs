@@ -231,7 +231,7 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
             fail_streak += 1;
             let delay = reconnect_delay(fail_streak);
             out!("# reconnecting in {delay}s (attempt {fail_streak}/{MAX_RECONNECT_TRIES}) …");
-            if sleep_interruptible(delay) {
+            if sysnet::sleep_interruptible(delay, &F5_STOP) {
                 break 'session Ok(());
             }
             match open_channel(session, &cfg, want_dtls) {
@@ -495,17 +495,6 @@ fn spawn_status_watch(path: String) {
         }
         std::thread::sleep(Duration::from_millis(800));
     });
-}
-
-/// Returns true if a stop was requested.
-fn sleep_interruptible(secs: u64) -> bool {
-    for _ in 0..(secs * 10) {
-        if F5_STOP.load(Ordering::SeqCst) {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    F5_STOP.load(Ordering::SeqCst)
 }
 
 /// Tokens are appended as: sess/Z raw, hostname base64.
