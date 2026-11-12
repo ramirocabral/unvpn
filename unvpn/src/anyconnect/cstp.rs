@@ -465,8 +465,7 @@ fn data_loop(
 
         // DTLS → tun (data + its own DPD). A read error disables DTLS, not the tunnel.
         if dtls_fd >= 0 && fds[2].revents & (libc::POLLIN | libc::POLLHUP) != 0 {
-            loop {
-                let Some(d) = dtls.as_ref() else { break };
+            while let Some(d) = dtls.as_ref() {
                 match d.recv() {
                     Ok(Some((AC_DATA, payload))) => {
                         last_dtls_rx = Instant::now();

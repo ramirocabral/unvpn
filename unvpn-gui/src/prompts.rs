@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 
-use crate::engine::{AuthPrompt, SsoWatch, State};
+use crate::engine::{AuthPrompt, SsoWatch};
 use crate::profiles::Backend;
 #[cfg(feature = "webview")]
 use crate::sso;
@@ -24,7 +24,7 @@ impl App {
         let app = self.rc();
         let win = sso::open(&self.window, login, watch, user_agent, move |r| {
             app.sso_window.borrow_mut().take();
-            if app.vpn.borrow().state() != State::Connecting {
+            if app.vpn.borrow().state() != crate::engine::State::Connecting {
                 return; // aborted meanwhile
             }
             match r {

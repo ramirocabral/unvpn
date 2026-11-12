@@ -30,7 +30,7 @@ impl App {
         for p in profs.iter() {
             let row = adw::ActionRow::builder()
                 .title(&p.name)
-                .subtitle(&p.subtitle())
+                .subtitle(p.subtitle())
                 .subtitle_lines(0)
                 .activatable(true)
                 .build();

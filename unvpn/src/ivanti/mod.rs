@@ -7,8 +7,11 @@
 //! [`tunnel`]).
 
 pub mod auth;
+#[allow(dead_code)] // for the data plane, not wired up yet
 pub mod config;
+#[allow(dead_code)]
 pub mod ift;
+#[allow(dead_code)]
 pub mod tunnel;
 
 use crate::net::http::{self, Endpoint};

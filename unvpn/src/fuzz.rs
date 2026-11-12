@@ -131,8 +131,10 @@ pub fn tunnel_config(data: &[u8]) {
     let _ = crate::ivanti::ift::IftMessage::decode(data);
 }
 
+pub type Target = (&'static str, fn(&[u8]));
+
 /// Every entry point, for a corpus-free smoke run.
-pub const ALL: &[(&str, fn(&[u8]))] = &[
+pub const ALL: &[Target] = &[
     ("http", http),
     ("ppp", ppp),
     ("ikev1", ikev1),

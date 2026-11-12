@@ -110,6 +110,9 @@ pub struct Ikev2Session {
     pub mobike: bool,
 }
 
+/// The gateway's new ESP SPI, its nonce and, under PFS, its KE data.
+type ChildResponse = (u32, Vec<u8>, Option<Vec<u8>>);
+
 impl Ikev2Session {
     pub fn new(suite: IkeSuite, esp: EspSuite) -> Result<Self, String> {
         let mut spi_i = [0u8; 8];
@@ -133,7 +136,7 @@ impl Ikev2Session {
             next_msg_id: 1,
             esp_spi_i: esp_spi,
             esp_spi_r: 0,
-            esp: esp,
+            esp,
             nat_detected: false,
             mobike: false,
         })
@@ -470,10 +473,7 @@ impl Ikev2Session {
 
     /// Read a CREATE_CHILD_SA response: the gateway's new ESP SPI, its nonce, and its
     /// KE payload (present only under PFS).
-    pub fn parse_child_response(
-        &self,
-        payloads: &[Payload],
-    ) -> Result<(u32, Vec<u8>, Option<Vec<u8>>), String> {
+    pub fn parse_child_response(&self, payloads: &[Payload]) -> Result<ChildResponse, String> {
         if let Some(t) = payloads.iter().find_map(|p| match p {
             Payload::Notify(n) if n.ntype < 16384 => Some(n.ntype),
             _ => None,
@@ -612,7 +612,7 @@ pub enum SaInitOutcome {
     InvalidKe(u16),
 }
 
-fn find_notify<'a>(payloads: &'a [Payload], ntype: u16) -> Option<&'a [u8]> {
+fn find_notify(payloads: &[Payload], ntype: u16) -> Option<&[u8]> {
     payloads.iter().find_map(|p| match p {
         Payload::Notify(n) if n.ntype == ntype => Some(n.data.as_slice()),
         _ => None,
@@ -835,6 +835,7 @@ fn preview(d: &[u8]) -> String {
 }
 
 /// Encode header + SK payload (IV | ciphertext | ICV) for `inner` payloads.
+#[allow(clippy::too_many_arguments)]
 pub fn encrypt_message(
     crypto: &Ikev2Crypto,
     sk_e: &[u8],

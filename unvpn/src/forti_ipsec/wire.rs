@@ -217,11 +217,12 @@ impl Payload {
 fn encode_proposals(props: &[Proposal], out: &mut Vec<u8>) {
     for (i, p) in props.iter().enumerate() {
         let last = i + 1 == props.len();
-        let mut body = Vec::new();
-        body.push(p.num);
-        body.push(p.protocol);
-        body.push(p.spi.len() as u8);
-        body.push(p.transforms.len() as u8);
+        let mut body = vec![
+            p.num,
+            p.protocol,
+            p.spi.len() as u8,
+            p.transforms.len() as u8,
+        ];
         body.extend_from_slice(&p.spi);
         for (j, t) in p.transforms.iter().enumerate() {
             let t_last = j + 1 == p.transforms.len();
@@ -669,14 +670,14 @@ mod tests {
             ntype: NotifyType::NatDetectionSourceIp.into(),
             data: vec![0x11; 20],
         });
-        let (first, bytes) = encode_payloads(&[n.clone()]);
+        let (first, bytes) = encode_payloads(std::slice::from_ref(&n));
         assert_eq!(parse_payloads(first, &bytes).unwrap(), vec![n]);
     }
 
     #[test]
     fn traffic_selector_roundtrip() {
         let tsi = Payload::Tsi(vec![TrafficSelector::ipv4_any()]);
-        let (first, bytes) = encode_payloads(&[tsi.clone()]);
+        let (first, bytes) = encode_payloads(std::slice::from_ref(&tsi));
         assert_eq!(parse_payloads(first, &bytes).unwrap(), vec![tsi]);
     }
 
@@ -693,7 +694,7 @@ mod tests {
                 ),
             ],
         };
-        let (first, bytes) = encode_payloads(&[cp.clone()]);
+        let (first, bytes) = encode_payloads(std::slice::from_ref(&cp));
         assert_eq!(parse_payloads(first, &bytes).unwrap(), vec![cp]);
     }
 

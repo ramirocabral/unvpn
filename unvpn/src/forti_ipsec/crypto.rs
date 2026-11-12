@@ -181,7 +181,7 @@ impl Ikev2Crypto {
         let pad_len = (block - ((plain.len() + 1) % block)) % block;
         let mut padded = Vec::with_capacity(plain.len() + pad_len + 1);
         padded.extend_from_slice(plain);
-        padded.extend(std::iter::repeat(0u8).take(pad_len));
+        padded.extend(std::iter::repeat_n(0u8, pad_len));
         padded.push(pad_len as u8);
 
         let mut iv = vec![0u8; self.iv_len()];

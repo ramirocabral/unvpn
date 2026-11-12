@@ -226,12 +226,11 @@ pub fn ovpn_key_may_need_pass(path: &str) -> bool {
                 let mut w = l.split_whitespace();
                 match (w.next(), w.next()) {
                     (Some("pkcs12"), Some(_)) => return true,
-                    (Some("key"), Some(f)) => {
+                    (Some("key"), Some(f))
                         if std::fs::read_to_string(dir.join(f))
-                            .is_ok_and(|k| k.contains("ENCRYPTED"))
-                        {
-                            return true;
-                        }
+                            .is_ok_and(|k| k.contains("ENCRYPTED")) =>
+                    {
+                        return true;
                     }
                     _ => {}
                 }

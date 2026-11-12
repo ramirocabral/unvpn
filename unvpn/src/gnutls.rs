@@ -84,6 +84,7 @@ pub fn available() -> bool {
 
 /// `dlopen` libgnutls and resolve the symbols. Returns `None` (not an error) when the
 /// library is absent — the caller then stays on TLS/TCP.
+#[allow(clippy::missing_transmute_annotations)] // the field types say what each symbol is
 fn load_gnutls() -> Option<Gnutls> {
     unsafe {
         // The current soname first, then the dev symlink as a fallback.
@@ -398,9 +399,11 @@ impl DtlsSession {
             return Err("DTLS closed by peer".into());
         }
         let e = n as c_int;
-        if e == GNUTLS_E_AGAIN || e == GNUTLS_E_INTERRUPTED || e == GNUTLS_E_REHANDSHAKE {
-            Ok(None)
-        } else if unsafe { (self.g.error_is_fatal)(e) } == 0 {
+        if e == GNUTLS_E_AGAIN
+            || e == GNUTLS_E_INTERRUPTED
+            || e == GNUTLS_E_REHANDSHAKE
+            || unsafe { (self.g.error_is_fatal)(e) } == 0
+        {
             Ok(None)
         } else {
             Err(format!("DTLS recv: {}", err_str(self.g, e)))

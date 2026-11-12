@@ -171,7 +171,7 @@ fn push_route(v: &mut Vec<Route>, s: &str) {
 
 fn decode_hex(s: &str) -> Vec<u8> {
     let s = s.trim();
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return Vec::new();
     }
     let mut out = Vec::with_capacity(s.len() / 2);

@@ -211,11 +211,8 @@ fn probe(a: &Args) -> Result<(), String> {
         Ok(Some(url)) => {
             let idp = url.split('/').nth(2).unwrap_or(&url);
             println!("# SAML/SSO is ENABLED → IdP {idp}");
-            if info.sso_port.is_some() {
-                println!(
-                    "#   external-browser SSO supported (redirect back to 127.0.0.1:{})",
-                    info.sso_port.unwrap()
-                );
+            if let Some(port) = info.sso_port {
+                println!("#   external-browser SSO supported (redirect back to 127.0.0.1:{port})");
             }
             println!("#   (use: unvpn forti -g {}:{} --connect)", a.host, a.port);
         }
@@ -452,6 +449,7 @@ fn do_login(a: &Args) -> Result<Session, String> {
     ))
 }
 
+#[allow(clippy::large_enum_variant)]
 enum PushEnd {
     /// The push (or a code typed meanwhile) produced this reply; the code, if typed.
     Done(AuthOutcome, Option<String>),

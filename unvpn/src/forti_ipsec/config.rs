@@ -129,7 +129,7 @@ fn range_to_prefix(start: u32, end: u32) -> Option<(u32, u8)> {
     if size == (1u64 << 32) {
         return Some((0, 0));
     }
-    if start % (size as u32) != 0 {
+    if !start.is_multiple_of(size as u32) {
         return None;
     }
     Some((start, prefix))

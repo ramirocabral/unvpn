@@ -66,8 +66,10 @@ pub fn parse_profile(xml: &str) -> Option<String> {
 /// Unknown elements are ignored and missing fields defaulted; the caller
 /// sanity-checks the essentials (session id, ur_Z, at least one address family).
 pub fn parse_options(xml: &str) -> F5Options {
-    let mut o = F5Options::default();
-    o.autoreconnect = true;
+    let mut o = F5Options {
+        autoreconnect: true,
+        ..Default::default()
+    };
     for (name, text) in leaf_texts(xml) {
         let text = text.trim();
         match name.as_str() {

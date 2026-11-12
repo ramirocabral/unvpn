@@ -262,7 +262,7 @@ impl Engine {
         // Retire expired lame ducks and stalled renegotiations.
         let before = self.keys.len();
         self.keys.retain(|k| {
-            k.expire.map_or(true, |t| now < t)
+            k.expire.is_none_or(|t| now < t)
                 && (k.data.is_some() || k.key_id == 0 || now.duration_since(k.born) < HAND_WINDOW)
         });
         if self.keys.len() < before {

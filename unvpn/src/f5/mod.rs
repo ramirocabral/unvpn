@@ -348,7 +348,7 @@ fn parse_launch_url(url: &str) -> Result<LaunchUrl, String> {
         .strip_prefix("f5-vpn://")
         .or_else(|| url.strip_prefix("f5-vpn:"))
         .ok_or("not an f5-vpn:// URL")?;
-    let query = rest.splitn(2, '?').nth(1).unwrap_or("");
+    let query = rest.split_once('?').map(|x| x.1).unwrap_or("");
     let mut server = None;
     let mut port: u16 = 443;
     let mut otc = None;

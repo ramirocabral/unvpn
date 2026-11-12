@@ -101,8 +101,8 @@ fn render_rgba(size: u32, glyph: [u8; 3], dot: [u8; 3], tile: Option<[u8; 3]>) -
             }
             let n = ss * ss;
             let i = ((y * size + x) * 4) as usize;
-            if cov > 0 {
-                out[i] = (sr / cov) as u8;
+            if let Some(r) = sr.checked_div(cov) {
+                out[i] = r as u8;
                 out[i + 1] = (sg / cov) as u8;
                 out[i + 2] = (sb / cov) as u8;
                 out[i + 3] = (cov * 255 / n) as u8;

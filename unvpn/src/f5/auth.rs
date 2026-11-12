@@ -417,7 +417,7 @@ mod tests {
     #[test]
     fn body_submit_overrides_only_named() {
         let f = parse_form(LOGON).unwrap();
-        let answers = vec![
+        let answers = [
             ("username".to_string(), "alice".to_string()),
             ("password".to_string(), "s3cr3t&=x".to_string()),
         ];

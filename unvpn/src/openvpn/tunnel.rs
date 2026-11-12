@@ -318,7 +318,7 @@ fn establish(
 fn handle_info(eng: &mut Engine, info: &str, prompter: &mut dyn Prompter) -> Result<(), String> {
     if let Some(url) = info
         .strip_prefix("WEB_AUTH:")
-        .map(|r| r.splitn(2, ':').nth(1).unwrap_or(r))
+        .map(|r| r.split_once(':').map(|x| x.1).unwrap_or(r))
         .or_else(|| info.strip_prefix("OPEN_URL:"))
     {
         out!("# server requests a web login: {}", sysnet::one_word(url));

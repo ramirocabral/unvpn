@@ -19,7 +19,7 @@ pub fn key_to_english(key: &[u8; 16]) -> String {
 }
 
 #[rustfmt::skip]
-const WORDS: [&str; 2048] = [
+static WORDS: [&str; 2048] = [
     "A", "ABE", "ACE", "ACT", "AD", "ADA", "ADD", "AGO", "AID", "AIM", "AIR", "ALL", "ALP", "AM",
     "AMY", "AN", "ANA", "AND", "ANN", "ANT", "ANY", "APE", "APS", "APT", "ARC", "ARE", "ARK",
     "ARM", "ART", "AS", "ASH", "ASK", "AT", "ATE", "AUG", "AUK", "AVE", "AWE", "AWK", "AWL", "AWN",

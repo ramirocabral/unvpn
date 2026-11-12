@@ -167,6 +167,7 @@ impl Challenge {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 pub enum AuthOutcome {
     Authenticated,
     Challenge(Challenge),
@@ -538,7 +539,7 @@ fn parse_ret_fields(body: &str) -> BTreeMap<String, String> {
         if let Some(to) = c
             .split(',')
             .filter_map(|t| t.trim().strip_prefix("to="))
-            .last()
+            .next_back()
         {
             map.entry("to".to_string())
                 .or_insert_with(|| to.trim().to_string());

@@ -278,8 +278,11 @@ pub fn install_secrets(entry: &Entry, p: &mut Profile) -> bool {
     ok
 }
 
-/// The main file (rewritten) and the files it references, as (name, contents).
-fn ovpn_files(path: &Path) -> Result<(Vec<u8>, Vec<(String, Vec<u8>)>), String> {
+/// (name, contents) pairs.
+type Files = Vec<(String, Vec<u8>)>;
+
+/// The main file (rewritten) and the files it references.
+fn ovpn_files(path: &Path) -> Result<(Vec<u8>, Files), String> {
     let text =
         std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
     let dir = path.parent().unwrap_or(Path::new("."));

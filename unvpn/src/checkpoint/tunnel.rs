@@ -144,11 +144,8 @@ pub(super) fn run_tunnel(
     // IKE messages (NAT-T marker 0x00000000) arriving on the shared socket are
     // routed here for the control thread (rekey). Only wired up when we hold the
     // IKE session (the `--connect` path; the tunnel-up debug path can't rekey).
-    let (ike_tx, ike_rx): (
-        Option<mpsc::Sender<Vec<u8>>>,
-        Option<mpsc::Receiver<Vec<u8>>>,
-    ) = if session.is_some() {
-        let (t, r) = mpsc::channel();
+    let (ike_tx, ike_rx) = if session.is_some() {
+        let (t, r) = mpsc::channel::<Vec<u8>>();
         (Some(t), Some(r))
     } else {
         (None, None)
@@ -266,7 +263,7 @@ pub(super) fn run_tunnel(
     while !TUNNEL_STOP.load(Ordering::SeqCst) {
         std::thread::sleep(std::time::Duration::from_millis(500));
         ticks += 1;
-        if ticks % 10 == 0 {
+        if ticks.is_multiple_of(10) {
             out!(
                 "#  stats: tun_in={} esp_out={} udp_in={} tun_out={} dec_err={}",
                 tin.load(Ordering::Relaxed),

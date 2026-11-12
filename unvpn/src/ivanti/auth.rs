@@ -67,7 +67,6 @@ pub struct Prelogin {
     pub user_label: String,
     pub pass_label: String,
     pub realms: Vec<String>,
-    pub message: String,
 }
 
 pub struct Session {
@@ -111,7 +110,6 @@ impl Session {
             user_label: field_label(&body, "username").unwrap_or_else(|| "Username".into()),
             pass_label: field_label(&body, "password").unwrap_or_else(|| "Password".into()),
             realms: select_options(&body, "realm"),
-            message: String::new(),
         })
     }
 

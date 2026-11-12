@@ -222,13 +222,11 @@ fn decode_sidecar(raw: &str) -> Option<DnsBackup> {
             symlink_target: Some(PathBuf::from(target)),
             content: None,
         })
-    } else if let Some(rest) = raw.strip_prefix("FILE\n") {
-        Some(DnsBackup {
+    } else {
+        raw.strip_prefix("FILE\n").map(|rest| DnsBackup {
             symlink_target: None,
             content: Some(rest.to_string()),
         })
-    } else {
-        None
     }
 }
 

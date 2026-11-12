@@ -25,12 +25,12 @@
 //! ```
 //!
 //! Two requirements:
-//!   1. The body MUST be multi-line with tab indentation. A single-line body is
-//! rejected with `return_code (504)`.
+//! 1. The body MUST be multi-line with tab indentation. A single-line body is
+//!    rejected with `return_code (504)`.
 //! 2. A ClientHello header carries NO `protocol_version`: that is a field the
-//! server returns, nested as `:protocol_version (:protocol_version (100))`.
-//! Sending it there is rejected as a bad protocol version. `ClientSettings`
-//! does carry `:protocol_version (100)`.
+//!    server returns, nested as `:protocol_version (:protocol_version (100))`.
+//!    Sending it there is rejected as a bad protocol version. `ClientSettings`
+//!    does carry `:protocol_version (100)`.
 
 use std::fmt::Write as _;
 
@@ -146,7 +146,7 @@ impl Value {
             Value::Map(entries) => {
                 let mut out = String::from("{\n");
                 for (k, v) in entries {
-                    let _ = write!(out, "{}  {}: {}\n", pad, k, v.pretty(indent + 1));
+                    let _ = writeln!(out, "{}  {}: {}", pad, k, v.pretty(indent + 1));
                 }
                 let _ = write!(out, "{}}}", pad);
                 out
@@ -213,7 +213,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 
 fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
     let s = s.trim();
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return Err("odd-length hex".to_string());
     }
     (0..s.len())

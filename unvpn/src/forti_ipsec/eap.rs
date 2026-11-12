@@ -496,9 +496,9 @@ fn md4(input: &[u8]) -> [u8; 16] {
     let g = |x: u32, y: u32, z: u32| (x & y) | (x & z) | (y & z);
     let h = |x: u32, y: u32, z: u32| x ^ y ^ z;
 
-    for chunk in msg.chunks_exact(64) {
+    for chunk in msg.as_chunks::<64>().0 {
         let mut x = [0u32; 16];
-        for (i, w) in chunk.chunks_exact(4).enumerate() {
+        for (i, w) in chunk.as_chunks::<4>().0.iter().enumerate() {
             x[i] = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
         }
         let (aa, bb, cc, dd) = (a, b, c, d);

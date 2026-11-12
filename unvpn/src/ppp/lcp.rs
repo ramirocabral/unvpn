@@ -328,12 +328,14 @@ mod tests {
         assert_eq!(mru_option(&opt(LCP_OPT_MAGIC, &[1, 2, 3, 4])), None);
     }
 
+    type Frame = (u16, Vec<u8>);
+
     /// A gateway that answers each frame we send from a script.
     struct Peer {
         framing: Framing,
         rx: VecDeque<u8>,
-        sent: Vec<(u16, Vec<u8>)>,
-        script: fn(&(u16, Vec<u8>)) -> Vec<(u16, Vec<u8>)>,
+        sent: Vec<Frame>,
+        script: fn(&Frame) -> Vec<Frame>,
     }
 
     impl Read for Peer {
@@ -370,7 +372,7 @@ mod tests {
 
     #[test]
     fn negotiation_takes_the_nakd_address_and_dns() {
-        fn gateway(f: &(u16, Vec<u8>)) -> Vec<(u16, Vec<u8>)> {
+        fn gateway(f: &Frame) -> Vec<Frame> {
             let c = parse_ctrl(&f.1).unwrap();
             match (f.0, c.code) {
                 (PPP_LCP, CONF_REQ) => vec![
