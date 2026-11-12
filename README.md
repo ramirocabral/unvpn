@@ -62,8 +62,6 @@ Build and install:
 ./install.sh
 ```
 
-It also adds a polkit rule, so connecting doesn't ask for a password.
-
 Uninstall:
 
 ```sh
