@@ -189,8 +189,10 @@ fn known(p: &Policy, host: &str, fp: &str) -> bool {
 /// front-end, `# AUTH-PROMPT: trust: <endpoint> <fingerprint> <details>`, answered
 /// with `<fingerprint> yes|no`.
 fn ask(endpoint: &str, fp: &str, cert: &X509Ref, why: &str) -> Result<bool, String> {
-    let subject = sysnet::one_line(&crate::cpcert::p12::dn_string(cert.subject_name()));
-    let issuer = sysnet::one_line(&crate::cpcert::p12::dn_string(cert.issuer_name()));
+    let subject = sysnet::one_line(&crate::checkpoint::cert::p12::dn_string(
+        cert.subject_name(),
+    ));
+    let issuer = sysnet::one_line(&crate::checkpoint::cert::p12::dn_string(cert.issuer_name()));
     out!("# no trusted CA vouches for the certificate of {endpoint}: {why}");
     out!("#   subject {subject}");
     out!("#   issuer  {issuer}");

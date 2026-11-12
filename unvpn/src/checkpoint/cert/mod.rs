@@ -27,8 +27,8 @@ pub struct LoginOption {
 }
 
 impl GatewayInfo {
-    pub fn from_hello(resp: &crate::ccc::Packet) -> GatewayInfo {
-        use crate::ccc::Value;
+    pub fn from_hello(resp: &crate::checkpoint::ccc::Packet) -> GatewayInfo {
+        use crate::checkpoint::ccc::Value;
         let mut info = GatewayInfo::default();
         if let Some(Value::Map(fps)) = resp.path(&[
             "ResponseData",
@@ -37,7 +37,7 @@ impl GatewayInfo {
         ]) {
             for (_, v) in fps {
                 if let Some(t) = v.text() {
-                    if let Ok(b) = crate::ccc::deobfuscate(&t) {
+                    if let Ok(b) = crate::checkpoint::ccc::deobfuscate(&t) {
                         info.ca_fingerprints
                             .push(String::from_utf8_lossy(&b).trim().to_string());
                     }
@@ -160,7 +160,7 @@ pub fn cmd_enroll(args: &[String]) {
     }
     let Some(gateway) = gateway else { usage() };
 
-    let info = match crate::gateway_hello(&gateway) {
+    let info = match crate::checkpoint::gateway_hello(&gateway) {
         Ok(p) => GatewayInfo::from_hello(&p),
         Err(e) => {
             println!("# warning: could not read the gateway's site information: {e}");

@@ -231,7 +231,7 @@ pub fn find_natds(msg: &IsakmpMessage) -> Vec<Vec<u8>> {
 /// msg 5. A nameless CP S-expression naming the client + realm (login option);
 /// the realm's secondary hash is added when known.
 pub fn auth_blob(realm: &str, secondary_realm_hash: Option<&str>) -> String {
-    use crate::ccc::Value;
+    use crate::checkpoint::ccc::Value;
     let logging = Value::map(vec![
         ("client_name", Value::str("Check Point Mobile")),
         ("client_ver", Value::sym("1")),
