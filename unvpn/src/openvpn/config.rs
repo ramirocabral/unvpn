@@ -117,7 +117,7 @@ pub struct Config {
 }
 
 pub fn load(path: &Path) -> Result<Config, String> {
-    let text = std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let text = crate::sysnet::read_user_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
     let dir = path.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
     parse(&text, &dir)
 }
@@ -312,12 +312,12 @@ fn read_text(dir: &Path, f: Option<&str>) -> Result<String, String> {
         return Ok(String::new());
     }
     let p = resolve(dir, f);
-    std::fs::read_to_string(&p).map_err(|e| format!("read {}: {e}", p.display()))
+    crate::sysnet::read_user_string(&p).map_err(|e| format!("read {}: {e}", p.display()))
 }
 
 fn read_bytes(dir: &Path, f: Option<&str>) -> Result<Vec<u8>, String> {
     let p = resolve(dir, f.ok_or("missing file argument")?);
-    std::fs::read(&p).map_err(|e| format!("read {}: {e}", p.display()))
+    crate::sysnet::read_user_file(&p).map_err(|e| format!("read {}: {e}", p.display()))
 }
 
 pub fn split_words(line: &str) -> Vec<String> {

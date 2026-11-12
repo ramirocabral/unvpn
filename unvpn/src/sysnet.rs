@@ -8,7 +8,7 @@
 //!   out through a channel, so the auth prompts (2FA code, SAML paste, push), and
 //!   later the tunnel's `disconnect` watcher, never race each other for a line.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -384,6 +384,116 @@ pub fn is_disconnect(line: &str) -> bool {
     line.trim().eq_ignore_ascii_case("disconnect")
 }
 
+/// The user who started us through sudo or pkexec, when we run as root on their
+/// behalf: `(uid, primary gid, supplementary groups)`.
+fn invoker() -> Option<(u32, u32, Vec<libc::gid_t>)> {
+    if unsafe { libc::geteuid() } != 0 {
+        return None;
+    }
+    let uid: u32 = std::env::var("SUDO_UID").or_else(|_| std::env::var("PKEXEC_UID")).ok()?.parse().ok()?;
+    if uid == 0 {
+        return None;
+    }
+    let mut pw: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut buf = vec![0 as libc::c_char; 16384];
+    let mut res: *mut libc::passwd = ptr::null_mut();
+    unsafe { libc::getpwuid_r(uid, &mut pw, buf.as_mut_ptr(), buf.len(), &mut res) };
+    if res.is_null() {
+        let gid = std::env::var("SUDO_GID").ok().and_then(|g| g.parse().ok()).unwrap_or(65534);
+        return Some((uid, gid, vec![gid]));
+    }
+    let gid = pw.pw_gid;
+    let mut groups = vec![0 as libc::gid_t; 256];
+    let mut n = groups.len() as libc::c_int;
+    if unsafe { libc::getgrouplist(pw.pw_name, gid, groups.as_mut_ptr(), &mut n) } < 0 {
+        n = 1;
+        groups[0] = gid;
+    }
+    groups.truncate(n.max(0) as usize);
+    Some((uid, gid, groups))
+}
+
+/// The calling thread's file-system identity, put back on drop.
+struct FsIdentity {
+    uid: u32,
+    gid: u32,
+    groups: Vec<libc::gid_t>,
+}
+
+impl Drop for FsIdentity {
+    fn drop(&mut self) {
+        unsafe {
+            libc::setfsuid(self.uid);
+            libc::setfsgid(self.gid);
+            // The raw syscall changes only this thread; glibc's wrapper would change them all.
+            libc::syscall(libc::SYS_setgroups, self.groups.len(), self.groups.as_ptr());
+        }
+    }
+}
+
+/// Run `f` with the file-system identity (fsuid, fsgid, groups) of the user who
+/// started us through sudo or pkexec, so a path they named is opened with their
+/// permissions, not root's. Applies to the calling thread only; runs `f` as is
+/// when we were not started that way.
+pub fn as_invoker<T>(f: impl FnOnce() -> T) -> T {
+    let Some((uid, gid, groups)) = invoker() else { return f() };
+    let saved = unsafe {
+        let n = libc::getgroups(0, ptr::null_mut());
+        let mut cur = vec![0 as libc::gid_t; n.max(0) as usize];
+        let n = libc::getgroups(cur.len() as libc::c_int, cur.as_mut_ptr());
+        cur.truncate(n.max(0) as usize);
+        let gid0 = libc::setfsgid(u32::MAX);
+        libc::syscall(libc::SYS_setgroups, groups.len(), groups.as_ptr());
+        libc::setfsgid(gid);
+        FsIdentity { uid: libc::setfsuid(uid) as u32, gid: gid0 as u32, groups: cur }
+    };
+    let r = f();
+    drop(saved);
+    r
+}
+
+fn open_user_regular(path: &Path, opts: &std::fs::OpenOptions) -> std::io::Result<std::fs::File> {
+    let f = opts.open(path)?;
+    if !f.metadata()?.is_file() {
+        return Err(std::io::Error::other("not a regular file"));
+    }
+    Ok(f)
+}
+
+/// Read a file the user named, with their permissions (see [`as_invoker`]).
+pub fn read_user_file(path: impl AsRef<Path>) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    as_invoker(|| {
+        let mut f = open_user_regular(path.as_ref(), std::fs::OpenOptions::new().read(true))?;
+        let mut v = Vec::new();
+        f.read_to_end(&mut v)?;
+        Ok(v)
+    })
+}
+
+pub fn read_user_string(path: impl AsRef<Path>) -> std::io::Result<String> {
+    String::from_utf8(read_user_file(path)?).map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "not UTF-8"))
+}
+
+/// Write a private (0600) file where the user asked, with their permissions and
+/// without following a symlink in the last component.
+pub fn write_user_file(path: impl AsRef<Path>, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    as_invoker(|| {
+        let mut f = open_user_regular(
+            path.as_ref(),
+            std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).custom_flags(libc::O_NOFOLLOW),
+        )?;
+        f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        f.write_all(data)
+    })
+}
+
+pub fn remove_user_file(path: impl AsRef<Path>) -> std::io::Result<()> {
+    as_invoker(|| std::fs::remove_file(path.as_ref()))
+}
+
 /// Turns terminal echo off on stdin while alive (no-op when stdin isn't a TTY), so
 /// a secret typed at a prompt isn't shown. Echo comes back on drop.
 pub struct EchoOff(Option<libc::termios>);
@@ -419,6 +529,28 @@ impl Drop for EchoOff {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Meaningful only under sudo/pkexec (run the test binary with `sudo`); a no-op otherwise.
+    #[test]
+    fn user_files_open_with_the_invokers_permissions() {
+        use std::os::unix::fs::MetadataExt;
+        let Some((uid, _, _)) = invoker() else { return };
+        let dir = std::env::temp_dir().join(format!("unvpn-invoker-{}", std::process::id()));
+        as_invoker(|| std::fs::create_dir(&dir)).unwrap();
+        let file = dir.join("cookie");
+        write_user_file(&file, b"abc").unwrap();
+        let md = std::fs::metadata(&file).unwrap();
+        assert_eq!((md.uid(), md.mode() & 0o777), (uid, 0o600));
+        assert_eq!(read_user_file(&file).unwrap(), b"abc");
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&file, &link).unwrap();
+        assert!(write_user_file(&link, b"x").is_err());
+        assert!(read_user_file("/etc/shadow").is_err());
+        assert!(write_user_file("/etc/unvpn-invoker-test", b"x").is_err());
+        assert!(write_user_file("/dev/null", b"x").is_err());
+        assert!(std::fs::read("/etc/shadow").is_ok(), "fs identity restored");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn one_line_strips_controls() {

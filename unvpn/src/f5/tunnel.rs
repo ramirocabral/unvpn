@@ -111,7 +111,7 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
         return Err(format!("options request failed: HTTP {}", resp.status));
     }
     if let Ok(p) = std::env::var("UNVPN_F5_DUMP_XML") {
-        let _ = std::fs::write(&p, &resp.body);
+        let _ = sysnet::write_user_file(&p, &resp.body);
         println!("# (raw options XML dumped to {p})");
     }
     let cfg = config::parse_options(&resp.body_str());
@@ -279,7 +279,7 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
     );
     drop(restore);
     if let Some(ref sf) = opts.status_file {
-        let _ = std::fs::remove_file(sf);
+        let _ = sysnet::remove_user_file(sf);
     }
     final_result
 }
@@ -480,7 +480,7 @@ fn reconnect_delay(attempt: u32) -> u64 {
 fn write_status_file(path: &str, gateway: &str, ip: Ipv4Addr, dns: &[Ipv4Addr]) -> bool {
     let dns_s = dns.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(", ");
     let body = format!("pid={}\ngateway={}\nip={}\ndns={}\n", std::process::id(), gateway, ip, dns_s);
-    std::fs::write(path, body).is_ok()
+    sysnet::write_user_file(path, body.as_bytes()).is_ok()
 }
 
 /// Raise the stop flag when the GUI deletes the status file.

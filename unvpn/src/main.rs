@@ -789,7 +789,7 @@ fn save_session_file(
         hex_of(km_in),
         hex_of(km_out)
     );
-    std::fs::write(path, data).map_err(|e| e.to_string())
+    sysnet::write_user_file(path, data.as_bytes()).map_err(|e| format!("{path}: {e}"))
 }
 
 /// Debug: bring up the tunnel from a saved session file (no re-auth, so the
@@ -812,7 +812,7 @@ fn cmd_tunnel_up(args: &[String]) {
     });
 
     let run = || -> Result<(), String> {
-        let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        let text = sysnet::read_user_string(&path).map_err(|e| format!("{path}: {e}"))?;
         let mut m = std::collections::HashMap::new();
         for line in text.lines() {
             if let Some((k, v)) = line.split_once('=') {

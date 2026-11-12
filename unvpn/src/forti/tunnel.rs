@@ -243,7 +243,7 @@ fn fetch_config(session: &mut Session) -> Result<config::TunnelConfig, String> {
         return Err(format!("config request failed: HTTP {}", resp.status));
     }
     if let Ok(p) = std::env::var("UNVPN_FORTI_DUMP_XML") {
-        let _ = std::fs::write(&p, &resp.body);
+        let _ = sysnet::write_user_file(&p, &resp.body);
         println!("# (raw tunnel XML dumped to {p})");
     }
     let cfg = config::parse(&resp.body_str());

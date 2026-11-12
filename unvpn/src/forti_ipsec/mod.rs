@@ -106,7 +106,7 @@ fn apply_config(opts: &mut Opts) -> Result<(), String> {
         }
         return Ok(());
     };
-    let xml = std::fs::read_to_string(&path).map_err(|e| format!("read {path}: {e}"))?;
+    let xml = sysnet::read_user_string(&path).map_err(|e| format!("read {path}: {e}"))?;
     let p = fctconfig::parse(&xml)?;
 
     out!("# imported FortiClient config '{}' (connection '{}')", path, p.name);

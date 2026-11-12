@@ -448,7 +448,7 @@ fn push_or_code(s: &mut Session, ch: &Challenge, msg: &str) -> Result<PushEnd, S
 /// `--user` or `--saml`, ask the gateway: SSO if it redirects to an IdP.
 fn authenticate(a: &Args) -> Result<Session, String> {
     if let Some(path) = &a.cookie_file {
-        let v = std::fs::read_to_string(path).map_err(|e| format!("--cookie-file {path}: {e}"))?;
+        let v = sysnet::read_user_string(path).map_err(|e| format!("--cookie-file {path}: {e}"))?;
         let v = v.trim().trim_start_matches("SVPNCOOKIE=");
         if v.is_empty() {
             return Err(format!("--cookie-file {path} is empty"));
@@ -460,10 +460,7 @@ fn authenticate(a: &Args) -> Result<Session, String> {
     }
     let s = authenticate_fresh(a)?;
     if let (Some(path), Some(c)) = (&a.save_cookie, s.svpncookie()) {
-        use std::os::unix::fs::OpenOptionsExt;
-        let w = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path)
-            .and_then(|mut f| std::io::Write::write_all(&mut f, c.as_bytes()));
-        match w {
+        match sysnet::write_user_file(path, c.as_bytes()) {
             Ok(()) => println!("# SVPNCOOKIE saved to {path}"),
             Err(e) => println!("# could not save SVPNCOOKIE to {path}: {e}"),
         }

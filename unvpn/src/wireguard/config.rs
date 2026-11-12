@@ -124,7 +124,7 @@ pub struct Config {
 }
 
 pub fn load(path: &Path) -> Result<Config, String> {
-    let text = std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let text = crate::sysnet::read_user_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
     parse(&text)
 }
 

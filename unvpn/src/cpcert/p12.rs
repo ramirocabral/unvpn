@@ -70,6 +70,6 @@ pub fn parse(der: &[u8], password: &str) -> Result<Identity, String> {
 }
 
 pub fn load(path: &str, password: &str) -> Result<Identity, String> {
-    let der = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+    let der = crate::sysnet::read_user_file(path).map_err(|e| format!("{path}: {e}"))?;
     parse(&der, password)
 }
