@@ -1428,33 +1428,41 @@ fn main() {
         Some("ivanti") | Some("pulse") => ivanti::cmd_ivanti(&args[1..]),
         Some("openvpn") => openvpn::cmd_openvpn(&args[1..]),
         Some("wireguard") | Some("wg") => wireguard::cmd_wireguard(&args[1..]),
+        Some("--version" | "-V" | "version") => println!("unvpn {}", env!("CARGO_PKG_VERSION")),
+        Some("--help" | "-h" | "help") => usage(&mut std::io::stdout()),
         _ => {
-            eprintln!("unvpn — native multi-vendor VPN client\n");
-            eprintln!("usage:");
-            eprintln!("  unvpn connect <profile>          # connect a profile saved in the app (run as your user)");
-            eprintln!("  unvpn connect --list             # the saved profiles");
-            eprintln!("  unvpn hello [--gateway <host>] [--send]");
-            eprintln!("  unvpn login --gateway <host> [--user <u>] [--realm <r>] [--passcode <p>] [--probe]");
-            eprintln!("  unvpn tunnel --gateway <host> --active-key <obfuscated-hex> [--om-ip <ip>]");
-            eprintln!("  unvpn ike --gateway <host> [--passcode <PIN+tokencode>] [--connect]");
-            eprintln!("       # M3/M4: IKEv1 handshake; with --connect (sudo) brings up the tun tunnel");
-            eprintln!("  unvpn ike --gateway <host> --cert <file.p12> [--realm <login-option>] [--connect]");
-            eprintln!("       # certificate login; the file password is read from stdin");
-            eprintln!("  unvpn cp-enroll -g <host> -r <registration-key> -o <file.p12>");
-            eprintln!("       # get a Check Point user certificate with a one-time registration key");
-            eprintln!("  unvpn forti -g <host[:port]> -u <user> [--connect]   # Fortinet SSL-VPN back-end");
-            eprintln!("  unvpn f5 -g <host[:port]> -u <user> [--connect]      # F5 BIG-IP APM SSL-VPN back-end");
-            eprintln!("  unvpn anyconnect -g <url> -u <user> [--connect]       # Cisco AnyConnect SSL-VPN back-end");
-            eprintln!("  unvpn gp -g <portal> -u <user> [--connect]            # Palo Alto GlobalProtect back-end");
-            eprintln!("  unvpn ivanti -g <host> -u <user> [--connect]          # Ivanti Connect Secure (Pulse) back-end");
-            eprintln!("  unvpn openvpn -c <profile.ovpn> [-u <user>] [--connect] # OpenVPN back-end");
-            eprintln!("  unvpn wireguard -c <profile.conf> --connect            # WireGuard (kernel) back-end");
-            eprintln!("\nglobal flags (any back-end):");
-            eprintln!("  --killswitch   fail-closed firewall: block all egress but the tunnel, gateway, LAN and DHCP");
-            eprintln!("  --allow-ipv6   keep IPv6 egress (default: blocked, since the tunnels are IPv4-only)");
+            usage(&mut std::io::stderr());
             std::process::exit(2);
         }
     }
+}
+
+fn usage(out: &mut dyn Write) {
+    let _ = writeln!(out, "unvpn — native multi-vendor VPN client\n");
+    let _ = writeln!(out, "usage:");
+    let _ = writeln!(out, "  unvpn connect <profile>          # connect a profile saved in the app (run as your user)");
+    let _ = writeln!(out, "  unvpn connect --list             # the saved profiles");
+    let _ = writeln!(out, "  unvpn hello [--gateway <host>] [--send]");
+    let _ = writeln!(out, "  unvpn login --gateway <host> [--user <u>] [--realm <r>] [--passcode <p>] [--probe]");
+    let _ = writeln!(out, "  unvpn tunnel --gateway <host> --active-key <obfuscated-hex> [--om-ip <ip>]");
+    let _ = writeln!(out, "  unvpn ike --gateway <host> [--passcode <PIN+tokencode>] [--connect]");
+    let _ = writeln!(out, "       # M3/M4: IKEv1 handshake; with --connect (sudo) brings up the tun tunnel");
+    let _ = writeln!(out, "  unvpn ike --gateway <host> --cert <file.p12> [--realm <login-option>] [--connect]");
+    let _ = writeln!(out, "       # certificate login; the file password is read from stdin");
+    let _ = writeln!(out, "  unvpn cp-enroll -g <host> -r <registration-key> -o <file.p12>");
+    let _ = writeln!(out, "       # get a Check Point user certificate with a one-time registration key");
+    let _ = writeln!(out, "  unvpn forti -g <host[:port]> -u <user> [--connect]   # Fortinet SSL-VPN back-end");
+    let _ = writeln!(out, "  unvpn forti-ipsec -g <host> -u <user> [--localid <group>] [--connect]  # FortiClient IPsec (IKEv2) back-end");
+    let _ = writeln!(out, "  unvpn f5 -g <host[:port]> -u <user> [--connect]      # F5 BIG-IP APM SSL-VPN back-end");
+    let _ = writeln!(out, "  unvpn anyconnect -g <url> -u <user> [--connect]       # Cisco AnyConnect SSL-VPN back-end");
+    let _ = writeln!(out, "  unvpn gp -g <portal> -u <user> [--connect]            # Palo Alto GlobalProtect back-end");
+    let _ = writeln!(out, "  unvpn ivanti -g <host> -u <user> [--connect]          # Ivanti Connect Secure (Pulse) back-end");
+    let _ = writeln!(out, "  unvpn openvpn -c <profile.ovpn> [-u <user>] [--connect] # OpenVPN back-end");
+    let _ = writeln!(out, "  unvpn wireguard -c <profile.conf> --connect            # WireGuard (kernel) back-end");
+    let _ = writeln!(out, "  unvpn --version");
+    let _ = writeln!(out, "\nglobal flags (any back-end):");
+    let _ = writeln!(out, "  --killswitch   fail-closed firewall: block all egress but the tunnel, gateway, LAN and DHCP");
+    let _ = writeln!(out, "  --allow-ipv6   keep IPv6 egress (default: blocked, since the tunnels are IPv4-only)");
 }
 
 fn cmd_hello(args: &[String]) {
