@@ -273,7 +273,7 @@ impl Ikev2Session {
     /// given group pre-shared key — i.e. the peer proves it holds the same PSK.
     pub fn gateway_psk_auth_matches(&self, psk: &[u8], idr_body: &[u8], auth: &[u8]) -> bool {
         let signed = self.responder_signed_octets(idr_body);
-        self.crypto().psk_auth(psk, &signed) == auth
+        crate::ike::crypto::ct_eq(&self.crypto().psk_auth(psk, &signed), auth)
     }
 
     /// Learn the gateway's ESP SPI from its CHILD SA proposal in the IKE_AUTH reply.
@@ -642,7 +642,7 @@ pub fn decrypt_message(crypto: &Ikev2Crypto, sk_e: &[u8], sk_a: &[u8], raw: &[u8
     // (associated spans header + SK header + iv_ct; equals raw minus the trailing ICV
     // only when the SK payload is the last thing in the message, which it always is.)
     let expect = crypto.integ_icv(sk_a, associated);
-    if expect != icv {
+    if !crate::ike::crypto::ct_eq(&expect, icv) {
         return Err("SK ICV mismatch (bad integrity key or tampered message)".into());
     }
     let plain = crypto.sk_decrypt(sk_e, iv_ct)?;

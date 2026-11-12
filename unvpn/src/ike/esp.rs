@@ -160,7 +160,7 @@ impl EspSa {
             return Err(format!("ESP SPI {spi:#x} != ours {:#x}", self.spi_in));
         }
         let (signed, icv) = esp.split_at(esp.len() - self.icv_len);
-        if self.hmac(&self.auth_in, signed) != icv {
+        if !super::crypto::ct_eq(&self.hmac(&self.auth_in, signed), icv) {
             return Err("ESP ICV mismatch".into());
         }
         let iv = &signed[8..8 + self.iv_len];

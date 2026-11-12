@@ -24,6 +24,11 @@ fn e<E: std::fmt::Display>(err: E) -> String {
     err.to_string()
 }
 
+/// Constant-time equality for MACs and other authenticators.
+pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && openssl::memcmp::eq(a, b)
+}
+
 pub fn random(n: usize) -> Vec<u8> {
     let mut b = vec![0u8; n];
     rand_bytes(&mut b).expect("openssl rand");
@@ -173,6 +178,13 @@ impl IkeCrypto {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ct_eq_handles_length_mismatch() {
+        assert!(ct_eq(b"abcd", b"abcd"));
+        assert!(!ct_eq(b"abcd", b"abce"));
+        assert!(!ct_eq(b"abcd", b"abc"));
+    }
 
     fn crypto() -> IkeCrypto {
         IkeCrypto::new(IKE_GROUP_MODP1024, IKE_HASH_SHA256, IKE_ENC_AES_CBC, 256).unwrap()

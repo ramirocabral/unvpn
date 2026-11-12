@@ -1093,7 +1093,7 @@ fn cmd_ike(args: &[String]) {
                 Err(e) => println!("# warning: gateway SIG_R did not verify: {e}"),
             },
             _ => match service::find_hash(&m6) {
-                Some(h) if h == hash_r => println!("# Phase 1 COMPLETE — HASH_R matches."),
+                Some(h) if ike::crypto::ct_eq(&h, &hash_r) => println!("# Phase 1 COMPLETE — HASH_R matches."),
                 _ => println!("# warning: msg6 had no SIG_R/cert and no matching HASH_R (payloads={})", m6.payloads.len()),
             },
         }
