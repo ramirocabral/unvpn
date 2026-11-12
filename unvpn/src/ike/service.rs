@@ -345,6 +345,12 @@ pub fn encrypt_message(
     Ok(out)
 }
 
+/// Whether an ISAKMP datagram has its encryption flag set — what every message
+/// after the key exchange must have.
+pub fn is_encrypted(raw: &[u8]) -> bool {
+    raw.len() >= ISAKMP_HEADER_LEN && raw[19] & FLAG_ENCRYPTION != 0
+}
+
 pub fn decrypt_message(session: &mut Ikev1Session, raw: &[u8]) -> Result<IsakmpMessage, String> {
     if raw.len() < ISAKMP_HEADER_LEN {
         return Err("short ISAKMP header".into());
@@ -357,12 +363,22 @@ pub fn decrypt_message(session: &mut Ikev1Session, raw: &[u8]) -> Result<IsakmpM
     let message_id = u32::from_be_bytes(raw[20..24].try_into().unwrap());
 
     let body = &raw[ISAKMP_HEADER_LEN..];
-    let payloads = if flags & FLAG_ENCRYPTION != 0 {
-        let pt = session.decrypt(message_id, body)?;
-        IsakmpMessage::parse_payloads(next_payload, &pt)?
-    } else {
-        IsakmpMessage::parse_payloads(next_payload, body)?
-    };
+    // Every message after the key exchange is encrypted; one in clear could come
+    // from anyone on the path.
+    if !is_encrypted(raw) {
+        let notify = IsakmpMessage::parse_payloads(next_payload, body).ok().and_then(|ps| {
+            ps.into_iter().find_map(|p| match p {
+                Payload::Notification(n) => Some(n.message_type),
+                _ => None,
+            })
+        });
+        return Err(match notify {
+            Some(t) => format!("ignored an unencrypted message from the gateway's address (NOTIFY {t})"),
+            None => format!("ignored an unencrypted message from the gateway's address (exchange {exchange_type})"),
+        });
+    }
+    let pt = session.decrypt(message_id, body)?;
+    let payloads = IsakmpMessage::parse_payloads(next_payload, &pt)?;
     Ok(IsakmpMessage {
         initiator_spi,
         responder_spi,
@@ -702,6 +718,31 @@ mod tests {
         s.set_suite(IKE_GROUP_MODP2048, IKE_HASH_SHA256, IKE_ENC_AES_CBC, 256).unwrap();
         s.compute_keys(&gw.initiator_pubkey, &gw.initiator_nonce).unwrap();
         s
+    }
+
+    #[test]
+    fn after_the_key_exchange_only_encrypted_messages_are_accepted() {
+        let mut s = keyed_session();
+        let notify = Payload::Notification(NotifyPayload {
+            doi: 1,
+            protocol_id: ProtocolId::Isakmp.into(),
+            spi: vec![],
+            message_type: 24,
+            data: vec![],
+        });
+        let enc = encrypt_message(&mut s, u8::from(ExchangeType::Informational), 7, std::slice::from_ref(&notify)).unwrap();
+        assert!(is_encrypted(&enc));
+        let mut clear = enc[..ISAKMP_HEADER_LEN].to_vec();
+        clear[19] &= !FLAG_ENCRYPTION;
+        let (first, body) = IsakmpMessage::encode_payloads(&[notify]);
+        clear[16] = first;
+        clear.extend_from_slice(&body);
+        let len = clear.len() as u32;
+        clear[24..28].copy_from_slice(&len.to_be_bytes());
+        assert!(!is_encrypted(&clear));
+        let e = decrypt_message(&mut s, &clear).unwrap_err();
+        assert!(e.contains("unencrypted") && e.contains("NOTIFY 24"), "{e}");
+        assert!(!is_encrypted(&clear[..10]));
     }
 
     fn self_signed(cn: &str) -> (openssl::pkey::PKey<openssl::pkey::Private>, openssl::x509::X509) {

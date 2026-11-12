@@ -180,7 +180,7 @@ fn ike_send_recv_mid(
     udp.send(msg)?;
     for _ in 0..8 {
         let r = udp.recv()?;
-        if r.len() >= 24 {
+        if ike::service::is_encrypted(&r) {
             let mid = u32::from_be_bytes(r[20..24].try_into().unwrap());
             if mid == want_mid {
                 return Ok(r);
@@ -720,7 +720,7 @@ fn do_lease_renew(
             let left = sub.saturating_duration_since(Instant::now());
             match ike_rx.recv_timeout(left) {
                 Ok(raw) => {
-                    if raw.len() >= 24
+                    if ike::service::is_encrypted(&raw)
                         && u32::from_be_bytes(raw[20..24].try_into().unwrap()) == om_mid
                     {
                         reply = Some(
@@ -786,7 +786,7 @@ fn do_rekey(
             let left = sub.saturating_duration_since(Instant::now());
             match ike_rx.recv_timeout(left) {
                 Ok(raw) => {
-                    if raw.len() >= 24
+                    if ike::service::is_encrypted(&raw)
                         && u32::from_be_bytes(raw[20..24].try_into().unwrap()) == qm_mid
                     {
                         qm2 = Some(
@@ -1166,32 +1166,29 @@ fn cmd_ike(args: &[String]) {
         }
         let id_r = service::find_identification_body(&m6).ok_or("no ID_R in msg6")?;
         let hash_r = session.hash_id_r(&id_r);
-        match (service::find_signature(&m6), service::find_certificates(&m6).first().cloned()) {
-            (Some(sig), Some(cert)) => match session.verify_rsa_signature(&hash_r, &sig, &cert) {
-                Ok(()) => println!("# Phase 1 COMPLETE — gateway SIG_R verified against its certificate."),
-                Err(e) => println!("# warning: gateway SIG_R did not verify: {e}"),
-            },
-            _ => match service::find_hash(&m6) {
-                Some(h) if ike::crypto::ct_eq(&h, &hash_r) => println!("# Phase 1 COMPLETE — HASH_R matches."),
-                _ => println!("# warning: msg6 had no SIG_R/cert and no matching HASH_R (payloads={})", m6.payloads.len()),
-            },
+        // The gateway signs HASH_R with its certificate's key in both the hybrid and
+        // the certificate login; HASH_R alone proves nothing about who answered.
+        let sig = service::find_signature(&m6).ok_or("the gateway sent no signature (SIG_R) in msg6")?;
+        let gw_der = service::find_certificates(&m6).into_iter().next().ok_or("the gateway sent no certificate in msg6")?;
+        session
+            .verify_rsa_signature(&hash_r, &sig, &gw_der)
+            .map_err(|e| format!("the gateway's signature (SIG_R) does not verify: {e}"))?;
+        let gw_cert = openssl::x509::X509::from_der(&gw_der).map_err(|e| format!("gateway certificate: {e}"))?;
+        // A certificate login carries the CA that issued the user's certificate; a
+        // gateway certificate from that CA needs no other trust.
+        let by_users_ca = cert_login
+            .as_ref()
+            .and_then(|c| c.chain.get(1))
+            .and_then(|ca| ca.public_key().ok())
+            .is_some_and(|k| gw_cert.verify(&k).unwrap_or(false));
+        let ike_endpoint = format!("{host}:ike");
+        if by_users_ca {
+            net::trust::note_verified(&ike_endpoint, &gw_der);
+        } else {
+            net::trust::accept(&ike_endpoint, &gw_cert, "IKE certificate, not checked against any CA")?;
         }
+        println!("# Phase 1 COMPLETE — gateway SIG_R verified against its certificate.");
 
-        // After msg6, skip any msg6 retransmits and drive the config-mode exchange
-        // (SecurID, or the second factor of a certificate login; one message_id
-        // throughout; reply with the requested attribute). A certificate login
-        // without a second factor gets no config-mode request at all.
-        if cert_login.is_some() {
-            if let (Some(ca), Some(gw_cert)) = (
-                cert_login.as_ref().and_then(|c| c.chain.get(1)),
-                service::find_certificates(&m6).first().and_then(|d| openssl::x509::X509::from_der(d).ok()),
-            ) {
-                let ok = ca.public_key().ok().map(|k| gw_cert.verify(&k).unwrap_or(false)).unwrap_or(false);
-                if !ok {
-                    println!("# warning: the gateway certificate is not issued by the certificate's CA");
-                }
-            }
-        }
         println!("# Phase 1 done; waiting for the gateway's authentication requests...");
         // Raw datagrams already handled: the gateway retransmits them while it waits
         // (e.g. for a code being typed), and decrypting one twice breaks the IV chain.
@@ -1200,6 +1197,10 @@ fn cmd_ike(args: &[String]) {
         loop {
             match udp.recv() {
                 Ok(r) if r == raw6 => continue, // msg6 retransmit while the gateway waits for us
+                Ok(r) if !service::is_encrypted(&r) => {
+                    println!("# ignored an unencrypted message from the gateway's address");
+                    continue;
+                }
                 Ok(r) => {
                     seen.push(r.clone());
                     first = Some(service::decrypt_message(&mut session, &r)?);
@@ -1314,6 +1315,10 @@ fn cmd_ike(args: &[String]) {
                 let mut resent = 0;
                 let raw = loop {
                     let r = udp.recv()?;
+                    if !service::is_encrypted(&r) {
+                        println!("# ignored an unencrypted message from the gateway's address");
+                        continue;
+                    }
                     if seen.contains(&r) {
                         // The request again after our reply had time to arrive: it was lost.
                         if sent_at.elapsed() > std::time::Duration::from_secs(3) && resent < 3 {
