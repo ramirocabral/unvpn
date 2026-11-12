@@ -64,7 +64,7 @@ pub fn set_dns<A: std::fmt::Display + std::fmt::Debug>(dns: &[A], domains: &str)
     };
 
     let mut content = format!("{DNS_MARKER} — restored on disconnect\n");
-    let search: Vec<&str> = domains.split([',', ';', ' ']).filter(|s| !s.is_empty()).collect();
+    let search = search_domains(domains);
     if !search.is_empty() {
         content.push_str(&format!("search {}\n", search.join(" ")));
     }
@@ -80,6 +80,19 @@ pub fn set_dns<A: std::fmt::Display + std::fmt::Debug>(dns: &[A], domains: &str)
         Err(e) => out!("# (could not set DNS: {e})"),
     }
     Some(backup)
+}
+
+/// The gateway's search list, keeping only plausible domain names so nothing it
+/// sends can add a line of its own to resolv.conf.
+fn search_domains(domains: &str) -> Vec<&str> {
+    domains
+        .split(|c: char| c == ',' || c == ';' || c.is_whitespace())
+        .filter(|d| {
+            !d.is_empty()
+                && d.len() <= 253
+                && d.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+        })
+        .collect()
 }
 
 /// The resolvers in `dns` whose queries the kernel routes into `tun`, checked once
@@ -379,6 +392,19 @@ impl Drop for EchoOff {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_domains_drops_anything_that_could_add_a_line() {
+        assert_eq!(search_domains("corp.example.com, b.example.org;c-1.example.net"), [
+            "corp.example.com",
+            "b.example.org",
+            "c-1.example.net"
+        ]);
+        assert_eq!(search_domains("a.example.com\nnameserver 203.0.113.9"), ["a.example.com", "nameserver", "203.0.113.9"]);
+        assert_eq!(search_domains("ok.example.com bad$name x\u{0}y"), ["ok.example.com"]);
+        assert!(search_domains(&"a".repeat(254)).is_empty());
+        assert!(search_domains("").is_empty());
+    }
 
     #[test]
     fn dev_of_route_get() {
