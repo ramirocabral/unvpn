@@ -28,6 +28,8 @@ Supported VPNs:
 - GTK4 app with saved connection profiles; passwords in the system keyring. The
   same profiles connect from the command line (`unvpn connect <profile>`).
 - Tray icon showing the connection state.
+- Several VPNs at once: each connection has its own row in the app and its own
+  entry in the tray, and starting one leaves the others up.
 - A connection outlives the app: closing or restarting it leaves the tunnel up,
   and the app (or `unvpn status` / `unvpn disconnect`) picks it up again. **Quit**
   disconnects.
@@ -93,6 +95,7 @@ sudo unvpn wireguard -c wg0.conf --connect                           # WireGuard
 ```
 
 `--killswitch` enables a fail-closed firewall; `--allow-ipv6` keeps IPv6 instead of blocking it.
+With a kill switch on, a second VPN comes up only if its gateway is reached through the first tunnel.
 
 ### Gateway certificates
 

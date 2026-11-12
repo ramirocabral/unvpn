@@ -10,7 +10,7 @@
 //!
 //! The engine runs `--detachable`: once up, it outlives the app, and a later app
 //! (or this one, for a tunnel started from the command line) attaches to it over
-//! its control socket.
+//! its control socket. Each connection is one [`Vpn`]; several run side by side.
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -62,11 +62,6 @@ pub enum EngineEvent {
     /// The tunnel device, so the UI can read its byte counters from /sys and time
     /// the session.
     Iface(String),
-    /// Attached to a tunnel this app didn't start: its name and when it came up.
-    Attached {
-        name: String,
-        since: u64,
-    },
     StateChanged,
 }
 
@@ -90,12 +85,17 @@ pub enum TrayCmd {
     Show,
     /// A saved profile was picked in the tray menu.
     ConnectProfile(String),
-    Disconnect,
+    /// The connection with this name.
+    Disconnect(String),
+    DisconnectAll,
     Quit,
 }
 
+/// Identifies one connection among those the app follows.
+pub type SessionId = u64;
+
 pub enum UiMsg {
-    Engine(EngineEvent),
+    Engine(SessionId, EngineEvent),
     Tray(TrayCmd),
 }
 
@@ -175,10 +175,12 @@ struct Attached {
     log_seen: u64,
 }
 
-/// Manages the privileged engine subprocess. Lives on the GTK main thread; the
+/// One connection: the privileged engine subprocess this app started, or a running
+/// engine it follows over the control socket. Lives on the GTK main thread; the
 /// stdout/stderr reader threads only *send* [`UiMsg`]s, never touch this struct.
 pub struct Vpn {
-    pub state: Arc<Mutex<State>>,
+    id: SessionId,
+    state: Arc<Mutex<State>>,
     child: Option<Child>,
     stdin: Option<ChildStdin>,
     attached: Option<Attached>,
@@ -188,8 +190,9 @@ pub struct Vpn {
 }
 
 impl Vpn {
-    pub fn new(tx: Tx) -> Self {
+    pub fn new(id: SessionId, tx: Tx) -> Self {
         Vpn {
+            id,
             state: Arc::new(Mutex::new(State::Disconnected)),
             child: None,
             stdin: None,
@@ -204,18 +207,17 @@ impl Vpn {
     }
 
     fn log(&self, line: impl Into<String>) {
-        let _ = self
-            .tx
-            .try_send(UiMsg::Engine(EngineEvent::Log(line.into())));
+        self.send(EngineEvent::Log(line.into()));
     }
 
-    pub fn is_busy(&self) -> bool {
-        self.child.is_some()
-            || self.attached.is_some()
-            || matches!(
-                *self.state.lock().unwrap(),
-                State::Connecting | State::Connected | State::Reconnecting | State::Disconnecting
-            )
+    /// Nothing runs any more: the engine exited, or the followed one is gone.
+    pub fn finished(&self) -> bool {
+        self.child.is_none() && self.attached.is_none()
+    }
+
+    /// The pid of the followed engine (`None` for one this app started).
+    pub fn attached_pid(&self) -> Option<u32> {
+        self.attached.as_ref().map(|a| a.status.pid)
     }
 
     /// Launch the privileged engine. `engine_args` are the `unvpn` subcommand args
@@ -230,12 +232,12 @@ impl Vpn {
         saml_entry: Option<String>,
         sso_user_agent: Option<String>,
     ) {
-        if self.is_busy() {
+        if !self.finished() {
             return;
         }
         let my_gen = self.gen.fetch_add(1, Ordering::SeqCst) + 1;
         *self.state.lock().unwrap() = State::Connecting;
-        let _ = self.tx.try_send(UiMsg::Engine(EngineEvent::StateChanged));
+        self.send(EngineEvent::StateChanged);
 
         let (prog, pre) = priv_escalation();
         self.log(format!("{label} (via {prog})…"));
@@ -253,7 +255,7 @@ impl Vpn {
             Ok(c) => c,
             Err(e) => {
                 *self.state.lock().unwrap() = State::Error(format!("spawn {prog}: {e}"));
-                let _ = self.tx.try_send(UiMsg::Engine(EngineEvent::StateChanged));
+                self.send(EngineEvent::StateChanged);
                 return;
             }
         };
@@ -288,6 +290,7 @@ impl Vpn {
             let saml_entry = saml_entry.clone();
             let sso_user_agent = sso_user_agent.clone();
             let tx = self.tx.clone();
+            let id = self.id;
             std::thread::spawn(move || {
                 let mut saml_opened = false;
                 // AnyConnect sso-v2 (embedded-browser flow): announced before SAML-URL.
@@ -302,7 +305,7 @@ impl Vpn {
                         continue; // a previous connection's engine, still draining
                     }
                     let send = |ev: EngineEvent| {
-                        let _ = tx.try_send(UiMsg::Engine(ev));
+                        let _ = tx.try_send(UiMsg::Engine(id, ev));
                     };
                     let set_state = |to: State, only_from: &[State]| {
                         let mut st = state.lock().unwrap();
@@ -312,7 +315,7 @@ impl Vpn {
                         {
                             *st = to;
                             drop(st);
-                            let _ = tx.try_send(UiMsg::Engine(EngineEvent::StateChanged));
+                            let _ = tx.try_send(UiMsg::Engine(id, EngineEvent::StateChanged));
                         }
                     };
 
@@ -443,52 +446,49 @@ impl Vpn {
                     *self.state.lock().unwrap() = State::Disconnected;
                 }
             }
-            let _ = self.tx.try_send(UiMsg::Engine(EngineEvent::StateChanged));
+            self.send(EngineEvent::StateChanged);
             return;
         }
         if let Some(mut si) = self.stdin.take() {
             let _ = writeln!(si, "disconnect");
             let _ = si.flush();
         }
-        let mut st = self.state.lock().unwrap();
-        if self.child.is_some() {
-            if *st != State::Disconnecting {
+        let announce = {
+            let mut st = self.state.lock().unwrap();
+            if self.child.is_none() {
+                *st = State::Disconnected;
+                false
+            } else if *st != State::Disconnecting {
                 *st = State::Disconnecting;
-                drop(st);
-                self.log("disconnecting…");
+                true
+            } else {
+                false
             }
-        } else {
-            *st = State::Disconnected;
+        };
+        if announce {
+            self.log("disconnecting…");
         }
-        let _ = self.tx.try_send(UiMsg::Engine(EngineEvent::StateChanged));
+        self.send(EngineEvent::StateChanged);
     }
 
-    /// For quitting: ask the engine to stop and give it a few seconds to finish its
-    /// teardown before the window goes away (it completes on its own regardless).
-    pub fn shutdown(&mut self) {
-        self.disconnect();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-        let gone = |v: &mut Self| match (v.child.as_mut(), &v.attached) {
+    /// The engine has exited (for quitting, which waits for that a few seconds).
+    pub fn gone(&mut self) -> bool {
+        match (self.child.as_mut(), &self.attached) {
             (Some(c), _) => !matches!(c.try_wait(), Ok(None)),
             (None, Some(a)) => ctl::status(&a.socket).is_err(),
             (None, None) => true,
-        };
-        while !gone(self) && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(50));
         }
     }
 
     /// Follow the engine: reap ours when it exits, keep an attached one's status
-    /// current, and attach to a running tunnel while idle. Returns true when the
-    /// state changed here (an attached tunnel's changes come as events).
+    /// current. Returns true when the state changed here (an attached tunnel's
+    /// changes come as events).
     pub fn poll(&mut self) -> bool {
         if self.child.is_some() {
             return self.poll_exit();
         }
         if self.attached.is_some() {
             self.poll_attached();
-        } else if matches!(self.state(), State::Disconnected | State::Error(_)) {
-            self.try_attach();
         }
         false
     }
@@ -532,44 +532,43 @@ impl Vpn {
     }
 
     fn send(&self, ev: EngineEvent) {
-        let _ = self.tx.try_send(UiMsg::Engine(ev));
+        let _ = self.tx.try_send(UiMsg::Engine(self.id, ev));
     }
 
-    /// Take over the display of a tunnel this app isn't running (started from the
-    /// command line, by the browser, or by this app before it restarted).
-    fn try_attach(&mut self) {
-        let Some((socket, status)) = ctl::running()
-            .into_iter()
-            .find(|(_, s)| s.state != marker::State::Down)
-        else {
-            return;
-        };
-        self.gen.fetch_add(1, Ordering::SeqCst);
-        self.send(EngineEvent::Attached {
-            name: status.name().to_string(),
-            since: status.since,
-        });
+    /// Follow a tunnel this app isn't running (started from the command line, by
+    /// the browser, or by this app before it restarted).
+    pub fn attach(id: SessionId, tx: Tx, socket: PathBuf, status: Status) -> Vpn {
+        let mut v = Vpn::new(id, tx);
         let mut log_seen = 0;
         if let Ok((next, lines)) = ctl::log(&socket, 0) {
             log_seen = next;
             for l in lines.iter().filter_map(|l| shown(l)) {
-                self.log(l);
+                v.log(l);
             }
         }
-        self.log(format!(
+        v.log(format!(
             "— following “{}” ({}, pid {}), which is running outside this window —",
             status.name(),
             status.backend,
             status.pid
         ));
-        self.announce(&status, &Status::default());
-        *self.state.lock().unwrap() = state_of(status.state, &State::Disconnected);
-        self.attached = Some(Attached {
+        v.announce(&status, &Status::default());
+        *v.state.lock().unwrap() = state_of(status.state, &State::Disconnected);
+        v.attached = Some(Attached {
             socket,
             status,
             log_seen,
         });
-        self.send(EngineEvent::StateChanged);
+        v.send(EngineEvent::StateChanged);
+        v
+    }
+
+    /// Running tunnels this app may follow: those not down yet.
+    pub fn running() -> Vec<(PathBuf, Status)> {
+        ctl::running()
+            .into_iter()
+            .filter(|(_, s)| s.state != marker::State::Down)
+            .collect()
     }
 
     fn poll_attached(&mut self) {

@@ -532,9 +532,8 @@ impl App {
         ));
     }
 
-    /// Keep a certificate the user trusted with the profile being connected.
-    pub(crate) fn remember_pin(&self, q: &profiles::TrustQuestion) {
-        let name = self.active_profile.lock().unwrap().clone();
+    /// Keep a certificate the user trusted with the profile `name` connects.
+    pub(crate) fn remember_pin(&self, name: &str, q: &profiles::TrustQuestion) {
         {
             let mut profs = self.profiles.borrow_mut();
             let Some(p) = profs.iter_mut().find(|p| p.name == name) else {
@@ -542,7 +541,7 @@ impl App {
                 self.session_pins
                     .borrow_mut()
                     .insert(q.endpoint.clone(), q.fingerprint.clone());
-                self.append_log("→ certificate trusted until unvpn quits (a saved profile for this gateway keeps it)");
+                self.append_log(&format!("[{name}] → certificate trusted until unvpn quits (a saved profile for this gateway keeps it)"));
                 return;
             };
             p.pins.insert(q.endpoint.clone(), q.fingerprint.clone());
@@ -553,7 +552,7 @@ impl App {
             }
         }
         self.append_log(&format!(
-            "→ certificate of {} trusted and saved with “{name}”",
+            "[{name}] → certificate of {} trusted and saved with “{name}”",
             q.endpoint
         ));
         self.update_pins_row();

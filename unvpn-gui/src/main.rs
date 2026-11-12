@@ -16,6 +16,7 @@ mod icon;
 mod list;
 mod profiles;
 mod prompts;
+mod session;
 #[cfg(feature = "webview")]
 mod sso;
 mod status;
@@ -29,8 +30,9 @@ use std::sync::{Arc, Mutex};
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 
-use engine::{State, Tx, Vpn};
+use engine::{SessionId, Tx};
 use profiles::Profile;
+use session::Session;
 
 const APP_ID: &str = "io.github.unvpn.Client";
 
@@ -53,9 +55,10 @@ struct App {
 
     profiles_group: adw::PreferencesGroup,
     profile_rows: RefCell<Vec<adw::ActionRow>>,
+    /// Each saved profile's connect/disconnect button.
+    profile_buttons: RefCell<Vec<(String, gtk::Button)>>,
     profiles: RefCell<Vec<Profile>>,
 
-    form_group: adw::PreferencesGroup,
     name_row: adw::EntryRow,
     backend_row: adw::ComboRow,
     forti_proto_row: adw::ComboRow,
@@ -90,46 +93,33 @@ struct App {
 
     connect_btn: gtk::Button,
 
-    status_group: adw::PreferencesGroup,
-    ip_row: adw::ActionRow,
-    dns_row: adw::ActionRow,
-    transfer_row: adw::ActionRow,
-    uptime_row: adw::ActionRow,
-    /// The live tunnel's interface name and when it came up, for the stats rows.
-    iface: RefCell<Option<String>>,
-    conn_since: RefCell<Option<std::time::Instant>>,
+    /// One row per running connection.
+    sessions_group: adw::PreferencesGroup,
+    sessions: RefCell<Vec<Session>>,
+    next_session: Cell<SessionId>,
+    /// Ids and names of the connections that ended last.
+    ended: RefCell<Vec<(SessionId, String)>>,
+    /// The last connection to end failed (the header shows it until the next one).
+    failed: Cell<bool>,
 
     prompt_group: adw::PreferencesGroup,
     prompt_rows: RefCell<Vec<gtk::Widget>>,
+    /// The connection whose question the prompt card shows.
+    prompt_session: Cell<Option<SessionId>>,
     #[cfg(feature = "webview")]
-    sso_window: RefCell<Option<adw::Window>>,
+    sso_windows: RefCell<Vec<(SessionId, adw::Window)>>,
 
     log_buffer: gtk::TextBuffer,
     log_view: gtk::TextView,
     log_expander: adw::ExpanderRow,
 
-    vpn: RefCell<Vpn>,
     tray: RefCell<Option<ksni::blocking::Handle<tray::VpnTray>>>,
-    /// Profile names shown in the tray menu. Shared with the tray thread.
-    tray_profiles: Arc<Mutex<Vec<String>>>,
-    /// The current connection was started from the tray menu: if it fails, the
-    /// window opens with the log expanded.
-    from_tray: Cell<bool>,
-    /// Tray: profile to connect once the current tunnel is down (switching).
-    pending_switch: RefCell<Option<String>>,
+    /// What the tray shows. Shared with the tray thread.
+    tray_view: Arc<Mutex<tray::TrayView>>,
     tx: Tx,
-    last_state: RefCell<Option<State>>,
     /// Gateway certificates trusted in this run for connections without a saved
     /// profile (an unsaved form, an F5 link from the browser): endpoint → fingerprint.
     session_pins: RefCell<std::collections::BTreeMap<String, String>>,
-    /// OpenVPN: passphrase to answer the engine's `keypass` prompt with, unasked
-    /// (taken once per connection, so a wrong one falls back to the prompt card).
-    pending_key_pass: RefCell<Option<String>>,
-    /// OpenVPN: (profile, passphrase) typed in the prompt card with "Remember" on —
-    /// written to the keyring once the tunnel is up, i.e. once it proved right.
-    key_pass_to_store: RefCell<Option<(String, String)>>,
-    /// Name of the profile used for the current connection. Shared with the tray thread.
-    active_profile: Arc<Mutex<String>>,
     /// Set only when the user really quits (tray/menu "Quit"); otherwise closing the
     /// window just hides it to the tray (the tunnel keeps running).
     quitting: Cell<bool>,

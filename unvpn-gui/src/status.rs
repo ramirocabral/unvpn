@@ -1,9 +1,10 @@
-//! The connection status: state pill, address, DNS, traffic, uptime and log.
+//! The connection status: header pill, the active connections, traffic, uptime
+//! and the log.
 
 use adw::prelude::*;
-use gtk::glib;
 
-use crate::engine::State;
+use crate::engine::{SessionId, State};
+use crate::session::{self, Tone};
 use crate::App;
 
 impl App {
@@ -13,14 +14,24 @@ impl App {
         b.insert(&mut end, line);
         b.insert(&mut b.end_iter(), "\n");
         let lines = b.line_count();
-        if lines > 500 {
-            if let Some(mut cut) = b.iter_at_line(lines - 500) {
+        if lines > 1000 {
+            if let Some(mut cut) = b.iter_at_line(lines - 1000) {
                 let mut start = b.start_iter();
                 b.delete(&mut start, &mut cut);
             }
         }
         self.log_view
             .scroll_to_iter(&mut b.end_iter(), 0.0, false, 0.0, 0.0);
+    }
+
+    /// A log line about connection `id`, tagged with its name.
+    pub(crate) fn session_log(&self, id: SessionId, line: &str) {
+        let name = self.session_name(id);
+        if name.is_empty() {
+            self.append_log(line);
+        } else {
+            self.append_log(&format!("[{name}] {line}"));
+        }
     }
 
     /// A tray-started connection failed: bring the window up on the log.
@@ -32,75 +43,64 @@ impl App {
     }
 
     pub(crate) fn tick(&self) {
-        if self.vpn.borrow_mut().poll() {
-            self.sync_ui();
-        }
+        self.poll_sessions();
         self.update_stats();
     }
 
-    /// Refresh the live-connection stats (transfer counters from the tunnel device,
-    /// and how long it has been up). A no-op unless a tunnel is up.
+    /// Refresh each live connection's transfer counters (from its tunnel device)
+    /// and how long it has been up.
     pub(crate) fn update_stats(&self) {
-        if !matches!(
-            self.vpn.borrow().state(),
-            State::Connected | State::Reconnecting
-        ) {
-            return;
-        }
-        if let Some(iface) = self.iface.borrow().as_ref() {
-            if let (Some(rx), Some(tx)) = (
-                iface_bytes(iface, "rx_bytes"),
-                iface_bytes(iface, "tx_bytes"),
-            ) {
-                self.transfer_row.set_subtitle(&format!(
-                    "↓ {}    ↑ {}",
-                    human_bytes(rx),
-                    human_bytes(tx)
-                ));
+        for s in self.sessions.borrow().iter() {
+            if !matches!(s.vpn.state(), State::Connected | State::Reconnecting) {
+                continue;
             }
-        }
-        if let Some(since) = *self.conn_since.borrow() {
-            self.uptime_row
-                .set_subtitle(&human_duration(since.elapsed()));
+            if let Some(iface) = s.iface.as_ref() {
+                if let (Some(rx), Some(tx)) = (
+                    iface_bytes(iface, "rx_bytes"),
+                    iface_bytes(iface, "tx_bytes"),
+                ) {
+                    s.row.transfer.set_subtitle(&format!(
+                        "↓ {}    ↑ {}",
+                        human_bytes(rx),
+                        human_bytes(tx)
+                    ));
+                }
+            }
+            if let Some(since) = s.since {
+                s.row.uptime.set_subtitle(&human_duration(since.elapsed()));
+            }
         }
     }
 
+    /// Bring the header, the form's button, the profile list and the tray in line
+    /// with the connections.
     pub(crate) fn sync_ui(&self) {
-        let state = self.vpn.borrow().state();
-
-        let (txt, cls) = match &state {
-            State::Disconnected => ("Disconnected", "st-off"),
-            State::Connecting => ("Connecting…", "st-busy"),
-            State::Connected => ("Connected", "st-on"),
-            State::Reconnecting => ("Reconnecting…", "st-busy"),
-            State::Disconnecting => ("Disconnecting…", "st-busy"),
-            State::Error(_) => ("Error", "st-err"),
-        };
+        let (states, names): (Vec<State>, Vec<String>) = self
+            .sessions
+            .borrow()
+            .iter()
+            .map(|s| (s.vpn.state(), s.name.clone()))
+            .unzip();
+        let (txt, tone) = session::overall(&states, self.failed.get());
         self.status_pill.set_text(&format!("● {txt}"));
-        self.status_pill.set_css_classes(&["statuspill", cls]);
-
-        if state == State::Connected {
-            self.store_key_pass();
-        }
-
-        if matches!(state, State::Connected | State::Reconnecting) {
-            let name = self.active_profile.lock().unwrap().clone();
-            self.status_pill
-                .set_tooltip_text((!name.is_empty()).then_some(name.as_str()));
+        self.status_pill
+            .set_css_classes(&["statuspill", tone.css()]);
+        self.status_pill
+            .set_tooltip_text((!names.is_empty()).then(|| names.join("\n")).as_deref());
+        self.sessions_group.set_visible(!states.is_empty());
+        self.sessions_group.set_title(if states.len() > 1 {
+            "Active connections"
         } else {
-            self.status_pill.set_tooltip_text(None);
-        }
+            "Active connection"
+        });
 
-        if state != State::Connecting {
-            self.close_sso_window();
-        }
-
-        let editable = matches!(state, State::Disconnected | State::Error(_));
-        self.form_group.set_sensitive(editable);
-        self.profiles_group.set_sensitive(editable);
-
-        match &state {
-            State::Disconnected | State::Error(_) => {
+        let form = self.form_name();
+        let form_state = names
+            .iter()
+            .position(|n| *n == form)
+            .map(|i| states[i].clone());
+        match form_state {
+            None | Some(State::Disconnected | State::Error(_)) => {
                 let label = if self.sso() {
                     "Sign in with browser"
                 } else {
@@ -110,55 +110,32 @@ impl App {
                 self.connect_btn
                     .set_css_classes(&["suggested-action", "pill"]);
                 self.connect_btn.set_sensitive(self.form_ready());
-                self.clear_prompt();
-                self.status_group.set_visible(false);
-                self.ip_row.set_subtitle("");
-                self.dns_row.set_subtitle("");
-                self.transfer_row.set_subtitle("");
-                self.uptime_row.set_subtitle("");
-                self.iface.replace(None);
-                self.conn_since.replace(None);
             }
-            State::Connecting | State::Connected | State::Reconnecting => {
+            Some(State::Connecting | State::Connected | State::Reconnecting) => {
                 self.connect_btn.set_label("Disconnect");
                 self.connect_btn
                     .set_css_classes(&["destructive-action", "pill"]);
                 self.connect_btn.set_sensitive(true);
             }
-            State::Disconnecting => {
+            Some(State::Disconnecting) => {
                 self.connect_btn.set_label("Disconnecting…");
                 self.connect_btn.set_css_classes(&["pill"]);
                 self.connect_btn.set_sensitive(false);
             }
         }
 
-        let changed = self.last_state.borrow().as_ref() != Some(&state);
-        if changed {
-            let down = matches!(state, State::Disconnected | State::Error(_));
-            let switch = if down {
-                self.pending_switch.take()
+        for (name, btn) in self.profile_buttons.borrow().iter() {
+            let st = names.iter().position(|n| n == name).map(|i| &states[i]);
+            let live = st.is_some_and(|s| session::tone(s) != Tone::Off);
+            btn.set_icon_name(if live {
+                "media-playback-stop-symbolic"
             } else {
-                None
-            };
-            // A push approved on the phone leaves its card up; the tunnel answers it.
-            if state == State::Connected {
-                self.clear_prompt();
-            }
-            if let State::Error(e) = &state {
-                self.toast(e);
-                if self.from_tray.get() && switch.is_none() {
-                    self.reveal_log();
-                }
-            }
-            self.update_tray();
-            *self.last_state.borrow_mut() = Some(state);
-            // Tray switch: the old tunnel is down, bring up the picked profile (off
-            // this call — connecting re-enters sync_ui).
-            if let Some(name) = switch {
-                let app = self.rc();
-                glib::idle_add_local_once(move || app.connect_from_tray(&name));
-            }
+                "media-playback-start-symbolic"
+            });
+            btn.set_tooltip_text(Some(if live { "Disconnect" } else { "Connect" }));
+            btn.set_sensitive(st != Some(&State::Disconnecting));
         }
+        self.update_tray();
     }
 
     pub(crate) fn toast(&self, msg: &str) {

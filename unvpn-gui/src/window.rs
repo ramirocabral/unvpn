@@ -8,7 +8,7 @@ use std::time::Duration;
 use adw::prelude::*;
 use gtk::{gio, glib};
 
-use crate::engine::{Tx, UiMsg, Vpn};
+use crate::engine::{Tx, UiMsg};
 use crate::profiles::Backend;
 use crate::{profiles, tray, App};
 
@@ -207,30 +207,10 @@ impl App {
             .build();
         connect_btn.set_height_request(40);
 
-        let ip_row = adw::ActionRow::builder()
-            .title("Internal IP")
-            .css_classes(["property"])
-            .build();
-        let dns_row = adw::ActionRow::builder()
-            .title("DNS")
-            .css_classes(["property"])
-            .build();
-        let transfer_row = adw::ActionRow::builder()
-            .title("Transfer")
-            .css_classes(["property"])
-            .build();
-        let uptime_row = adw::ActionRow::builder()
-            .title("Connected for")
-            .css_classes(["property"])
-            .build();
-        let status_group = adw::PreferencesGroup::builder()
+        let sessions_group = adw::PreferencesGroup::builder()
             .title("Active connection")
             .visible(false)
             .build();
-        status_group.add(&ip_row);
-        status_group.add(&dns_row);
-        status_group.add(&transfer_row);
-        status_group.add(&uptime_row);
 
         let prompt_group = adw::PreferencesGroup::builder().visible(false).build();
 
@@ -265,7 +245,7 @@ impl App {
             .margin_end(12)
             .build();
         content.append(&prompt_group);
-        content.append(&status_group);
+        content.append(&sessions_group);
         content.append(&profiles_group);
         content.append(&form_group);
         content.append(&connect_btn);
@@ -323,8 +303,8 @@ impl App {
             status_pill,
             profiles_group,
             profile_rows: RefCell::new(Vec::new()),
+            profile_buttons: RefCell::new(Vec::new()),
             profiles: RefCell::new(loaded.unwrap_or_default()),
-            form_group,
             name_row,
             backend_row,
             forti_proto_row,
@@ -353,31 +333,23 @@ impl App {
             pins_row,
             save_btn,
             connect_btn,
-            status_group,
-            ip_row,
-            dns_row,
-            transfer_row,
-            uptime_row,
-            iface: RefCell::new(None),
-            conn_since: RefCell::new(None),
+            sessions_group,
+            sessions: RefCell::new(Vec::new()),
+            next_session: Cell::new(1),
+            ended: RefCell::new(Vec::new()),
+            failed: Cell::new(false),
             prompt_group,
             prompt_rows: RefCell::new(Vec::new()),
+            prompt_session: Cell::new(None),
             #[cfg(feature = "webview")]
-            sso_window: RefCell::new(None),
+            sso_windows: RefCell::new(Vec::new()),
             log_buffer,
             log_view,
             log_expander,
-            vpn: RefCell::new(Vpn::new(tx.clone())),
             tray: RefCell::new(None),
-            tray_profiles: Arc::new(Mutex::new(Vec::new())),
-            from_tray: Cell::new(false),
-            pending_switch: RefCell::new(None),
+            tray_view: Arc::new(Mutex::new(Default::default())),
             tx,
-            last_state: RefCell::new(None),
             session_pins: RefCell::new(Default::default()),
-            pending_key_pass: RefCell::new(None),
-            key_pass_to_store: RefCell::new(None),
-            active_profile: Arc::new(Mutex::new(String::new())),
             quitting: Cell::new(false),
             me: RefCell::new(Weak::new()),
         });
@@ -509,14 +481,14 @@ impl App {
             app,
             move |_| {
                 if app.quitting.get() {
-                    app.vpn.borrow_mut().shutdown();
+                    app.shutdown();
                     return glib::Propagation::Proceed;
                 }
                 if app.tray.borrow().is_some() {
                     app.window.set_visible(false);
                     return glib::Propagation::Stop;
                 }
-                app.vpn.borrow_mut().shutdown();
+                app.shutdown();
                 glib::Propagation::Proceed
             }
         ));

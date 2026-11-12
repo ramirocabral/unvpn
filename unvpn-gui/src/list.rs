@@ -14,9 +14,8 @@ impl App {
         for row in self.profile_rows.borrow_mut().drain(..) {
             self.profiles_group.remove(&row);
         }
+        self.profile_buttons.borrow_mut().clear();
         let profs = self.profiles.borrow();
-        *self.tray_profiles.lock().unwrap() = profs.iter().map(|p| p.name.clone()).collect();
-        self.update_tray();
         if profs.is_empty() {
             let row = adw::ActionRow::builder()
                 .title("No saved profiles")
@@ -25,6 +24,8 @@ impl App {
                 .build();
             self.profiles_group.add(&row);
             self.profile_rows.borrow_mut().push(row);
+            drop(profs);
+            self.sync_ui();
             return;
         }
         for p in profs.iter() {
@@ -62,10 +63,17 @@ impl App {
             ));
             let app2 = app_rc.clone();
             let p2 = p.clone();
-            conn.connect_clicked(move |_| {
-                app2.load_profile(&p2);
-                app2.on_connect_clicked();
+            // Toggles this profile's connection; the others stay as they are.
+            conn.connect_clicked(move |_| match app2.session_named(&p2.name) {
+                Some(id) => app2.disconnect_session(id),
+                None => {
+                    app2.load_profile(&p2);
+                    app2.start_connect(false);
+                }
             });
+            self.profile_buttons
+                .borrow_mut()
+                .push((p.name.clone(), conn.clone()));
             let app3 = app_rc.clone();
             let name = p.name.clone();
             del.connect_clicked(move |_| app3.confirm_delete_profile(&name));
@@ -73,6 +81,8 @@ impl App {
             self.profiles_group.add(&row);
             self.profile_rows.borrow_mut().push(row);
         }
+        drop(profs);
+        self.sync_ui();
     }
 
     /// Drag a profile row onto another to move it there; the order is saved.

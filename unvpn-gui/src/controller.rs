@@ -1,15 +1,102 @@
 //! Starting and stopping connections and reacting to the engine and the tray.
+//! Several connections run side by side, one [`Session`] each.
 
 use std::rc::Rc;
 use std::time::Duration;
 
 use adw::prelude::*;
 
-use crate::engine::{EngineEvent, State, TrayCmd, UiMsg};
+use crate::engine::{EngineEvent, SessionId, State, TrayCmd, UiMsg, Vpn};
 use crate::profiles::{anyconnect_saml_entry, saml_entry, Backend};
+use crate::session::{Session, SessionRow};
 use crate::{profiles, tray, App};
 
 impl App {
+    /// The running connection that goes by `name`.
+    pub(crate) fn session_named(&self, name: &str) -> Option<SessionId> {
+        self.sessions
+            .borrow()
+            .iter()
+            .find(|s| s.name == name)
+            .map(|s| s.id)
+    }
+
+    pub(crate) fn session_state(&self, id: SessionId) -> Option<State> {
+        self.sessions
+            .borrow()
+            .iter()
+            .find(|s| s.id == id)
+            .map(|s| s.vpn.state())
+    }
+
+    /// Connection `id`'s name, also for a while after it ended (its engine's
+    /// last lines arrive late).
+    pub(crate) fn session_name(&self, id: SessionId) -> String {
+        if let Some(s) = self.sessions.borrow().iter().find(|s| s.id == id) {
+            return s.name.clone();
+        }
+        self.ended
+            .borrow()
+            .iter()
+            .find(|(i, _)| *i == id)
+            .map(|(_, n)| n.clone())
+            .unwrap_or_default()
+    }
+
+    /// Run `f` on connection `id`, if it still exists.
+    pub(crate) fn with_session<T>(
+        &self,
+        id: SessionId,
+        f: impl FnOnce(&mut Session) -> T,
+    ) -> Option<T> {
+        self.sessions
+            .borrow_mut()
+            .iter_mut()
+            .find(|s| s.id == id)
+            .map(f)
+    }
+
+    /// Add a connection with its row; `start` launches (or attaches) its engine.
+    fn add_session(
+        &self,
+        name: String,
+        backend: Option<Backend>,
+        from_tray: bool,
+        start: impl FnOnce(SessionId) -> Vpn,
+    ) -> SessionId {
+        let id = self.next_session.get();
+        self.next_session.set(id + 1);
+        self.failed.set(false);
+        let row = SessionRow::new(&name, self.sessions.borrow().is_empty());
+        let app = self.rc();
+        row.stop
+            .connect_clicked(move |_| app.disconnect_session(id));
+        self.sessions_group.add(&row.expander);
+        let vpn = start(id);
+        // A tunnel found running has no news to tell: its state is where it starts.
+        let shown = if vpn.attached_pid().is_some() {
+            vpn.state()
+        } else {
+            State::Disconnected
+        };
+        self.sessions.borrow_mut().push(Session {
+            id,
+            name,
+            backend,
+            vpn,
+            row,
+            iface: None,
+            since: None,
+            from_tray,
+            pending_key_pass: None,
+            key_pass_to_store: None,
+            waiting_prompt: None,
+            shown,
+        });
+        self.on_session_state(id);
+        id
+    }
+
     /// The webtop's "Start" (an `f5-vpn://` link the browser handed over): run the
     /// handoff like any connection, so its questions and status show here. The
     /// saved F5 profile for that gateway, if any, lends its certificates and options.
@@ -19,19 +106,6 @@ impl App {
             self.toast("That F5 link names no gateway");
             return;
         };
-        if self.vpn.borrow().is_busy() {
-            self.show_window();
-            self.toast("Disconnect first to start the F5 connection from the browser");
-            return;
-        }
-        self.log_buffer.set_text("");
-        self.ip_row.set_subtitle("");
-        self.dns_row.set_subtitle("");
-        self.status_group.set_visible(false);
-        self.clear_prompt();
-        self.pending_key_pass.replace(None);
-        self.key_pass_to_store.replace(None);
-
         let profs = self.profiles.borrow();
         let saved = profs.iter().find(|p| {
             p.backend == Backend::F5 && profiles::gateway_endpoint(&p.gateway) == endpoint
@@ -39,7 +113,14 @@ impl App {
         let name = saved
             .map(|p| p.name.clone())
             .unwrap_or_else(|| endpoint.clone());
-        *self.active_profile.lock().unwrap() = name.clone();
+        if self.session_named(&name).is_some() {
+            drop(profs);
+            self.show_window();
+            self.toast(&format!(
+                "Disconnect “{name}” first to start it from the browser"
+            ));
+            return;
+        }
         let mut args: Vec<String> = ["f5", "--launch", url, "--watch-stdin", "--label", &name]
             .map(String::from)
             .to_vec();
@@ -57,49 +138,52 @@ impl App {
         for pin in pins {
             args.extend(["--pin".to_string(), pin]);
         }
+        let tx = self.tx.clone();
         // Like a tray connect: the window opens for a question or a failure.
-        self.from_tray.set(true);
-        self.vpn.borrow_mut().connect(
-            args,
-            Vec::new(),
-            format!("F5 from the browser: {endpoint}"),
-            None,
-            None,
-        );
-        self.sync_ui();
+        self.add_session(name, Some(Backend::F5), true, move |id| {
+            let mut vpn = Vpn::new(id, tx);
+            vpn.connect(
+                args,
+                Vec::new(),
+                format!("F5 from the browser: {endpoint}"),
+                None,
+                None,
+            );
+            vpn
+        });
     }
 
-    pub(crate) fn on_connect_clicked(&self) {
-        let st = self.vpn.borrow().state();
-        match st {
-            State::Disconnected | State::Error(_) => {
-                self.from_tray.set(false);
-                self.start_connect()
-            }
-            State::Connecting | State::Connected | State::Reconnecting => {
-                self.vpn.borrow_mut().disconnect();
-                self.sync_ui();
-            }
-            State::Disconnecting => {}
+    /// The name the form's connection goes by: the profile name, else the gateway.
+    pub(crate) fn form_name(&self) -> String {
+        let n = self.name_row.text().trim().to_string();
+        if n.is_empty() {
+            self.gateway_row.text().trim().to_string()
+        } else {
+            n
         }
     }
 
-    pub(crate) fn start_connect(&self) {
+    /// The form's Connect button: connect what the form describes, or stop it.
+    pub(crate) fn on_connect_clicked(&self) {
+        match self.session_named(&self.form_name()) {
+            Some(id) => self.disconnect_session(id),
+            None => self.start_connect(false),
+        }
+    }
+
+    pub(crate) fn start_connect(&self, from_tray: bool) {
         if !self.form_ready() {
             self.toast("Missing details to connect");
             return;
         }
-        self.log_buffer.set_text("");
-        self.ip_row.set_subtitle("");
-        self.dns_row.set_subtitle("");
-        self.status_group.set_visible(false);
-        self.clear_prompt();
-        self.key_pass_to_store.replace(None);
-        self.pending_key_pass.replace(
-            (self.backend() == Backend::OpenVpn && self.key_pass_row.is_visible())
-                .then(|| self.key_pass_row.text().to_string())
-                .filter(|k| !k.is_empty()),
-        );
+        let name = self.form_name();
+        if self.session_named(&name).is_some() {
+            return;
+        }
+        let pending_key_pass = (self.backend() == Backend::OpenVpn
+            && self.key_pass_row.is_visible())
+        .then(|| self.key_pass_row.text().to_string())
+        .filter(|k| !k.is_empty());
 
         let gw = self.gateway_row.text().trim().to_string();
         // SSO User-Agent override for the embedded sign-in window (empty ⇒ none).
@@ -109,16 +193,6 @@ impl App {
         };
         let label = format!("connecting to {gw}");
 
-        let name = {
-            let n = self.name_row.text().trim().to_string();
-            if n.is_empty() {
-                gw.clone()
-            } else {
-                n
-            }
-        };
-        *self.active_profile.lock().unwrap() = name.clone();
-
         let mut p = self.form_profile();
         for (endpoint, fp) in self.session_pins.borrow().iter() {
             p.pins.entry(endpoint.clone()).or_insert_with(|| fp.clone());
@@ -127,7 +201,7 @@ impl App {
             .then(|| self.psk_row.text().to_string())
             .filter(|k| !k.is_empty());
         let mut args = profiles::engine_args(&p, psk.is_some());
-        args.extend(["--label".to_string(), name]);
+        args.extend(["--label".to_string(), name.clone()]);
         // Secrets go on stdin. The Check Point token code follows the PIN; a
         // second factor asked later comes as `# AUTH-PROMPT: code:`.
         let mut stdin_lines = if p.backend == Backend::CheckPoint && !p.cp_cert {
@@ -154,71 +228,119 @@ impl App {
             _ => Some(gw.clone()),
         };
 
-        self.vpn
-            .borrow_mut()
-            .connect(args, stdin_lines, label, saml, sso_ua);
-        self.sync_ui();
+        let tx = self.tx.clone();
+        let id = self.add_session(name, Some(p.backend), from_tray, move |id| {
+            let mut vpn = Vpn::new(id, tx);
+            vpn.connect(args, stdin_lines, label, saml, sso_ua);
+            vpn
+        });
+        self.with_session(id, |s| s.pending_key_pass = pending_key_pass);
+    }
+
+    pub(crate) fn disconnect_session(&self, id: SessionId) {
+        self.with_session(id, |s| s.vpn.disconnect());
+        self.clear_prompt_of(id);
+        self.on_session_state(id);
+    }
+
+    pub(crate) fn disconnect_all(&self) {
+        let ids: Vec<SessionId> = self.sessions.borrow().iter().map(|s| s.id).collect();
+        for id in ids {
+            self.disconnect_session(id);
+        }
     }
 
     pub(crate) fn handle_msg(&self, msg: UiMsg) {
         match msg {
-            UiMsg::Engine(ev) => match ev {
-                EngineEvent::Log(s) => self.append_log(&s),
-                EngineEvent::Ip(ip) => {
-                    self.ip_row.set_subtitle(&ip);
-                    self.status_group.set_visible(true);
-                    // The tunnel is up; a lingering SSO window (e.g. Fortinet's
-                    // loopback login) has done its job — close it.
-                    self.close_sso_window();
-                }
-                EngineEvent::Dns(dns) => {
-                    let text = if dns.is_empty() {
-                        "System resolver (unchanged)"
-                    } else {
-                        dns.as_str()
-                    };
-                    self.dns_row.set_subtitle(text);
-                }
-                EngineEvent::Prompt(p) => self.show_prompt(p),
-                EngineEvent::SsoBrowser {
-                    login,
-                    watch,
-                    user_agent,
-                } => self.open_sso_window(&login, &watch, user_agent.as_deref()),
-                EngineEvent::Iface(name) => {
-                    self.iface.replace(Some(name));
-                    if self.conn_since.borrow().is_none() {
-                        self.conn_since.replace(Some(std::time::Instant::now()));
-                    }
-                    self.status_group.set_visible(true);
-                }
-                EngineEvent::Attached { name, since } => {
-                    self.log_buffer.set_text("");
-                    self.clear_prompt();
-                    *self.active_profile.lock().unwrap() = name;
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_secs())
-                        .unwrap_or(0);
-                    let up_for = Duration::from_secs(now.saturating_sub(since));
-                    self.conn_since
-                        .replace((since > 0).then(|| std::time::Instant::now() - up_for));
-                }
-                EngineEvent::StateChanged => self.sync_ui(),
-            },
+            UiMsg::Engine(id, ev) => self.handle_engine(id, ev),
             UiMsg::Tray(cmd) => self.handle_tray(cmd),
         }
+    }
+
+    fn handle_engine(&self, id: SessionId, ev: EngineEvent) {
+        match ev {
+            EngineEvent::Log(s) => self.session_log(id, &s),
+            EngineEvent::Ip(ip) => {
+                self.with_session(id, |s| {
+                    s.row.ip.set_subtitle(&ip);
+                    s.row.show_state(&s.vpn.state());
+                });
+                // The tunnel is up; a lingering SSO window (e.g. Fortinet's
+                // loopback login) has done its job — close it.
+                self.close_sso_window(id);
+            }
+            EngineEvent::Dns(dns) => {
+                let text = if dns.is_empty() {
+                    "System resolver (unchanged)"
+                } else {
+                    dns.as_str()
+                };
+                self.with_session(id, |s| s.row.dns.set_subtitle(text));
+            }
+            EngineEvent::Prompt(p) => self.show_prompt(id, p),
+            EngineEvent::SsoBrowser {
+                login,
+                watch,
+                user_agent,
+            } => self.open_sso_window(id, &login, &watch, user_agent.as_deref()),
+            EngineEvent::Iface(name) => {
+                self.with_session(id, |s| {
+                    s.iface = Some(name);
+                    if s.since.is_none() {
+                        s.since = Some(std::time::Instant::now());
+                    }
+                });
+            }
+            EngineEvent::StateChanged => self.on_session_state(id),
+        }
+    }
+
+    /// React to connection `id` reaching a new state: its row, the prompt card,
+    /// the SSO window and toasts, then the window and the tray.
+    pub(crate) fn on_session_state(&self, id: SessionId) {
+        let Some((prev, now, name, from_tray)) = self.with_session(id, |s| {
+            let now = s.vpn.state();
+            s.row.show_state(&now);
+            let prev = std::mem::replace(&mut s.shown, now.clone());
+            (prev, now, s.name.clone(), s.from_tray)
+        }) else {
+            return;
+        };
+        if prev == now {
+            self.sync_ui();
+            return;
+        }
+        if now != State::Connecting {
+            self.close_sso_window(id);
+        }
+        match (&prev, &now) {
+            (_, State::Connected) => {
+                // A push approved on the phone leaves its card up; the tunnel answers it.
+                self.clear_prompt_of(id);
+                self.store_key_pass(id);
+            }
+            (_, State::Error(e)) => {
+                self.clear_prompt_of(id);
+                self.toast(&format!("{name}: {e}"));
+                if from_tray {
+                    self.reveal_log();
+                }
+            }
+            _ => {}
+        }
+        self.sync_ui();
     }
 
     pub(crate) fn handle_tray(&self, cmd: TrayCmd) {
         match cmd {
             TrayCmd::Show => self.show_window(),
-            TrayCmd::ConnectProfile(name) => self.connect_from_tray(&name),
-            TrayCmd::Disconnect => {
-                self.pending_switch.replace(None);
-                self.vpn.borrow_mut().disconnect();
-                self.sync_ui();
+            TrayCmd::ConnectProfile(name) => self.connect_profile(&name, true),
+            TrayCmd::Disconnect(name) => {
+                if let Some(id) = self.session_named(&name) {
+                    self.disconnect_session(id);
+                }
             }
+            TrayCmd::DisconnectAll => self.disconnect_all(),
             TrayCmd::Quit => self.request_quit(),
         }
     }
@@ -228,24 +350,13 @@ impl App {
         self.window.present();
     }
 
-    /// Tray menu pick: connect that saved profile without the window. If something
-    /// is missing (a one-time token, a password that isn't remembered) the window
-    /// opens on the profile; a runtime prompt or a failure opens it too.
-    pub(crate) fn connect_from_tray(&self, name: &str) {
-        match self.vpn.borrow().state() {
-            State::Disconnected | State::Error(_) => {}
-            State::Disconnecting => {
-                self.pending_switch.replace(Some(name.to_string()));
-                return;
-            }
-            State::Connecting | State::Connected | State::Reconnecting => {
-                if *self.active_profile.lock().unwrap() != name {
-                    self.pending_switch.replace(Some(name.to_string()));
-                }
-                self.vpn.borrow_mut().disconnect();
-                self.sync_ui();
-                return;
-            }
+    /// Connect a saved profile without the window (tray menu, a notification's
+    /// button). If something is missing (a one-time token, a password that isn't
+    /// remembered) the window opens on the profile; a runtime prompt or a failure
+    /// opens it too. Other connections stay up.
+    pub(crate) fn connect_profile(&self, name: &str, from_tray: bool) {
+        if self.session_named(name).is_some() {
+            return;
         }
         let Some(p) = self
             .profiles
@@ -263,21 +374,135 @@ impl App {
             self.focus_missing_field();
             return;
         }
-        self.from_tray.set(true);
-        self.start_connect();
+        self.start_connect(from_tray);
     }
 
+    /// Show the connections and profiles in the tray, when they changed.
     pub(crate) fn update_tray(&self) {
+        let view = tray::TrayView {
+            sessions: self
+                .sessions
+                .borrow()
+                .iter()
+                .map(|s| (s.name.clone(), s.vpn.state()))
+                .collect(),
+            profiles: self
+                .profiles
+                .borrow()
+                .iter()
+                .map(|p| p.name.clone())
+                .collect(),
+            failed: self.failed.get(),
+        };
+        {
+            let mut v = self.tray_view.lock().unwrap();
+            if *v == view {
+                return;
+            }
+            *v = view;
+        }
         if let Some(h) = self.tray.borrow().as_ref() {
             h.update(|_| {});
         }
     }
 
     /// Really quit (tray/menu "Quit"): mark it, then close — the close handler tears the
-    /// tunnel down and lets the window be destroyed instead of hiding it.
+    /// tunnels down and lets the window be destroyed instead of hiding it.
     pub(crate) fn request_quit(&self) {
         self.quitting.set(true);
         self.window.close();
+    }
+
+    /// For quitting: stop every connection and give the engines a few seconds to
+    /// finish their teardown (they complete on their own regardless).
+    pub(crate) fn shutdown(&self) {
+        let mut sessions = self.sessions.borrow_mut();
+        for s in sessions.iter_mut() {
+            s.vpn.disconnect();
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline && !sessions.iter_mut().all(|s| s.vpn.gone()) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Follow every running connection: reap the engines that exited, keep the
+    /// followed ones current, and pick up tunnels started elsewhere.
+    pub(crate) fn poll_sessions(&self) {
+        let ids: Vec<SessionId> = self.sessions.borrow().iter().map(|s| s.id).collect();
+        for id in ids {
+            if self.with_session(id, |s| s.vpn.poll()) == Some(true) {
+                self.on_session_state(id);
+            }
+        }
+        let done: Vec<SessionId> = self
+            .sessions
+            .borrow()
+            .iter()
+            .filter(|s| s.vpn.finished())
+            .map(|s| s.id)
+            .collect();
+        for id in done {
+            self.on_session_state(id);
+            self.remove_session(id);
+        }
+        self.attach_running();
+    }
+
+    fn remove_session(&self, id: SessionId) {
+        self.clear_prompt_of(id);
+        self.close_sso_window(id);
+        let s = {
+            let mut sessions = self.sessions.borrow_mut();
+            let Some(i) = sessions.iter().position(|s| s.id == id) else {
+                return;
+            };
+            sessions.remove(i)
+        };
+        if matches!(s.vpn.state(), State::Error(_)) {
+            self.failed.set(true);
+        }
+        {
+            let mut ended = self.ended.borrow_mut();
+            ended.push((id, s.name.clone()));
+            if ended.len() > 16 {
+                ended.remove(0);
+            }
+        }
+        self.sessions_group.remove(&s.row.expander);
+        self.sync_ui();
+    }
+
+    /// Follow the tunnels running that this app doesn't (started from the command
+    /// line, by the browser, or by this app before it restarted).
+    fn attach_running(&self) {
+        for (socket, status) in Vpn::running() {
+            let known = self
+                .sessions
+                .borrow()
+                .iter()
+                .any(|s| match s.vpn.attached_pid() {
+                    Some(pid) => pid == status.pid,
+                    None => s.name == status.name(),
+                });
+            if known {
+                continue;
+            }
+            let tx = self.tx.clone();
+            let name = status.name().to_string();
+            let since = status.since;
+            let id = self.add_session(name, None, false, move |id| {
+                Vpn::attach(id, tx, socket, status)
+            });
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let up_for = Duration::from_secs(now.saturating_sub(since));
+            self.with_session(id, |s| {
+                s.since = (since > 0).then(|| std::time::Instant::now() - up_for);
+            });
+        }
     }
 
     pub(crate) fn init_tray(self: &Rc<Self>) {
@@ -286,11 +511,10 @@ impl App {
             return;
         }
         use ksni::blocking::TrayMethods;
+        self.update_tray();
         let tray = tray::VpnTray {
-            state: self.vpn.borrow().state.clone(),
+            view: self.tray_view.clone(),
             tx: self.tx.clone(),
-            profile: self.active_profile.clone(),
-            profiles: self.tray_profiles.clone(),
         };
         match tray.spawn() {
             Ok(h) => *self.tray.borrow_mut() = Some(h),
