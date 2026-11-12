@@ -2,8 +2,9 @@
 //! every packet is prefixed with its 16-bit big-endian length.
 
 use super::config::{Proto, Remote};
+use crate::tunnel_common::resolve_v4;
 use std::io::Read;
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpStream, ToSocketAddrs, UdpSocket};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpStream, UdpSocket};
 use std::os::unix::io::AsRawFd;
 use std::time::Duration;
 
@@ -114,20 +115,6 @@ fn split_frames(rx: &mut Vec<u8>, out: &mut Vec<Vec<u8>>) {
         p += 2 + n;
     }
     rx.drain(..p);
-}
-
-pub fn resolve_v4(host: &str, port: u16) -> Result<Ipv4Addr, String> {
-    if let Ok(ip) = host.parse::<Ipv4Addr>() {
-        return Ok(ip);
-    }
-    (host, port)
-        .to_socket_addrs()
-        .map_err(|e| format!("resolve {host}: {e}"))?
-        .find_map(|sa| match sa.ip() {
-            std::net::IpAddr::V4(v4) => Some(v4),
-            _ => None,
-        })
-        .ok_or_else(|| format!("no IPv4 address for {host}"))
 }
 
 #[cfg(test)]

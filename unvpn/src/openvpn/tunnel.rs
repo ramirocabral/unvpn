@@ -11,6 +11,7 @@ use super::session::{Creds, DataParams, Engine, Event};
 use super::tls::{self, PeerInfo};
 use crate::sysnet;
 use crate::tun;
+use crate::tunnel_common::{self, Reconnect, RoutePlan};
 use std::io::{Read, Write};
 use std::net::Ipv4Addr;
 use std::os::unix::io::AsRawFd;
@@ -509,21 +510,14 @@ pub fn run(mut p: Prepared, prompter: &mut dyn Prompter, opts: RunOpts) -> Resul
         return Err("disconnect requested before the tunnel came up".into());
     }
 
-    let mut restore = sysnet::NetRestore::default();
-    if opts.no_routes {
-        out!("# --no-routes: NOT installing routes or DNS.");
-    } else {
-        restore.routes = setup_routes(server, &tun_name, &p.cfg, &push);
-        let mut domains = push.domains.clone();
-        for o in &p.cfg.dhcp_options {
-            let mut tmp = PushConfig::default();
-            tmp.dhcp_option(&o.iter().map(String::as_str).collect::<Vec<_>>());
-            domains.extend(tmp.domains);
-        }
-        restore.dns = sysnet::set_dns(&sysnet::tunnelled_dns(&dns, &tun_name), &domains.join(" "));
-        restore.leak = crate::leakguard::enable(&tun_name, &[server])?;
+    let mut domains = push.domains.clone();
+    for o in &p.cfg.dhcp_options {
+        let mut tmp = PushConfig::default();
+        tmp.dhcp_option(&o.iter().map(String::as_str).collect::<Vec<_>>());
+        domains.extend(tmp.domains);
     }
-    restore.commit(&tun_name);
+    let plan = (!opts.no_routes).then(|| route_plan(server, &p.cfg, &push));
+    let restore = tunnel_common::configure(&tun_name, plan.as_ref(), &dns, &domains.join(" "))?;
     if opts.watch_stdin {
         sysnet::spawn_stdin_disconnect(&OV_STOP);
     }
@@ -543,7 +537,6 @@ pub fn run(mut p: Prepared, prompter: &mut dyn Prompter, opts: RunOpts) -> Resul
     crate::report::gateway(&p.cfg.remotes[remote_idx].host);
     crate::report::up(&tun_name, Some(ifc_local.into()));
 
-    let mut fail_streak = 0u32;
     let result: Result<(), String> = 'session: loop {
         let outcome = data_loop(
             &mut engine,
@@ -563,54 +556,41 @@ pub fn run(mut p: Prepared, prompter: &mut dyn Prompter, opts: RunOpts) -> Resul
         out!("# tunnel dropped ({reason})");
         crate::report::reconnecting();
         let explicit_restart = reason.contains("RESTART") || reason.contains("server exiting");
-        let mut reconnected = false;
-        while fail_streak < MAX_RECONNECT_TRIES {
-            if stopped() {
-                break 'session Ok(());
+        let opened = tunnel_common::reconnect(
+            &OV_STOP,
+            MAX_RECONNECT_TRIES,
+            explicit_restart.then_some(2),
+            |e| e.starts_with("AUTH FAILED"),
+            || establish_any(&mut p, prompter, remote_idx),
+        );
+        let (est, idx) = match opened {
+            Reconnect::Up(up) => up,
+            Reconnect::Stopped => break 'session Ok(()),
+            Reconnect::Fatal(e) => {
+                break 'session Err(format!(
+                    "{e} (session expired — reconnect with fresh credentials)"
+                ))
             }
-            fail_streak += 1;
-            let delay = if explicit_restart && fail_streak == 1 {
-                2
-            } else {
-                reconnect_delay(fail_streak)
-            };
-            out!("# reconnecting in {delay}s (attempt {fail_streak}/{MAX_RECONNECT_TRIES}) …");
-            if sysnet::sleep_interruptible(delay, &OV_STOP) {
-                break 'session Ok(());
+            Reconnect::GaveUp => {
+                break 'session Err(format!(
+                    "tunnel dropped ({reason}) and gave up after {MAX_RECONNECT_TRIES} attempts"
+                ))
             }
-            match establish_any(&mut p, prompter, remote_idx) {
-                Ok((est, idx)) => {
-                    remote_idx = idx;
-                    adopt_auth_token(&mut p, &est.push);
-                    if let Some((l, r)) = est.push.ifconfig {
-                        if (l, r) != (ifc_local, ifc_peer) {
-                            out!("# server assigned a new address {l}; re-addressing {tun_name}");
-                            let _ = configure_addr(&tun_name, topology, ifc_local, ifc_peer, false);
-                            let _ = configure_addr(&tun_name, est.push.topology(), l, r, true);
-                        }
-                    }
-                    engine = est.engine;
-                    push = est.push;
-                    let ip = push.ifconfig.map(|x| x.0).unwrap_or(ifc_local);
-                    out!("# reconnected — tunnel back up (IP {ip})");
-                    crate::report::recovered(Some(ip.into()));
-                    reconnected = true;
-                    break;
-                }
-                Err(e) if e.starts_with("AUTH FAILED") => {
-                    break 'session Err(format!(
-                        "{e} (session expired — reconnect with fresh credentials)"
-                    ));
-                }
-                Err(e) => out!("# reconnect attempt {fail_streak} failed: {e}"),
+        };
+        remote_idx = idx;
+        adopt_auth_token(&mut p, &est.push);
+        if let Some((l, r)) = est.push.ifconfig {
+            if (l, r) != (ifc_local, ifc_peer) {
+                out!("# server assigned a new address {l}; re-addressing {tun_name}");
+                let _ = configure_addr(&tun_name, topology, ifc_local, ifc_peer, false);
+                let _ = configure_addr(&tun_name, est.push.topology(), l, r, true);
             }
         }
-        if !reconnected {
-            break 'session Err(format!(
-                "tunnel dropped ({reason}) and gave up after {MAX_RECONNECT_TRIES} attempts"
-            ));
-        }
-        fail_streak = 0;
+        engine = est.engine;
+        push = est.push;
+        let ip = push.ifconfig.map(|x| x.0).unwrap_or(ifc_local);
+        out!("# reconnected — tunnel back up (IP {ip})");
+        crate::report::recovered(Some(ip.into()));
     };
 
     out!("# disconnecting — notifying the server, restoring DNS/routes …");
@@ -928,120 +908,6 @@ fn data_loop(
     }
 }
 
-fn reconnect_delay(attempt: u32) -> u64 {
-    match attempt {
-        1 => 1,
-        2 => 2,
-        3 => 5,
-        _ => 10,
-    }
-}
-
-/// Pin the server to its pre-VPN path, keep `net_gateway` routes outside the
-/// tunnel, then install the tunnel routes — one `ip -batch`. Returns the
-/// `route del` lines for teardown (minus routes that already existed).
-fn setup_routes(server: Ipv4Addr, tun: &str, cfg: &Config, push: &PushConfig) -> Vec<String> {
-    let mut add: Vec<String> = Vec::new();
-    let mut del: Vec<String> = Vec::new();
-    fn pair(add: &mut Vec<String>, del: &mut Vec<String>, net: String, suffix: &str) {
-        add.push(format!("route add {net} {suffix}"));
-        del.push(format!("route del {net} {suffix}"));
-    }
-    let via = |dst: Ipv4Addr| {
-        original_path(dst).map(|(via, dev)| {
-            via.map(|v| format!("via {v} dev {dev}"))
-                .unwrap_or_else(|| format!("dev {dev}"))
-        })
-    };
-
-    let mut routes: Vec<push::Route> = if cfg.route_nopull {
-        Vec::new()
-    } else {
-        push.routes.clone()
-    };
-    for r in &cfg.routes {
-        if let Some(rt) = push::parse_route(&r.iter().map(String::as_str).collect::<Vec<_>>()) {
-            routes.push(rt);
-        }
-    }
-    let full = cfg.redirect_gateway || (!cfg.route_nopull && push.redirect_gateway);
-
-    let mut pin: Option<(usize, String)> = None;
-    if let Some(s) = via(server) {
-        pin = Some((add.len(), format!("{server}/32 ({s})")));
-        pair(&mut add, &mut del, format!("{server}/32"), &s);
-    }
-    for r in routes.iter().filter(|r| r.bypass) {
-        if let Some(s) = via(r.net) {
-            pair(&mut add, &mut del, r.to_cidr(), &s);
-        }
-    }
-    let dev = format!("dev {tun}");
-    if full {
-        for net in ["0.0.0.0/1", "128.0.0.0/1"] {
-            pair(&mut add, &mut del, net.to_string(), &dev);
-        }
-        out!("# full tunnel: 0.0.0.0/1 + 128.0.0.0/1 via {tun}");
-    }
-    let split: Vec<_> = routes.iter().filter(|r| !r.bypass).collect();
-    for r in &split {
-        pair(&mut add, &mut del, r.to_cidr(), &dev);
-    }
-    if !split.is_empty() {
-        out!("# split tunnel: {} route(s) via {tun}", split.len());
-    }
-    if !full && split.is_empty() {
-        out!("# note: server pushed no routes — only the tunnel subnet is reachable");
-    }
-
-    let failed = tun::ip_batch_failed(&add).unwrap_or_default();
-    if let Some((i, what)) = pin {
-        if failed.contains(&i) {
-            out!("# server route {what} already present — left as is");
-        } else {
-            out!("# pinned server route {what}");
-        }
-    }
-    if !failed.is_empty() {
-        out!(
-            "# {} route(s) already existed — not ours, kept on disconnect",
-            failed.len()
-        );
-    }
-    del.into_iter()
-        .enumerate()
-        .filter(|(i, _)| !failed.contains(i))
-        .map(|(_, d)| d)
-        .collect()
-}
-
-/// Parse `ip route get <ip>` for the current `via`/`dev` of a destination.
-fn original_path(dst: Ipv4Addr) -> Option<(Option<String>, String)> {
-    let out = std::process::Command::new("ip")
-        .args(["route", "get", &dst.to_string()])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
-    let toks: Vec<&str> = text
-        .lines()
-        .next()
-        .unwrap_or("")
-        .split_whitespace()
-        .collect();
-    let via = toks
-        .windows(2)
-        .find(|w| w[0] == "via")
-        .map(|w| w[1].to_string());
-    let dev = toks
-        .windows(2)
-        .find(|w| w[0] == "dev")
-        .map(|w| w[1].to_string())?;
-    Some((via, dev))
-}
-
 /// `--probe`: reset + TLS handshake only, no credentials. Reports the server cert,
 /// the TLS parameters and whether the control-channel wrap key is right.
 pub fn probe(p: &Prepared) -> Result<(), String> {
@@ -1105,6 +971,28 @@ pub fn probe(p: &Prepared) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Pushed routes (unless `route-nopull`) plus the config's own; `net_gateway`
+/// ones stay outside.
+fn route_plan(server: Ipv4Addr, cfg: &Config, push: &PushConfig) -> RoutePlan {
+    let mut routes: Vec<push::Route> = if cfg.route_nopull {
+        Vec::new()
+    } else {
+        push.routes.clone()
+    };
+    for r in &cfg.routes {
+        if let Some(rt) = push::parse_route(&r.iter().map(String::as_str).collect::<Vec<_>>()) {
+            routes.push(rt);
+        }
+    }
+    let net = |r: &push::Route| (r.net, tun::mask_to_prefix(r.mask));
+    RoutePlan {
+        gateway: Some(server),
+        exclude: routes.iter().filter(|r| r.bypass).map(net).collect(),
+        full: cfg.redirect_gateway || (!cfg.route_nopull && push.redirect_gateway),
+        include: routes.iter().filter(|r| !r.bypass).map(net).collect(),
+    }
 }
 
 #[cfg(test)]

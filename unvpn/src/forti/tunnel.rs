@@ -16,6 +16,7 @@ use crate::net::http::{self, Request};
 use crate::ppp::{self, Framing};
 use crate::sysnet;
 use crate::tun;
+use crate::tunnel_common::{self, resolve_v4, RoutePlan};
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr};
 use std::os::unix::io::AsRawFd;
@@ -98,41 +99,18 @@ pub fn run(
 
     // Distinct name from the Check Point back-end ("unvpn0") so both tunnels can be
     // up at once without colliding.
-    let (mut tun_file, tun_name) = tun::open_tun("cpfg0")?;
-    tun::ip(&["addr", "add", &format!("{assigned}/32"), "dev", &tun_name])?;
-    tun::ip(&[
-        "link",
-        "set",
-        "dev",
-        &tun_name,
-        "up",
-        "mtu",
-        &up.mtu.to_string(),
-    ])?;
-    crate::netmon::ignore_iface(&tun_name);
-    println!("# tun {tun_name} up — {assigned}/32, mtu {}", up.mtu);
-
-    // From here on every exit path must undo what we change, so signals (incl.
-    // SIGHUP from a closed terminal) only raise the stop flag; and a disconnect the
-    // GUI sent while we were still connecting means: don't touch routes/DNS at all.
-    sysnet::install_stop_signals(&FORTI_STOP);
-    if sysnet::stop_requested() || FORTI_STOP.load(Ordering::SeqCst) {
-        return Err("disconnect requested before the tunnel came up".into());
-    }
-
-    let mut restore = sysnet::NetRestore::default();
-    if no_routes {
-        out!("# --no-routes: installing no routes/DNS (reach hosts with `ping -I {tun_name}`)");
+    let (mut tun_file, tun_name) = tunnel_common::open_tun("cpfg0", (assigned, 32), up.mtu)?;
+    tunnel_common::arm_stop(&FORTI_STOP)?;
+    let plan = if no_routes {
+        None
     } else {
         let gw = match up.gw {
-            Some(g) => Some(g),
-            None => Some(resolve_v4(&session.host, session.port)?),
+            Some(g) => g,
+            None => resolve_v4(&session.host, session.port)?,
         };
-        restore.routes = setup_routes(gw, &tun_name, &cfg);
-        restore.dns = sysnet::set_dns(&sysnet::tunnelled_dns(&dns, &tun_name), &cfg.domains);
-        restore.leak = crate::leakguard::enable(&tun_name, &gw.into_iter().collect::<Vec<_>>())?;
-    }
-    restore.commit(&tun_name);
+        Some(route_plan(Some(gw), &cfg))
+    };
+    let restore = tunnel_common::configure(&tun_name, plan.as_ref(), &dns, &cfg.domains)?;
 
     sysnet::spawn_stdin_disconnect(&FORTI_STOP);
     tun::set_nonblocking(&tun_file);
@@ -646,126 +624,15 @@ fn data_loop(
     }
 }
 
-fn resolve_v4(host: &str, port: u16) -> Result<Ipv4Addr, String> {
-    use std::net::ToSocketAddrs;
-    if let Ok(ip) = host.parse::<Ipv4Addr>() {
-        return Ok(ip);
+/// The gateway's split routes, or a full tunnel when it lists none.
+fn route_plan(gw: Option<Ipv4Addr>, cfg: &config::TunnelConfig) -> RoutePlan {
+    let net = |r: &config::Route| (r.net, tun::mask_to_prefix(r.mask));
+    RoutePlan {
+        gateway: gw,
+        exclude: cfg.exclude.iter().map(net).collect(),
+        full: cfg.routes.is_empty(),
+        include: cfg.routes.iter().map(net).collect(),
     }
-    (host, port)
-        .to_socket_addrs()
-        .map_err(|e| format!("resolve {host}: {e}"))?
-        .find_map(|sa| match sa.ip() {
-            std::net::IpAddr::V4(v4) => Some(v4),
-            _ => None,
-        })
-        .ok_or_else(|| format!("no IPv4 address for {host}"))
-}
-
-/// Pin the gateway to its pre-VPN path, then install the tunnel's routes — all in
-/// one `ip -batch` (big split-tunnels push hundreds of routes). Returns the
-/// `route del …` lines for exactly the adds that succeeded: a route that already
-/// existed (the LAN's own route in the exclude list, another session's gateway
-/// pin) is not ours and must survive our teardown.
-fn setup_routes(gw: Option<Ipv4Addr>, tun: &str, cfg: &config::TunnelConfig) -> Vec<String> {
-    let mut add_lines: Vec<String> = Vec::new();
-    let mut del_lines: Vec<String> = Vec::new();
-    let pair = |net: String, suffix: &str, add: &mut Vec<String>, del: &mut Vec<String>| {
-        add.push(format!("route add {net} {suffix}"));
-        del.push(format!("route del {net} {suffix}"));
-    };
-
-    // 1) Keep the encrypted tunnel's own packets off the tun: pin gw/32 to the
-    // current path (so 0/1+128/1 or split routes don't loop it back).
-    let mut pin: Option<(usize, String)> = None;
-    if let Some((gw, (via, dev))) = gw.and_then(|g| original_path(g).map(|p| (g, p))) {
-        let suffix = match &via {
-            Some(v) => format!("via {v} dev {dev}"),
-            None => format!("dev {dev}"),
-        };
-        pin = Some((add_lines.len(), format!("{gw}/32 ({suffix})")));
-        pair(format!("{gw}/32"), &suffix, &mut add_lines, &mut del_lines);
-    }
-
-    // 2) Exclude routes (split-tunnel negate) also stay on the original path.
-    for ex in &cfg.exclude {
-        if let Some((via, dev)) = original_path(ex.net) {
-            let prefix = tun::mask_to_prefix(ex.mask);
-            let suffix = match &via {
-                Some(v) => format!("via {v} dev {dev}"),
-                None => format!("dev {dev}"),
-            };
-            pair(
-                format!("{}/{}", ex.net, prefix),
-                &suffix,
-                &mut add_lines,
-                &mut del_lines,
-            );
-        }
-    }
-
-    // 3) Tunnel routes: split list, or a full tunnel via 0/1 + 128/1 (which beats
-    // the real default without deleting it, so the gateway pin above holds).
-    let dev_suffix = format!("dev {tun}");
-    if cfg.routes.is_empty() {
-        for net in ["0.0.0.0/1", "128.0.0.0/1"] {
-            pair(net.to_string(), &dev_suffix, &mut add_lines, &mut del_lines);
-        }
-        out!("# full tunnel: 0.0.0.0/1 + 128.0.0.0/1 via {tun}");
-    } else {
-        for r in &cfg.routes {
-            let prefix = tun::mask_to_prefix(r.mask);
-            pair(
-                format!("{}/{}", r.net, prefix),
-                &dev_suffix,
-                &mut add_lines,
-                &mut del_lines,
-            );
-        }
-        out!("# split tunnel: {} route(s) via {tun}", cfg.routes.len());
-    }
-
-    let failed = tun::ip_batch_failed(&add_lines).unwrap_or_default();
-    if let Some((i, what)) = pin {
-        if failed.contains(&i) {
-            out!("# gateway route {what} already present — left as is");
-        } else {
-            out!("# pinned gateway route {what}");
-        }
-    }
-    if !failed.is_empty() {
-        out!(
-            "# {} route(s) already existed — not ours, kept on disconnect",
-            failed.len()
-        );
-    }
-    del_lines
-        .into_iter()
-        .enumerate()
-        .filter(|(i, _)| !failed.contains(i))
-        .map(|(_, d)| d)
-        .collect()
-}
-
-fn original_path(dst: Ipv4Addr) -> Option<(Option<String>, String)> {
-    let out = std::process::Command::new("ip")
-        .args(["route", "get", &dst.to_string()])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
-    let first = text.lines().next().unwrap_or("");
-    let toks: Vec<&str> = first.split_whitespace().collect();
-    let via = toks
-        .windows(2)
-        .find(|w| w[0] == "via")
-        .map(|w| w[1].to_string());
-    let dev = toks
-        .windows(2)
-        .find(|w| w[0] == "dev")
-        .map(|w| w[1].to_string())?;
-    Some((via, dev))
 }
 
 #[cfg(test)]

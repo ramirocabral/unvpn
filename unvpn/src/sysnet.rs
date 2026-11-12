@@ -143,33 +143,6 @@ pub fn tunnelled_dns<A: std::fmt::Display + std::fmt::Debug + Clone>(
     keep
 }
 
-/// The pre-VPN `(via, dev)` the kernel picks for `dst` (`ip route get`).
-pub fn original_path(dst: std::net::Ipv4Addr) -> Option<(Option<String>, String)> {
-    let out = std::process::Command::new("ip")
-        .args(["route", "get", &dst.to_string()])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
-    let toks: Vec<&str> = text
-        .lines()
-        .next()
-        .unwrap_or("")
-        .split_whitespace()
-        .collect();
-    let via = toks
-        .windows(2)
-        .find(|w| w[0] == "via")
-        .map(|w| w[1].to_string());
-    let dev = toks
-        .windows(2)
-        .find(|w| w[0] == "dev")
-        .map(|w| w[1].to_string())?;
-    Some((via, dev))
-}
-
 /// The `dev` the kernel picks for `dst` (`ip route get`).
 fn route_dev(dst: &str) -> Option<String> {
     let out = std::process::Command::new("ip")

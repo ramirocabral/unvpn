@@ -417,7 +417,7 @@ fn route_plan(
 /// Install the routes in one `ip -batch`; returns the `route del` lines for the
 /// ones we actually added (an already-present route isn't ours to remove).
 fn setup_routes(cfg: &Config, ifname: &str, endpoints: &[Option<SocketAddr>]) -> Vec<String> {
-    let add = route_plan(cfg, ifname, endpoints, original_path);
+    let add = route_plan(cfg, ifname, endpoints, crate::tunnel_common::original_path);
     match cfg.interface.table {
         Table::Off => out!("# Table = off: not installing routes"),
         Table::Id(t) => out!("# routes go to table {t} (policy routing is up to you)"),
@@ -458,30 +458,6 @@ fn setup_routes(cfg: &Config, ifname: &str, endpoints: &[Option<SocketAddr>]) ->
         .filter(|(i, _)| !failed.contains(i))
         .map(|(_, l)| l.replacen("route add ", "route del ", 1))
         .collect()
-}
-
-/// `via X dev Y` / `dev Y` of the current route to `dst` (`ip route get`).
-fn original_path(dst: IpAddr) -> Option<String> {
-    let out = std::process::Command::new("ip")
-        .args(["route", "get", &dst.to_string()])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
-    let toks: Vec<&str> = text
-        .lines()
-        .next()
-        .unwrap_or("")
-        .split_whitespace()
-        .collect();
-    let via = toks.windows(2).find(|w| w[0] == "via").map(|w| w[1]);
-    let dev = toks.windows(2).find(|w| w[0] == "dev").map(|w| w[1])?;
-    Some(match via {
-        Some(v) => format!("via {v} dev {dev}"),
-        None => format!("dev {dev}"),
-    })
 }
 
 #[cfg(test)]

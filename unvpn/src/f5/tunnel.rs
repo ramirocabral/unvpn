@@ -15,6 +15,7 @@ use crate::net::http::{self, Request};
 use crate::ppp::{self, Framing};
 use crate::sysnet;
 use crate::tun;
+use crate::tunnel_common::{self, resolve_v4, Reconnect, RoutePlan};
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr};
 use std::os::unix::io::AsRawFd;
@@ -143,53 +144,23 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
 
     // The tun and its routes/DNS persist across reconnects — only the TLS/PPP channel
     // is rebuilt when the tunnel drops.
-    let (mut tun_file, tun_name) = tun::open_tun(TUN_NAME)?;
-    tun::ip(&["addr", "add", &format!("{assigned}/32"), "dev", &tun_name])?;
-    tun::ip(&[
-        "link",
-        "set",
-        "dev",
-        &tun_name,
-        "up",
-        "mtu",
-        &mtu.to_string(),
-    ])?;
-    crate::netmon::ignore_iface(&tun_name);
-    println!(
-        "# tun {tun_name} up — {assigned}/32, mtu {mtu} (over {})",
-        path(on_dtls)
-    );
+    let (mut tun_file, tun_name) = tunnel_common::open_tun(TUN_NAME, (assigned, 32), mtu)?;
+    out!("# data path: {}", path(on_dtls));
     let mut cur_mtu = mtu;
 
-    // From here on every exit path must undo what we change: signals (incl. SIGHUP
-    // from a closed terminal) only raise the stop flag, and a disconnect that came
-    // in while we were connecting means we don't touch routes/DNS at all.
     F5_STOP.store(false, Ordering::SeqCst);
-    sysnet::install_stop_signals(&F5_STOP);
-    if sysnet::stop_requested() {
-        return Err("disconnect requested before the tunnel came up".into());
-    }
-
-    let mut restore = sysnet::NetRestore::default();
-    if no_routes {
-        out!("# --no-routes: NOT installing routes or DNS.");
-        out!(
-            "#   test the data plane with:  ping -I {tun_name} {}",
-            dns.first()
-                .map(|d| d.to_string())
-                .unwrap_or_else(|| "<internal-host>".into())
-        );
+    tunnel_common::arm_stop(&F5_STOP)?;
+    let plan = if no_routes {
+        None
     } else {
         let gw = match gw_peer {
             Some(IpAddr::V4(v4)) => Some(v4),
             Some(IpAddr::V6(v6)) => v6.to_ipv4_mapped(), // a v6 transport can't loop into IPv4 routes
             None => Some(resolve_v4(&session.host, session.port)?),
         };
-        restore.routes = setup_routes(gw, &tun_name, &cfg);
-        restore.dns = sysnet::set_dns(&sysnet::tunnelled_dns(&dns, &tun_name), &cfg.domains);
-        restore.leak = crate::leakguard::enable(&tun_name, &gw.into_iter().collect::<Vec<_>>())?;
-    }
-    restore.commit(&tun_name);
+        Some(route_plan(gw, &cfg))
+    };
+    let restore = tunnel_common::configure(&tun_name, plan.as_ref(), &dns, &cfg.domains)?;
 
     // The F5 protocol expects the tunnel to drop and the client to transparently
     // reconnect (`autoreconnectifdropped` // reusing the same session (sess/Z + cookies) with no re-auth.
@@ -228,7 +199,6 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
     crate::report::up(&tun_name, Some(assigned.into()));
     tun::set_nonblocking(&tun_file);
 
-    let mut fail_streak = 0u32;
     let final_result: Result<(), String> = 'session: loop {
         let outcome = data_loop(&mut conn, &mut tun_file, sock_fd, &ka, on_dtls);
         if F5_STOP.load(Ordering::SeqCst) {
@@ -250,66 +220,43 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
             ));
         }
 
-        let mut reconnected = false;
-        while fail_streak < MAX_RECONNECT_TRIES {
-            if F5_STOP.load(Ordering::SeqCst) {
-                break 'session Ok(());
-            }
-            fail_streak += 1;
-            let delay = reconnect_delay(fail_streak);
-            out!("# reconnecting in {delay}s (attempt {fail_streak}/{MAX_RECONNECT_TRIES}) …");
-            if sysnet::sleep_interruptible(delay, &F5_STOP) {
-                break 'session Ok(());
-            }
-            match open_channel(session, &cfg, want_dtls) {
-                Ok(Channel {
-                    conn: c,
-                    fd,
-                    ip: new_ip,
-                    mtu: new_mtu,
-                    dtls: d,
-                    ..
-                }) => {
-                    conn = c;
-                    sock_fd = fd;
-                    on_dtls = d;
-                    if new_mtu < cur_mtu {
-                        let _ = tun::ip(&[
-                            "link",
-                            "set",
-                            "dev",
-                            &tun_name,
-                            "mtu",
-                            &new_mtu.to_string(),
-                        ]);
-                        cur_mtu = new_mtu;
-                    }
-                    if new_ip != assigned {
-                        out!("# gateway reassigned IP {assigned} → {new_ip}");
-                        let _ =
-                            tun::ip(&["addr", "del", &format!("{assigned}/32"), "dev", &tun_name]);
-                        let _ =
-                            tun::ip(&["addr", "add", &format!("{new_ip}/32"), "dev", &tun_name]);
-                        assigned = new_ip;
-                        ka.src = new_ip; // keepalive ICMP must use the current tunnel IP
-                    }
-                    out!(
-                        "# reconnected — tunnel back up over {} (IP {assigned})",
-                        path(on_dtls)
-                    );
-                    crate::report::recovered(Some(assigned.into()));
-                    reconnected = true;
-                    break;
-                }
-                Err(e) => out!("# reconnect attempt {fail_streak} failed: {e}"),
-            }
-        }
-        if !reconnected {
-            break 'session Err(format!(
+        let opened = tunnel_common::reconnect(
+            &F5_STOP,
+            MAX_RECONNECT_TRIES,
+            None,
+            |_| false,
+            || open_channel(session, &cfg, want_dtls),
+        );
+        let Channel {
+            conn: c,
+            fd,
+            ip: new_ip,
+            mtu: new_mtu,
+            dtls: d,
+            ..
+        } = match opened {
+            Reconnect::Up(c) => c,
+            Reconnect::Stopped => break 'session Ok(()),
+            Reconnect::Fatal(e) => break 'session Err(e),
+            Reconnect::GaveUp => break 'session Err(format!(
                 "tunnel dropped ({reason}) and gave up after {MAX_RECONNECT_TRIES} reconnect attempts (session likely expired — reconnect)"
-            ));
+            )),
+        };
+        conn = c;
+        sock_fd = fd;
+        on_dtls = d;
+        if new_mtu < cur_mtu {
+            let _ = tun::ip(&["link", "set", "dev", &tun_name, "mtu", &new_mtu.to_string()]);
+            cur_mtu = new_mtu;
         }
-        fail_streak = 0;
+        tunnel_common::readdress(&tun_name, (assigned, 32), (new_ip, 32));
+        assigned = new_ip;
+        ka.src = new_ip; // keepalive ICMP must use the current tunnel IP
+        out!(
+            "# reconnected — tunnel back up over {} (IP {assigned})",
+            path(on_dtls)
+        );
+        crate::report::recovered(Some(assigned.into()));
     };
 
     // NetRestore restores DNS and our routes when it drops.
@@ -554,15 +501,6 @@ fn link_mtu(peer_mru: Option<u16>, record_mtu: Option<usize>) -> u32 {
     mtu
 }
 
-fn reconnect_delay(attempt: u32) -> u64 {
-    match attempt {
-        1 => 1,
-        2 => 2,
-        3 => 5,
-        _ => 10,
-    }
-}
-
 /// Tokens are appended as: sess/Z raw, hostname base64.
 fn build_myvpn_path(cfg: &F5Options) -> String {
     let yn = |b: bool| if b { "yes" } else { "no" };
@@ -773,130 +711,6 @@ fn inet_checksum(data: &[u8]) -> u16 {
     !(sum as u16)
 }
 
-fn resolve_v4(host: &str, port: u16) -> Result<Ipv4Addr, String> {
-    use std::net::ToSocketAddrs;
-    if let Ok(ip) = host.parse::<Ipv4Addr>() {
-        return Ok(ip);
-    }
-    (host, port)
-        .to_socket_addrs()
-        .map_err(|e| format!("resolve {host}: {e}"))?
-        .find_map(|sa| match sa.ip() {
-            std::net::IpAddr::V4(v4) => Some(v4),
-            _ => None,
-        })
-        .ok_or_else(|| format!("no IPv4 address for {host}"))
-}
-
-/// Pin the gateway to its pre-VPN path, install exclude routes on that path, then
-/// the tunnel routes — all in one `ip -batch`. Returns the teardown lines.
-fn setup_routes(gw: Option<Ipv4Addr>, tun: &str, cfg: &F5Options) -> Vec<String> {
-    let mut add_lines: Vec<String> = Vec::new();
-    let mut del_lines: Vec<String> = Vec::new();
-    let pair = |net: String, suffix: &str, add: &mut Vec<String>, del: &mut Vec<String>| {
-        add.push(format!("route add {net} {suffix}"));
-        del.push(format!("route del {net} {suffix}"));
-    };
-
-    // Keep the encrypted tunnel's own packets off the tun.
-    let mut pin: Option<(usize, String)> = None;
-    if let Some((gw, (via, dev))) = gw.and_then(|g| original_path(g).map(|p| (g, p))) {
-        let suffix = match &via {
-            Some(v) => format!("via {v} dev {dev}"),
-            None => format!("dev {dev}"),
-        };
-        pin = Some((add_lines.len(), format!("{gw}/32 ({suffix})")));
-        pair(format!("{gw}/32"), &suffix, &mut add_lines, &mut del_lines);
-    }
-
-    for ex in &cfg.exclude {
-        if let Some((via, dev)) = original_path(ex.net) {
-            let prefix = tun::mask_to_prefix(ex.mask);
-            let suffix = match &via {
-                Some(v) => format!("via {v} dev {dev}"),
-                None => format!("dev {dev}"),
-            };
-            pair(
-                format!("{}/{}", ex.net, prefix),
-                &suffix,
-                &mut add_lines,
-                &mut del_lines,
-            );
-        }
-    }
-
-    let dev_suffix = format!("dev {tun}");
-    if cfg.default_route {
-        for net in ["0.0.0.0/1", "128.0.0.0/1"] {
-            pair(net.to_string(), &dev_suffix, &mut add_lines, &mut del_lines);
-        }
-        out!("# full tunnel: 0.0.0.0/1 + 128.0.0.0/1 via {tun}");
-    }
-    for r in &cfg.routes {
-        let prefix = tun::mask_to_prefix(r.mask);
-        pair(
-            format!("{}/{}", r.net, prefix),
-            &dev_suffix,
-            &mut add_lines,
-            &mut del_lines,
-        );
-    }
-    if !cfg.routes.is_empty() {
-        out!(
-            "# split tunnel: {} include route(s) via {tun}",
-            cfg.routes.len()
-        );
-    }
-    if !cfg.default_route && cfg.routes.is_empty() {
-        out!("# WARNING: no default route and no split includes — tunnel has no routes");
-    }
-
-    // Delete on teardown only what we actually added (see forti::tunnel::setup_routes).
-    let failed = tun::ip_batch_failed(&add_lines).unwrap_or_default();
-    if let Some((i, what)) = pin {
-        if failed.contains(&i) {
-            out!("# gateway route {what} already present — left as is");
-        } else {
-            out!("# pinned gateway route {what}");
-        }
-    }
-    if !failed.is_empty() {
-        out!(
-            "# {} route(s) already existed — not ours, kept on disconnect",
-            failed.len()
-        );
-    }
-    del_lines
-        .into_iter()
-        .enumerate()
-        .filter(|(i, _)| !failed.contains(i))
-        .map(|(_, d)| d)
-        .collect()
-}
-
-/// Current `via`/`dev` for a destination, from `ip route get`.
-fn original_path(dst: Ipv4Addr) -> Option<(Option<String>, String)> {
-    let out = std::process::Command::new("ip")
-        .args(["route", "get", &dst.to_string()])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
-    let first = text.lines().next().unwrap_or("");
-    let toks: Vec<&str> = first.split_whitespace().collect();
-    let via = toks
-        .windows(2)
-        .find(|w| w[0] == "via")
-        .map(|w| w[1].to_string());
-    let dev = toks
-        .windows(2)
-        .find(|w| w[0] == "dev")
-        .map(|w| w[1].to_string())?;
-    Some((via, dev))
-}
-
 fn local_hostname() -> String {
     std::fs::read_to_string("/proc/sys/kernel/hostname")
         .ok()
@@ -930,6 +744,17 @@ fn base64(data: &[u8]) -> String {
         });
     }
     out
+}
+
+/// Excludes stay outside, the default route and includes go in.
+fn route_plan(gw: Option<Ipv4Addr>, cfg: &F5Options) -> RoutePlan {
+    let net = |r: &super::config::Route| (r.net, tun::mask_to_prefix(r.mask));
+    RoutePlan {
+        gateway: gw,
+        exclude: cfg.exclude.iter().map(net).collect(),
+        full: cfg.default_route,
+        include: cfg.routes.iter().map(net).collect(),
+    }
 }
 
 #[cfg(test)]

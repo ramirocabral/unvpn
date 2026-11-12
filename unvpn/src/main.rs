@@ -30,6 +30,7 @@ mod replay;
 mod report;
 mod sysnet;
 mod tun;
+mod tunnel_common;
 mod wireguard;
 
 use net::http;
@@ -281,18 +282,8 @@ fn run_tunnel(
     use std::sync::{mpsc, Arc, RwLock};
 
     let prefix = tun::mask_to_prefix(om_mask);
-    let (tun_rd, tun_name) = tun::open_tun("unvpn0")?;
+    let (tun_rd, tun_name) = tunnel_common::open_tun("unvpn0", (om_ip, prefix), 1400)?;
     let tun_wr = tun_rd.try_clone().map_err(|e| e.to_string())?;
-    tun::ip(&[
-        "addr",
-        "add",
-        &format!("{om_ip}/{prefix}"),
-        "dev",
-        &tun_name,
-    ])?;
-    tun::ip(&["link", "set", "dev", &tun_name, "up", "mtu", "1400"])?;
-    crate::netmon::ignore_iface(&tun_name);
-    println!("# tun {tun_name} up — {om_ip}/{prefix}");
 
     let _ = sock.send(&[0xff]); // NAT-T keepalive
     println!(
@@ -304,28 +295,18 @@ fn run_tunnel(
     // while connecting means we touch no routes or DNS at all.
     TUNNEL_STOP.store(false, Ordering::SeqCst);
     TUNNEL_LOST.store(false, Ordering::SeqCst);
-    sysnet::install_stop_signals(&TUNNEL_STOP);
-    if sysnet::stop_requested() {
-        return Err("disconnect requested before the tunnel came up".into());
-    }
+    tunnel_common::arm_stop(&TUNNEL_STOP)?;
 
-    // Restores DNS when dropped — also on an early return or a panic.
     let gw_v4 = sock.peer_addr().ok().and_then(|a| match a.ip() {
         std::net::IpAddr::V4(v) => Some(v),
         std::net::IpAddr::V6(_) => None,
     });
-    let mut _restore = sysnet::NetRestore::default();
-    match routes {
-        None => {
-            out!("# --no-routes: installing no routes/DNS (reach hosts with `ping -I {tun_name}`)")
-        }
-        Some(nets) => {
-            _restore.routes = cp_setup_routes(gw_v4, &tun_name, &nets);
-            _restore.dns = sysnet::set_dns(&sysnet::tunnelled_dns(&dns, &tun_name), &domains);
-            _restore.leak = leakguard::enable(&tun_name, &gw_v4.into_iter().collect::<Vec<_>>())?;
-        }
-    }
-    _restore.commit(&tun_name);
+    let plan = routes.map(|include| tunnel_common::RoutePlan {
+        gateway: gw_v4,
+        include,
+        ..Default::default()
+    });
+    let _restore = tunnel_common::configure(&tun_name, plan.as_ref(), &dns, &domains)?;
     // Through the shared reader: a code prompt during login may have started it.
     sysnet::spawn_stdin_disconnect(&TUNNEL_STOP);
 
@@ -532,60 +513,6 @@ fn cp_fallback(why: &str) -> Vec<(std::net::Ipv4Addr, u8)> {
         sysnet::one_line(why)
     );
     vec![CP_FALLBACK_ROUTE]
-}
-
-/// Pin the gateway to its pre-VPN path, then route `nets` into `tun` — one
-/// `ip -batch`. Returns the `route del` lines for teardown, minus routes that
-/// already existed. A `/0` goes in as 0/1 + 128/1 so the real default stays.
-fn cp_setup_routes(
-    gw: Option<std::net::Ipv4Addr>,
-    tun: &str,
-    nets: &[(std::net::Ipv4Addr, u8)],
-) -> Vec<String> {
-    let mut add: Vec<String> = Vec::new();
-    let mut del: Vec<String> = Vec::new();
-    let mut pair = |net: String, suffix: &str| {
-        add.push(format!("route add {net} {suffix}"));
-        del.push(format!("route del {net} {suffix}"));
-    };
-    let mut pinned = None;
-    if let Some((gw, (via, dev))) = gw.and_then(|g| sysnet::original_path(g).map(|p| (g, p))) {
-        let suffix = match via {
-            Some(v) => format!("via {v} dev {dev}"),
-            None => format!("dev {dev}"),
-        };
-        pinned = Some(format!("{gw}/32 ({suffix})"));
-        pair(format!("{gw}/32"), &suffix);
-    }
-    let dev = format!("dev {tun}");
-    for &(net, len) in nets {
-        if len == 0 {
-            pair("0.0.0.0/1".into(), &dev);
-            pair("128.0.0.0/1".into(), &dev);
-        } else {
-            pair(format!("{net}/{len}"), &dev);
-        }
-    }
-    let failed = tun::ip_batch_failed(&add).unwrap_or_default();
-    if let Some(what) = pinned {
-        if failed.contains(&0) {
-            out!("# gateway route {what} already present — left as is");
-        } else {
-            out!("# pinned gateway route {what}");
-        }
-    }
-    out!("# {} route(s) via {tun}", nets.len());
-    if !failed.is_empty() {
-        out!(
-            "# {} route(s) already existed — not ours, kept on disconnect",
-            failed.len()
-        );
-    }
-    del.into_iter()
-        .enumerate()
-        .filter(|(i, _)| !failed.contains(i))
-        .map(|(_, d)| d)
-        .collect()
 }
 
 fn rekey_interval(lifetime_secs: u32) -> std::time::Duration {

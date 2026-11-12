@@ -19,11 +19,12 @@ pub mod model;
 pub mod session;
 pub mod wire;
 
-use std::net::{Ipv4Addr, ToSocketAddrs};
+use std::net::Ipv4Addr;
 use std::time::Duration;
 
 use crate::ike::transport::IkeUdp;
 use crate::sysnet;
+use crate::tunnel_common::{self, resolve_v4, RoutePlan};
 use session::{EspSuite, IkeSuite, Ikev2Session, SaInitOutcome};
 use wire::{Payload, TrafficSelector};
 
@@ -827,28 +828,17 @@ fn data_plane(
     // to half a second and crippling TCP throughput (~10 KB/s).
     sock.set_nonblocking(true).ok();
 
-    let (mut tun_file, tun_name) = tun::open_tun("cpfi0")?;
-    tun::ip(&["addr", "add", &format!("{assigned}/32"), "dev", &tun_name])?;
-    // 1280 matches FortiClient's IPsec default and leaves ample headroom for the
-    // ESP + UDP(NAT-T) + outer IP overhead, avoiding PMTU black-holes on the path.
-    tun::ip(&["link", "set", "dev", &tun_name, "up", "mtu", "1280"])?;
-    crate::netmon::ignore_iface(&tun_name);
-    out!("# tun {tun_name} up — {assigned}/32, mtu 1280");
-
-    sysnet::install_stop_signals(&STOP);
-    if sysnet::stop_requested() || STOP.load(Ordering::SeqCst) {
-        return Err("disconnect requested before the tunnel came up".into());
-    }
-
-    let mut restore = sysnet::NetRestore::default();
-    if no_routes {
-        out!("# --no-routes: reach hosts with `ping -I {tun_name}`");
-    } else {
-        restore.routes = setup_routes(gw, &tun_name, cfg);
-        restore.dns = sysnet::set_dns(&sysnet::tunnelled_dns(&cfg.dns, &tun_name), &cfg.domains);
-        restore.leak = crate::leakguard::enable(&tun_name, &[gw])?;
-    }
-    restore.commit(&tun_name);
+    // 1280 leaves room for ESP + UDP (NAT-T) + the outer IP header without PMTU
+    // black holes on the path.
+    let (mut tun_file, tun_name) = tunnel_common::open_tun("cpfi0", (assigned, 32), 1280)?;
+    tunnel_common::arm_stop(&STOP)?;
+    let plan = (!no_routes).then(|| RoutePlan {
+        gateway: Some(gw),
+        exclude: Vec::new(),
+        full: cfg.routes.is_empty(),
+        include: cfg.routes.clone(),
+    });
+    let restore = tunnel_common::configure(&tun_name, plan.as_ref(), &cfg.dns, &cfg.domains)?;
     sysnet::spawn_stdin_disconnect(&STOP);
     tun::set_nonblocking(&tun_file);
 
@@ -1305,80 +1295,4 @@ fn handle_inbound_ike(udp: &IkeUdp, session: &Ikev2Session, raw: &[u8]) -> Optio
         .iter()
         .any(|p| matches!(p, Payload::Delete { .. }))
         .then(|| "gateway deleted the SA".to_string())
-}
-
-/// Pin the gateway to its pre-VPN path, then install split routes (or a full tunnel
-/// via 0/1 + 128/1). Mirrors the Fortinet SSL-VPN back-end's route handling.
-fn setup_routes(gw: Ipv4Addr, tun: &str, cfg: &config::TunnelConfig) -> Vec<String> {
-    use crate::tun;
-    let mut add: Vec<String> = Vec::new();
-    let mut del: Vec<String> = Vec::new();
-
-    if let Some((via, dev)) = original_path(gw) {
-        let suffix = via
-            .map(|v| format!("via {v} dev {dev}"))
-            .unwrap_or(format!("dev {dev}"));
-        add.push(format!("route add {gw}/32 {suffix}"));
-        del.push(format!("route del {gw}/32 {suffix}"));
-    }
-    let dev = format!("dev {tun}");
-    if cfg.routes.is_empty() {
-        for net in ["0.0.0.0/1", "128.0.0.0/1"] {
-            add.push(format!("route add {net} {dev}"));
-            del.push(format!("route del {net} {dev}"));
-        }
-        out!("# full tunnel: 0.0.0.0/1 + 128.0.0.0/1 via {tun}");
-    } else {
-        for (net, prefix) in &cfg.routes {
-            add.push(format!("route add {net}/{prefix} {dev}"));
-            del.push(format!("route del {net}/{prefix} {dev}"));
-        }
-        out!("# split tunnel: {} route(s) via {tun}", cfg.routes.len());
-    }
-    let failed = tun::ip_batch_failed(&add).unwrap_or_default();
-    del.into_iter()
-        .enumerate()
-        .filter(|(i, _)| !failed.contains(i))
-        .map(|(_, d)| d)
-        .collect()
-}
-
-fn original_path(dst: Ipv4Addr) -> Option<(Option<String>, String)> {
-    let out = std::process::Command::new("ip")
-        .args(["route", "get", &dst.to_string()])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
-    let toks: Vec<&str> = text
-        .lines()
-        .next()
-        .unwrap_or("")
-        .split_whitespace()
-        .collect();
-    let via = toks
-        .windows(2)
-        .find(|w| w[0] == "via")
-        .map(|w| w[1].to_string());
-    let dev = toks
-        .windows(2)
-        .find(|w| w[0] == "dev")
-        .map(|w| w[1].to_string())?;
-    Some((via, dev))
-}
-
-fn resolve_v4(host: &str, port: u16) -> Result<Ipv4Addr, String> {
-    if let Ok(ip) = host.parse::<Ipv4Addr>() {
-        return Ok(ip);
-    }
-    (host, port)
-        .to_socket_addrs()
-        .map_err(|e| format!("resolve {host}: {e}"))?
-        .find_map(|sa| match sa.ip() {
-            std::net::IpAddr::V4(v4) => Some(v4),
-            _ => None,
-        })
-        .ok_or_else(|| format!("no IPv4 address for {host}"))
 }

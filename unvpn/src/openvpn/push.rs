@@ -24,6 +24,7 @@ pub struct Route {
 }
 
 impl Route {
+    #[cfg(test)]
     pub fn to_cidr(&self) -> String {
         format!("{}/{}", self.net, crate::tun::mask_to_prefix(self.mask))
     }

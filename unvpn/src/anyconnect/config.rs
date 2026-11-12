@@ -18,6 +18,7 @@ pub struct Route {
 }
 
 impl Route {
+    #[cfg(test)]
     pub fn to_cidr(&self) -> String {
         format!("{}/{}", self.net, self.prefix)
     }
