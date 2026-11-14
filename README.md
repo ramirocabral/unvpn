@@ -16,6 +16,7 @@ Supported VPNs:
 - F5 BIG-IP APM
 - Cisco AnyConnect
 - Palo Alto GlobalProtect
+- Ivanti Connect Secure (Pulse Secure)
 - OpenVPN
 - WireGuard
 
@@ -100,6 +101,7 @@ sudo unvpn forti-ipsec -g vpn.example.com -u alice --connect         # Fortinet 
 sudo unvpn f5 -g vpn.example.com -u alice --connect                  # F5
 sudo unvpn anyconnect -g https://vpn.example.com -u alice --connect  # AnyConnect
 sudo unvpn gp -g vpn.example.com -u alice --connect                  # GlobalProtect
+sudo unvpn ivanti -g vpn.example.com -u alice --connect              # Ivanti Connect Secure
 sudo unvpn openvpn -c profile.ovpn --connect                         # OpenVPN
 sudo unvpn wireguard -c wg0.conf --connect                           # WireGuard
 ```

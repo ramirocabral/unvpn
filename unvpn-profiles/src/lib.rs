@@ -36,6 +36,7 @@ pub enum Backend {
     WireGuard,
     #[serde(rename = "fortiipsec", alias = "forti-ipsec")]
     FortiIpsec,
+    Ivanti,
 }
 
 impl Backend {
@@ -49,13 +50,14 @@ impl Backend {
             Backend::OpenVpn => "OpenVPN",
             Backend::WireGuard => "WireGuard",
             Backend::FortiIpsec => "FortiClient (IPsec)",
+            Backend::Ivanti => "Ivanti Connect Secure",
         }
     }
 
     pub fn has_sso(self) -> bool {
         matches!(
             self,
-            Backend::Forti | Backend::AnyConnect | Backend::GlobalProtect
+            Backend::Forti | Backend::AnyConnect | Backend::GlobalProtect | Backend::Ivanti
         )
     }
 
@@ -453,6 +455,17 @@ pub fn engine_args(p: &Profile, psk: bool) -> Vec<String> {
                 a.extend(["-u", user]);
             }
         }
+        Backend::Ivanti => {
+            a.extend(["ivanti", "-g", gw]);
+            if !realm.is_empty() {
+                a.extend(["--realm", realm]);
+            }
+            if p.sso {
+                a.push("--saml");
+            } else {
+                a.extend(["-u", user]);
+            }
+        }
         Backend::GlobalProtect => {
             a.extend(["gp", "-g", gw]);
             if !group.is_empty() {
@@ -618,6 +631,17 @@ pub fn anyconnect_saml_entry(gateway: &str) -> String {
     format!("https://{hostport}/+CSCOE+/saml/")
 }
 
+/// Ivanti's SSO entry point for `gateway`: the gateway's own origin
+/// (`https://host[:port]/`), where its sign-in URL redirects to the IdP. The
+/// default port is dropped, as the gateway's own links do.
+pub fn ivanti_saml_entry(gateway: &str) -> String {
+    let g = gateway.trim();
+    let g = g.strip_prefix("https://").unwrap_or(g);
+    let hostport = g.split(['/', '?', '#']).next().unwrap_or_default();
+    let hostport = hostport.strip_suffix(":443").unwrap_or(hostport);
+    format!("https://{hostport}/")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -697,6 +721,14 @@ mod tests {
         assert_eq!(
             args("backend = \"wireguard\"\ngateway = \"/x/wg0.conf\"\nkillswitch = true"),
             "wireguard -c /x/wg0.conf --connect"
+        );
+        assert_eq!(
+            args("backend = \"ivanti\"\ngateway = \"https://vpn.example.com/staff\"\nuser = \"alice\"\nrealm = \"Users\"\nkillswitch = true"),
+            "ivanti -g https://vpn.example.com/staff --realm Users -u alice --connect --killswitch"
+        );
+        assert_eq!(
+            args("backend = \"ivanti\"\ngateway = \"vpn.example.com\"\nsso = true\nno_dtls = true"),
+            "ivanti -g vpn.example.com --saml --connect"
         );
     }
 
@@ -862,6 +894,14 @@ mod tests {
         assert_eq!(
             anyconnect_saml_entry("vpn.example.com:8443"),
             "https://vpn.example.com:8443/+CSCOE+/saml/"
+        );
+        assert_eq!(
+            ivanti_saml_entry("https://vpn.example.com:443/staff"),
+            "https://vpn.example.com/"
+        );
+        assert_eq!(
+            ivanti_saml_entry("vpn.example.com:8443"),
+            "https://vpn.example.com:8443/"
         );
     }
 }

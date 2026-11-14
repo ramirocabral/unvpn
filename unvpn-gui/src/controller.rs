@@ -8,7 +8,7 @@ use adw::prelude::*;
 use gtk::glib;
 
 use crate::engine::{EngineEvent, SessionId, State, TrayCmd, UiMsg, Vpn};
-use crate::profiles::{anyconnect_saml_entry, saml_entry, Backend};
+use crate::profiles::{anyconnect_saml_entry, ivanti_saml_entry, saml_entry, Backend};
 use crate::session::{Session, SessionRow};
 use crate::{profiles, tray, App};
 
@@ -230,6 +230,7 @@ impl App {
             _ if !p.uses_sso() => None,
             Backend::Forti => Some(saml_entry(&gw)),
             Backend::AnyConnect => Some(anyconnect_saml_entry(&gw)),
+            Backend::Ivanti => Some(ivanti_saml_entry(&gw)),
             _ => Some(gw.clone()),
         };
 

@@ -156,6 +156,7 @@ impl App {
                     "the globalprotectcallback: link or the prelogin-cookie"
                 }
                 Some(Backend::AnyConnect) => "the SSO token cookie",
+                Some(Backend::Ivanti) => "the DSID cookie",
                 _ => "the SSO token",
             };
             format!("Sign in in the window that opened — the VPN connects on its own. (Or paste {fallback} here.)")

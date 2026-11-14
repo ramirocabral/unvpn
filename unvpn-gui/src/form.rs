@@ -80,6 +80,8 @@ impl Layout {
             Backend::GlobalProtect => (Optional, "Gateway (optional)"),
             Backend::FortiIpsec => (Optional, "Local ID (optional)"),
             Backend::Forti => (Optional, "Realm (optional)"),
+            // With SSO the sign-in URL picks the realm.
+            Backend::Ivanti if !sso => (Optional, "Realm (optional)"),
             _ => (Hidden, "Realm (optional)"),
         };
         let (password, password_title) = match b {
@@ -161,6 +163,8 @@ mod tests {
             (Backend::Forti, sso, &[]),
             (Backend::AnyConnect, sso, &[]),
             (Backend::GlobalProtect, none, &["user", "password"]),
+            (Backend::Ivanti, none, &["user", "password"]),
+            (Backend::Ivanti, sso, &[]),
             (Backend::F5, sso, &["user", "password"]),
             (Backend::FortiIpsec, none, &["user", "password", "psk"]),
             (Backend::CheckPoint, none, &["user", "token"]),

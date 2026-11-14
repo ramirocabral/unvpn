@@ -20,8 +20,9 @@ impl BackendSlot for Backend {
             Backend::F5 => 2,
             Backend::AnyConnect => 3,
             Backend::GlobalProtect => 4,
-            Backend::OpenVpn => 5,
-            Backend::WireGuard => 6,
+            Backend::Ivanti => 5,
+            Backend::OpenVpn => 6,
+            Backend::WireGuard => 7,
         }
     }
 
@@ -33,9 +34,32 @@ impl BackendSlot for Backend {
             2 => Backend::F5,
             3 => Backend::AnyConnect,
             4 => Backend::GlobalProtect,
-            5 => Backend::OpenVpn,
-            6 => Backend::WireGuard,
+            5 => Backend::Ivanti,
+            6 => Backend::OpenVpn,
+            7 => Backend::WireGuard,
             _ => Backend::CheckPoint,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dropdown_slots_round_trip() {
+        for b in [
+            Backend::CheckPoint,
+            Backend::Forti,
+            Backend::F5,
+            Backend::AnyConnect,
+            Backend::GlobalProtect,
+            Backend::Ivanti,
+            Backend::OpenVpn,
+            Backend::WireGuard,
+        ] {
+            assert_eq!(Backend::from_index(b.index()), b);
+        }
+        assert_eq!(Backend::FortiIpsec.index(), Backend::Forti.index());
     }
 }

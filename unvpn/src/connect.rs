@@ -776,6 +776,7 @@ impl Sso {
             _ if !p.uses_sso() => None,
             Backend::Forti => Some(profiles::saml_entry(&p.gateway)),
             Backend::AnyConnect => Some(profiles::anyconnect_saml_entry(&p.gateway)),
+            Backend::Ivanti => Some(profiles::ivanti_saml_entry(&p.gateway)),
             _ => None,
         };
         Sso {
@@ -930,6 +931,17 @@ mod tests {
         assert_eq!(
             gp.on_marker(&Marker::SamlUrl("https://idp.example.com/a".into())),
             (true, Some("https://idp.example.com/a".into()))
+        );
+        prof.backend = Backend::Ivanti;
+        prof.gateway = "https://vpn.example.com/staff".into();
+        let mut iv = Sso::new(&prof);
+        assert_eq!(
+            iv.on_marker(&Marker::SamlUrl("https://idp.example.com/a".into())),
+            (true, None)
+        );
+        assert_eq!(
+            iv.on_marker(&Marker::SamlUrl("https://vpn.example.com/staff".into())),
+            (true, Some("https://vpn.example.com/staff".into()))
         );
     }
 

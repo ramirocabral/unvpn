@@ -49,6 +49,7 @@ impl App {
             "F5",
             "AnyConnect (Cisco)",
             "GlobalProtect",
+            "Ivanti Connect Secure",
             "OpenVPN",
             "WireGuard",
         ]);
@@ -526,7 +527,7 @@ pub(crate) fn build_ui(app: &adw::Application, start_hidden: bool) -> Rc<App> {
             .application_name("unvpn")
             .version(env!("CARGO_PKG_VERSION"))
             .developer_name("unvpn")
-            .comments("Native Linux VPN client — Check Point · Fortinet · F5 · AnyConnect · GlobalProtect · OpenVPN · WireGuard")
+            .comments("Native Linux VPN client — Check Point · Fortinet · F5 · AnyConnect · GlobalProtect · Ivanti · OpenVPN · WireGuard")
             .build();
         dialog.present(Some(&state_app.window));
     }));
