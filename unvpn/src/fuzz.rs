@@ -118,7 +118,8 @@ pub fn xml(data: &[u8]) {
 }
 
 /// Tunnel parameters: AnyConnect CSTP headers, OpenVPN push replies and
-/// control packets, Ivanti IF-T messages.
+/// control packets, Ivanti IF-T messages, authentication requests and
+/// configuration.
 pub fn tunnel_config(data: &[u8]) {
     if let Ok((_, headers)) = http::parse_head(data) {
         let _ = crate::anyconnect::config::TunnelConfig::from_headers(&headers);
@@ -128,7 +129,21 @@ pub fn tunnel_config(data: &[u8]) {
     if let Some((&op, rest)) = data.split_first() {
         let _ = crate::openvpn::packet::decode_rest(op, rest);
     }
-    let _ = crate::ivanti::ift::IftMessage::decode(data);
+    use crate::ivanti::{auth, config, ift};
+    let _ = ift::IftMessage::decode(data);
+    let _ = ift::parse_avps(data);
+    let _ = ift::fatal_reason(data);
+    let _ = auth::Ask::parse(data);
+    if config::kind(data).is_some() {
+        let _ = config::parse_main(data, &mut config::IvantiConfig::default());
+        let algs = config::EspAlgs {
+            enc: 2,
+            mac: 2,
+            port: 4500,
+            fallback_secs: 0,
+        };
+        let _ = config::esp_answer(algs, data);
+    }
 }
 
 pub type Target = (&'static str, fn(&[u8]));
@@ -174,6 +189,9 @@ mod tests {
         b"<response status=\"success\"><gateways><external><list><entry name=\"gw.example.com\"/></list></external></gateways></response>",
         b"\x30\x82\x00\x05\x02\x01\x01\x04\x00",
         b"PUSH_REPLY,route 10.0.0.0 255.0.0.0,dhcp-option DNS 10.0.0.1,ifconfig 10.8.0.2 255.255.255.0",
+        // Ivanti main configuration, then a password request (AVPs).
+        b"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x2c\x20\xf0\x00\x00\x00\x00\x00\x00\x00\x00\x7f\x2e\x00\x00\x18\x01\x00\x00\x00\x07\x00\x00\x10\x00\x00\xff\xff\x0a\x00\x00\x00\x0a\x00\xff\xff\x00\x00\x00\x4b\x03\x00\x00\x00\x00\x01\x00\x04\x0a\x00\x00\x07\x00\x02\x00\x04\xff\xff\xff\x00\x00\x03\x00\x04\x0a\x00\x00\x35\x40\x05\x00\x04\x00\x00\x05\x78\x40\x06\x00\x0d\x63\x6f\x72\x70\x2e\x65\x78\x61\x6d\x70\x6c\x65\x00\x40\x10\x00\x02\x00\x02\x40\x11\x00\x02\x00\x02\x40\x16\x00\x02\x11\x94",
+        b"\x00\x00\x0d\x81\x80\x00\x00\x15\x00\x00\x05\x83Password:\x00\x00\x00\x00\x00\x00\x4f\x40\x00\x00\x15\x01\x04\x00\x0d\xfe\x00\x0a\x4c\x00\x00\x00\x02\x01\x00\x00\x00",
     ];
 
     #[test]

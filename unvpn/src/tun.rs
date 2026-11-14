@@ -11,7 +11,7 @@ use std::process::Command;
 
 /// The name bases of the devices unvpn's tunnels use (`<base><n>`).
 pub const DEVICE_BASES: &[&str] = &[
-    "unvpn", "cpfg", "cpfi", "f5vpn", "cpac", "cpovpn", "gpvpn", "cpwg",
+    "unvpn", "cpfg", "cpfi", "f5vpn", "cpac", "cpovpn", "gpvpn", "cpwg", "ivvpn",
 ];
 
 /// `name` is one of unvpn's tunnel devices (this session's or another one's).
