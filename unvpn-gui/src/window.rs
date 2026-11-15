@@ -18,7 +18,6 @@ impl App {
             .css_classes(["statuspill", "st-off"])
             .build();
         let header = adw::HeaderBar::new();
-        header.set_title_widget(Some(&adw::WindowTitle::new("unvpn", "")));
         header.pack_start(&status_pill);
 
         let menu = gio::Menu::new();
@@ -33,13 +32,45 @@ impl App {
             .build();
         header.pack_end(&menu_btn);
 
+        let search_btn = gtk::ToggleButton::builder()
+            .icon_name("system-search-symbolic")
+            .tooltip_text("Search profiles (Ctrl+F)")
+            .css_classes(["flat"])
+            .build();
+        let search_entry = gtk::SearchEntry::builder()
+            .placeholder_text("Search profiles")
+            .hexpand(true)
+            .build();
+        let search_bar = gtk::SearchBar::builder()
+            .child(
+                &adw::Clamp::builder()
+                    .maximum_size(536)
+                    .child(&search_entry)
+                    .build(),
+            )
+            .build();
+        search_bar.connect_entry(&search_entry);
+        search_btn
+            .bind_property("active", &search_bar, "search-mode-enabled")
+            .bidirectional()
+            .sync_create()
+            .build();
+
         let add_btn = gtk::Button::builder()
             .icon_name("list-add-symbolic")
             .css_classes(["flat"])
-            .tooltip_text("New profile (clears the form)")
+            .tooltip_text("New profile")
             .build();
         let profiles_group = adw::PreferencesGroup::builder().title("Profiles").build();
-        profiles_group.set_header_suffix(Some(&add_btn));
+        let list_btns = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        list_btns.append(&search_btn);
+        list_btns.append(&add_btn);
+        profiles_group.set_header_suffix(Some(&list_btns));
+        let profiles_empty_row = adw::ActionRow::builder()
+            .sensitive(false)
+            .visible(false)
+            .build();
+        profiles_group.add(&profiles_empty_row);
 
         let name_row = adw::EntryRow::builder().title("Profile name").build();
 
@@ -237,35 +268,17 @@ impl App {
         let diag_group = adw::PreferencesGroup::builder().build();
         diag_group.add(&log_expander);
 
-        let content = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(18)
-            .margin_top(18)
-            .margin_bottom(18)
-            .margin_start(12)
-            .margin_end(12)
-            .build();
-        content.append(&prompt_group);
-        content.append(&sessions_group);
-        content.append(&profiles_group);
-        content.append(&form_group);
-        content.append(&connect_btn);
-        content.append(&diag_group);
-
-        let clamp = adw::Clamp::builder()
-            .maximum_size(560)
-            .child(&content)
-            .build();
-        let scroll = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .vexpand(true)
-            .child(&clamp)
-            .build();
-        let toast = adw::ToastOverlay::new();
-        toast.set_child(Some(&scroll));
+        let main_content = page_content(&[
+            prompt_group.upcast_ref(),
+            sessions_group.upcast_ref(),
+            profiles_group.upcast_ref(),
+            diag_group.upcast_ref(),
+        ]);
+        let editor_content = page_content(&[form_group.upcast_ref(), connect_btn.upcast_ref()]);
 
         let toolbar = adw::ToolbarView::new();
         toolbar.add_top_bar(&header);
+        toolbar.add_top_bar(&search_bar);
         // A profiles file that doesn't load is moved aside rather than replaced
         // by the next save; say so, and where it went.
         let loaded =
@@ -287,14 +300,34 @@ impl App {
             banner.connect_button_clicked(|b| b.set_revealed(false));
             toolbar.add_top_bar(&banner);
         }
-        toolbar.set_content(Some(&toast));
+        toolbar.set_content(Some(&main_content));
+        let main_page = adw::NavigationPage::builder()
+            .title("unvpn")
+            .tag("main")
+            .child(&toolbar)
+            .build();
+        search_bar.set_key_capture_widget(Some(&main_page));
+
+        let editor_toolbar = adw::ToolbarView::new();
+        editor_toolbar.add_top_bar(&adw::HeaderBar::new());
+        editor_toolbar.set_content(Some(&editor_content));
+        let editor_page = adw::NavigationPage::builder()
+            .tag("editor")
+            .child(&editor_toolbar)
+            .build();
+
+        let nav = adw::NavigationView::new();
+        nav.add(&main_page);
+        nav.add(&editor_page);
+        let toast = adw::ToastOverlay::new();
+        toast.set_child(Some(&nav));
 
         let window = adw::ApplicationWindow::builder()
             .application(app)
             .title("unvpn")
             .default_width(600)
             .default_height(840)
-            .content(&toolbar)
+            .content(&toast)
             .build();
         window.set_size_request(360, 480);
 
@@ -302,7 +335,12 @@ impl App {
             window,
             toast,
             status_pill,
+            nav,
+            editor_page,
+            search_bar,
+            search_entry,
             profiles_group,
+            profiles_empty_row,
             profile_rows: RefCell::new(Vec::new()),
             profile_buttons: RefCell::new(Vec::new()),
             profiles: RefCell::new(loaded.unwrap_or_default()),
@@ -474,6 +512,24 @@ impl App {
             app,
             move |_| app.on_new_profile()
         ));
+        app.search_entry.connect_search_changed(glib::clone!(
+            #[strong]
+            app,
+            move |_| app.apply_profile_filter()
+        ));
+        let search = gio::SimpleAction::new("search", None);
+        search.connect_activate(glib::clone!(
+            #[strong]
+            app,
+            move |_, _| {
+                app.show_main();
+                app.search_bar.set_search_mode(true);
+            }
+        ));
+        app.window.add_action(&search);
+        if let Some(a) = app.window.application() {
+            a.set_accels_for_action("win.search", &["<Control>f"]);
+        }
 
         // Closing the window keeps the app (and the tunnel) running in the tray; only
         // "Quit" exits. Without a tray, closing quits (the window would be unreachable).
@@ -501,6 +557,43 @@ impl App {
             .upgrade()
             .expect("App dropped while a handler ran")
     }
+
+    /// Show the connection form, titled `title`.
+    pub(crate) fn open_editor(&self, title: &str) {
+        self.editor_page.set_title(title);
+        if self.nav.visible_page().as_ref() != Some(&self.editor_page) {
+            self.nav.push(&self.editor_page);
+        }
+    }
+
+    /// Back to the profile list.
+    pub(crate) fn show_main(&self) {
+        self.nav.pop_to_tag("main");
+    }
+}
+
+/// A page's scrolling body: `children` stacked, at a readable width.
+fn page_content(children: &[&gtk::Widget]) -> gtk::ScrolledWindow {
+    let content = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(18)
+        .margin_top(18)
+        .margin_bottom(18)
+        .margin_start(12)
+        .margin_end(12)
+        .build();
+    for c in children {
+        content.append(*c);
+    }
+    let clamp = adw::Clamp::builder()
+        .maximum_size(560)
+        .child(&content)
+        .build();
+    gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vexpand(true)
+        .child(&clamp)
+        .build()
 }
 
 thread_local! {

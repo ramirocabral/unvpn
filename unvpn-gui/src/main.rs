@@ -54,7 +54,15 @@ struct App {
 
     status_pill: gtk::Label,
 
+    /// The profile list page ("main") and, pushed over it, the connection form.
+    nav: adw::NavigationView,
+    editor_page: adw::NavigationPage,
+    search_bar: gtk::SearchBar,
+    search_entry: gtk::SearchEntry,
+
     profiles_group: adw::PreferencesGroup,
+    /// Stands in for the list when there are no profiles or none match the search.
+    profiles_empty_row: adw::ActionRow,
     profile_rows: RefCell<Vec<adw::ActionRow>>,
     /// Each saved profile's connect/disconnect button.
     profile_buttons: RefCell<Vec<(String, gtk::Button)>>,

@@ -494,6 +494,7 @@ impl App {
         }
         self.refresh_profiles_list();
         self.update_pins_row();
+        self.editor_page.set_title(&name);
         self.toast(&format!("Saved profile “{name}”"));
     }
 
@@ -559,6 +560,7 @@ impl App {
     }
 
     pub(crate) fn on_new_profile(&self) {
+        self.open_editor("New Profile");
         self.name_row.set_text("");
         self.gateway_row.set_text("");
         self.user_row.set_text("");

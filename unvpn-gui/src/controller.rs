@@ -172,7 +172,12 @@ impl App {
     pub(crate) fn on_connect_clicked(&self) {
         match self.session_named(&self.form_name()) {
             Some(id) => self.disconnect_session(id),
-            None => self.start_connect(false),
+            None => {
+                self.start_connect(false);
+                if self.session_named(&self.form_name()).is_some() {
+                    self.show_main();
+                }
+            }
         }
     }
 
@@ -427,6 +432,7 @@ impl App {
         self.load_profile(&p);
         if !self.form_ready() {
             self.show_window();
+            self.open_editor(name);
             self.toast(&format!("“{name}” needs more details to connect"));
             self.focus_missing_field();
             return;

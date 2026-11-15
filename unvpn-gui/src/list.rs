@@ -16,18 +16,6 @@ impl App {
         }
         self.profile_buttons.borrow_mut().clear();
         let profs = self.profiles.borrow();
-        if profs.is_empty() {
-            let row = adw::ActionRow::builder()
-                .title("No saved profiles")
-                .subtitle("Fill in the details and click Save")
-                .sensitive(false)
-                .build();
-            self.profiles_group.add(&row);
-            self.profile_rows.borrow_mut().push(row);
-            drop(profs);
-            self.sync_ui();
-            return;
-        }
         for p in profs.iter() {
             let row = adw::ActionRow::builder()
                 .title(&p.name)
@@ -59,17 +47,17 @@ impl App {
             row.connect_activated(glib::clone!(
                 #[strong]
                 app_rc,
-                move |_| app_rc.load_profile(&p1)
+                move |_| {
+                    app_rc.load_profile(&p1);
+                    app_rc.open_editor(&p1.name);
+                }
             ));
             let app2 = app_rc.clone();
-            let p2 = p.clone();
+            let name = p.name.clone();
             // Toggles this profile's connection; the others stay as they are.
-            conn.connect_clicked(move |_| match app2.session_named(&p2.name) {
+            conn.connect_clicked(move |_| match app2.session_named(&name) {
                 Some(id) => app2.disconnect_session(id),
-                None => {
-                    app2.load_profile(&p2);
-                    app2.start_connect(false);
-                }
+                None => app2.connect_profile(&name, false),
             });
             self.profile_buttons
                 .borrow_mut()
@@ -82,7 +70,34 @@ impl App {
             self.profile_rows.borrow_mut().push(row);
         }
         drop(profs);
+        self.apply_profile_filter();
         self.sync_ui();
+    }
+
+    /// Show only the profiles whose name or details contain every word searched.
+    pub(crate) fn apply_profile_filter(&self) {
+        let query = self.search_entry.text().to_lowercase();
+        let words: Vec<&str> = query.split_whitespace().collect();
+        let mut shown = 0;
+        for row in self.profile_rows.borrow().iter() {
+            let text =
+                format!("{} {}", row.title(), row.subtitle().unwrap_or_default()).to_lowercase();
+            let hit = words.iter().all(|w| text.contains(w));
+            row.set_visible(hit);
+            shown += hit as usize;
+        }
+        let empty = &self.profiles_empty_row;
+        if self.profiles.borrow().is_empty() {
+            empty.set_title("No saved profiles");
+            empty.set_subtitle("Add one with the + button");
+            empty.set_visible(true);
+        } else if shown == 0 {
+            empty.set_title("No matching profiles");
+            empty.set_subtitle("");
+            empty.set_visible(true);
+        } else {
+            empty.set_visible(false);
+        }
     }
 
     /// Drag a profile row onto another to move it there; the order is saved.
@@ -91,10 +106,18 @@ impl App {
         src.set_actions(gdk::DragAction::MOVE);
         let hot = Rc::new(Cell::new((0.0, 0.0)));
         let n = name.to_string();
+        // Moving a row next to hidden ones would land it somewhere unexpected.
         src.connect_prepare(glib::clone!(
             #[strong]
             hot,
+            #[weak(rename_to = search)]
+            self.search_entry,
+            #[upgrade_or]
+            None,
             move |_, x, y| {
+                if !search.text().trim().is_empty() {
+                    return None;
+                }
                 hot.set((x, y));
                 Some(gdk::ContentProvider::for_value(&n.to_value()))
             }

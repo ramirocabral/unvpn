@@ -37,6 +37,7 @@ impl App {
     /// A tray-started connection failed: bring the window up on the log.
     pub(crate) fn reveal_log(&self) {
         self.show_window();
+        self.show_main();
         self.log_expander.set_expanded(true);
         self.log_view
             .scroll_to_iter(&mut self.log_buffer.end_iter(), 0.0, false, 0.0, 0.0);

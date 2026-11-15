@@ -121,6 +121,7 @@ impl App {
         }
         self.clear_prompt();
         self.prompt_session.set(Some(id));
+        self.show_main();
         if p.kind == "trust" {
             if let Some(q) = profiles::TrustQuestion::parse(&p.message) {
                 self.show_trust_prompt(id, q);
