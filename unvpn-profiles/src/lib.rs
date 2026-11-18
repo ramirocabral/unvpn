@@ -407,7 +407,12 @@ pub fn engine_args(p: &Profile, psk: bool) -> Vec<String> {
                 a.extend(["--realm", realm]);
             }
         }
-        Backend::CheckPoint => a.extend(["ike", "-g", gw, "-u", user]),
+        Backend::CheckPoint => {
+            a.extend(["ike", "-g", gw, "-u", user]);
+            if !realm.is_empty() {
+                a.extend(["--realm", realm]);
+            }
+        }
         Backend::Forti => {
             a.extend(["forti", "-g", gw]);
             if !realm.is_empty() {
@@ -689,8 +694,12 @@ mod tests {
     #[test]
     fn engine_args_per_backend() {
         assert_eq!(
-            args("backend = \"checkpoint\"\ngateway = \"203.0.113.10\"\nuser = \"alice\"\nrealm = \"ignored\""),
+            args("backend = \"checkpoint\"\ngateway = \"203.0.113.10\"\nuser = \"alice\""),
             "ike -g 203.0.113.10 -u alice --connect"
+        );
+        assert_eq!(
+            args("backend = \"checkpoint\"\ngateway = \"203.0.113.10\"\nuser = \"alice\"\nrealm = \"vpn_MFA\""),
+            "ike -g 203.0.113.10 -u alice --realm vpn_MFA --connect"
         );
         assert_eq!(
             args("backend = \"checkpoint\"\ngateway = \"203.0.113.10\"\ncp_cert = true\ncert_path = \"/k/a.p12\"\nrealm = \"vpn_cert\""),

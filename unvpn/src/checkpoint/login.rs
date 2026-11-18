@@ -82,6 +82,32 @@ pub(super) fn prepare_cert_login(
     })
 }
 
+/// Login option (realm) and its secondary realm hash for a Check Point password
+/// login. Without the gateway's list, falls back to `wanted` or `vpn`.
+fn resolve_password_realm(
+    host: &str,
+    wanted: Option<&str>,
+) -> Result<(String, Option<String>), String> {
+    let info = match gateway_hello(host) {
+        Ok(p) => cert::GatewayInfo::from_hello(&p),
+        Err(e) => {
+            println!("# warning: could not read the gateway's login options: {e}");
+            cert::GatewayInfo::default()
+        }
+    };
+    if info.login_options.is_empty() {
+        return Ok((wanted.unwrap_or("vpn").to_string(), None));
+    }
+    let o = info.password_option(wanted)?;
+    println!(
+        "# login option: {} \"{}\" [{}]",
+        o.id,
+        o.display_name,
+        o.factors.join(" + ")
+    );
+    Ok((o.id, Some(o.secondary_realm_hash).filter(|h| !h.is_empty())))
+}
+
 pub fn cmd_ike(args: &[String]) {
     let mut gateway: Option<String> = None;
     let mut user = String::new();
@@ -136,11 +162,19 @@ pub fn cmd_ike(args: &[String]) {
         },
         None => None,
     };
-    let realm = cert_login
-        .as_ref()
-        .map(|c| c.realm.clone())
-        .or(realm)
-        .unwrap_or_else(|| "vpn".to_string());
+    // Password login: the gateway silently drops msg5 for a login option it
+    // doesn't have, so pick (or check) it from the gateway's site information.
+    let mut pw_realm_hash: Option<String> = None;
+    let realm = match &cert_login {
+        Some(c) => c.realm.clone(),
+        None => match resolve_password_realm(&host, realm.as_deref()) {
+            Ok((r, h)) => {
+                pw_realm_hash = h;
+                r
+            }
+            Err(e) => report::fail("IKE", &e),
+        },
+    };
     if user.is_empty() {
         if let Some(c) = &cert_login {
             user = c.common_name.clone();
@@ -258,7 +292,7 @@ pub fn cmd_ike(args: &[String]) {
                 &c.key,
                 &c.chain,
             )?,
-            None => service::build_auth_payloads(&session, &realm),
+            None => service::build_auth_payloads(&session, &realm, pw_realm_hash.as_deref()),
         };
         let msg5 = service::encrypt_message(
             &mut session,
@@ -337,6 +371,8 @@ pub fn cmd_ike(args: &[String]) {
         }
 
         let mut cfg_mid = 0u32;
+        // The password / PIN(+tokencode) answers the first challenge only.
+        let mut secret_sent = false;
         if let Some(mut req) = first {
             loop {
                 let attrs = service::find_attributes(&req)
@@ -406,21 +442,48 @@ pub fn cmd_ike(args: &[String]) {
                             }
                         }
                     }
+                    // A later challenge (an e-mailed / SMS code the gateway sends only
+                    // after checking the password, a SecurID next tokencode) can't have
+                    // been supplied up front: ask for it, like the certificate path.
+                    _ if secret_sent => {
+                        println!(
+                            "# gateway challenge [{:?}]: {}",
+                            ctype,
+                            sysnet::one_line(&prompt)
+                        );
+                        let text = prompt.split(" | ").next().unwrap_or("").trim();
+                        let label = if text.is_empty() {
+                            "Verification code".to_string()
+                        } else {
+                            text.to_string()
+                        };
+                        report::prompt("code", &label);
+                        match anyconnect::read_secret("Code: ") {
+                            Some(c) => c.trim().to_string(),
+                            None => {
+                                println!("# no code provided; stopping.");
+                                return Ok(());
+                            }
+                        }
+                    }
                     _ => {
                         println!(
                             "# gateway challenge [{:?}]: {}",
                             ctype,
                             sysnet::one_line(&prompt)
                         );
+                        secret_sent = true;
                         match passcode.take() {
                             Some(p) => p,
-                            None => match anyconnect::read_secret("Passcode (PIN+tokencode): ") {
-                                Some(p) if !p.trim().is_empty() => p.trim().to_string(),
-                                _ => {
-                                    println!("# no passcode provided; stopping.");
-                                    return Ok(());
+                            None => {
+                                match anyconnect::read_secret("Password / PIN (+tokencode): ") {
+                                    Some(p) if !p.trim().is_empty() => p.trim().to_string(),
+                                    _ => {
+                                        println!("# no passcode provided; stopping.");
+                                        return Ok(());
+                                    }
                                 }
-                            },
+                            }
                         }
                     }
                 };

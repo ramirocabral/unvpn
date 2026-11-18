@@ -100,6 +100,35 @@ impl GatewayInfo {
             })
     }
 
+    /// The login option for a password login (any second factor, e.g. an e-mailed
+    /// or SMS code, is asked mid-login): `wanted` if given, else the first one whose
+    /// first factor is neither a certificate nor an external identity provider.
+    pub fn password_option(&self, wanted: Option<&str>) -> Result<LoginOption, String> {
+        if let Some(w) = wanted {
+            return self.option(w).cloned().ok_or_else(|| {
+                format!(
+                    "the gateway has no login option {w:?} (it offers: {})",
+                    self.describe_options()
+                )
+            });
+        }
+        self.login_options
+            .iter()
+            .find(|o| {
+                o.factors
+                    .first()
+                    .map(|f| f != "certificate" && f != "identity_provider")
+                    .unwrap_or(false)
+            })
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "the gateway offers no password login (it offers: {})",
+                    self.describe_options()
+                )
+            })
+    }
+
     pub fn describe_options(&self) -> String {
         self.login_options
             .iter()

@@ -287,7 +287,7 @@ fn run(p: &Profile, o: &Opts) -> Result<i32, String> {
                 "asked on the terminal"
             };
             let token = if p.backend == Backend::CheckPoint && !p.cp_cert {
-                " + token code (asked)"
+                " + token code (asked; an e-mailed code is asked after connecting)"
             } else {
                 ""
             };
@@ -332,7 +332,11 @@ fn run(p: &Profile, o: &Opts) -> Result<i32, String> {
             }
         };
         first_line = Some(if p.backend == Backend::CheckPoint && !p.cp_cert {
-            match term.ask("Token code", false, || false) {
+            match term.ask(
+                "Token code (Enter if it is sent by e-mail/SMS)",
+                false,
+                || false,
+            ) {
                 Answer::Line(t) => format!("{pw}{}", t.trim()),
                 _ => return Err("no token code given".into()),
             }

@@ -212,7 +212,7 @@ impl App {
             .filter(|k| !k.is_empty());
         let mut args = profiles::engine_args(&p, psk.is_some());
         args.extend(["--label".to_string(), name.clone()]);
-        // Secrets go on stdin. The Check Point token code follows the PIN; a
+        // Secrets go on stdin. A Check Point SecurID token code follows the PIN; a
         // second factor asked later comes as `# AUTH-PROMPT: code:`.
         let mut stdin_lines = if p.backend == Backend::CheckPoint && !p.cp_cert {
             let passcode = format!(

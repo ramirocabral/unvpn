@@ -264,7 +264,11 @@ pub fn ident_body(id: &IdPayload) -> Vec<u8> {
 
 /// Main Mode msg 5 payloads for hybrid auth (no client certificate):
 /// Hash(HASH_I), ID (empty UserFQDN), Notify(CccAuth, auth_blob). Encrypted.
-pub fn build_auth_payloads(session: &Ikev1Session, realm: &str) -> Vec<Payload> {
+pub fn build_auth_payloads(
+    session: &Ikev1Session,
+    realm: &str,
+    secondary_realm_hash: Option<&str>,
+) -> Vec<Payload> {
     let id = IdPayload {
         id_type: IdentityType::UserFqdn.into(),
         protocol_id: 0,
@@ -280,7 +284,7 @@ pub fn build_auth_payloads(session: &Ikev1Session, realm: &str) -> Vec<Payload> 
         protocol_id: ProtocolId::Isakmp.into(),
         spi,
         message_type: NotifyMessageType::CccAuth.into(),
-        data: auth_blob(realm, None).into_bytes(),
+        data: auth_blob(realm, secondary_realm_hash).into_bytes(),
     };
 
     vec![

@@ -113,9 +113,11 @@ impl App {
             .subtitle_lines(0)
             .build();
 
-        let token_row = adw::EntryRow::builder().title("Token (email)").build();
+        let token_row = adw::EntryRow::builder()
+            .title("Token code (optional)")
+            .build();
 
-        let cp_auth_model = gtk::StringList::new(&["SecurID token", "Certificate"]);
+        let cp_auth_model = gtk::StringList::new(&["Password / token", "Certificate"]);
         let cp_auth_row = adw::ComboRow::builder()
             .title("Authentication")
             .model(&cp_auth_model)

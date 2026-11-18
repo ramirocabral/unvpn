@@ -75,7 +75,8 @@ impl Layout {
             _ => Required,
         };
         let (realm, realm_title) = match b {
-            Backend::CheckPoint if cp_cert => (Optional, "Login option (optional)"),
+            // Empty: the engine picks the gateway's password (or certificate) option.
+            Backend::CheckPoint => (Optional, "Login option (optional)"),
             Backend::AnyConnect => (Optional, "Group (optional)"),
             Backend::GlobalProtect => (Optional, "Gateway (optional)"),
             Backend::FortiIpsec => (Optional, "Local ID (optional)"),
@@ -86,8 +87,9 @@ impl Layout {
         };
         let (password, password_title) = match b {
             Backend::CheckPoint if cp_cert => (Required, "Certificate password"),
-            // PIN+tokencode or just the tokencode: the PIN may be empty.
-            Backend::CheckPoint => (Optional, "PIN"),
+            // The password, or a SecurID PIN (the token code goes in its own field,
+            // or here alone when there is no PIN).
+            Backend::CheckPoint => (Required, "Password / PIN"),
             _ => (creds, "Password"),
         };
         Layout {
@@ -109,8 +111,10 @@ impl Layout {
             password,
             password_title,
             remember_password: password.shown(),
+            // A SecurID code follows the PIN; an e-mailed / SMS code only exists once
+            // the gateway has checked the password, so the engine asks for it then.
             token: if b == Backend::CheckPoint && !cp_cert {
-                Required
+                Optional
             } else {
                 Hidden
             },
@@ -167,7 +171,7 @@ mod tests {
             (Backend::Ivanti, sso, &[]),
             (Backend::F5, sso, &["user", "password"]),
             (Backend::FortiIpsec, none, &["user", "password", "psk"]),
-            (Backend::CheckPoint, none, &["user", "token"]),
+            (Backend::CheckPoint, none, &["user", "password"]),
             (Backend::CheckPoint, cert, &["password", "cert"]),
             (Backend::OpenVpn, none, &[]),
             (
@@ -189,8 +193,15 @@ mod tests {
     fn labels_and_toggles() {
         let none = Choices::default();
         let cp = Layout::of(Backend::CheckPoint, none);
-        assert_eq!((cp.password, cp.password_title), (Optional, "PIN"));
-        assert!(cp.remember_password && !cp.realm.shown());
+        assert_eq!(
+            (cp.password, cp.password_title),
+            (Required, "Password / PIN")
+        );
+        assert_eq!(
+            (cp.token, cp.realm_title),
+            (Optional, "Login option (optional)")
+        );
+        assert!(cp.remember_password && cp.realm.shown());
         let cert = Layout::of(
             Backend::CheckPoint,
             Choices {
