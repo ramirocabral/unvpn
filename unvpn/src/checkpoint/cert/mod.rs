@@ -101,8 +101,9 @@ impl GatewayInfo {
     }
 
     /// The login option for a password login (any second factor, e.g. an e-mailed
-    /// or SMS code, is asked mid-login): `wanted` if given, else the first one whose
-    /// first factor is neither a certificate nor an external identity provider.
+    /// or SMS code, is asked mid-login): `wanted` if given, else `vpn` if it takes a
+    /// password, else the first one whose first factor is neither a certificate nor
+    /// an external identity provider.
     pub fn password_option(&self, wanted: Option<&str>) -> Result<LoginOption, String> {
         if let Some(w) = wanted {
             return self.option(w).cloned().ok_or_else(|| {
@@ -112,14 +113,16 @@ impl GatewayInfo {
                 )
             });
         }
-        self.login_options
-            .iter()
-            .find(|o| {
-                o.factors
-                    .first()
-                    .map(|f| f != "certificate" && f != "identity_provider")
-                    .unwrap_or(false)
-            })
+        let password = |o: &&LoginOption| {
+            o.factors
+                .first()
+                .is_some_and(|f| f != "certificate" && f != "identity_provider")
+        };
+        let mut options = self.login_options.iter().filter(password);
+        options
+            .clone()
+            .find(|o| o.id == "vpn")
+            .or_else(|| options.next())
             .cloned()
             .ok_or_else(|| {
                 format!(
@@ -290,4 +293,55 @@ fn read_new_password() -> Result<String, String> {
     }
     enroll::validate_password(&first)?;
     Ok(first)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn gateway(options: &[(&str, &[&str])]) -> GatewayInfo {
+        GatewayInfo {
+            ca_fingerprints: Vec::new(),
+            login_options: options
+                .iter()
+                .map(|(id, factors)| LoginOption {
+                    id: id.to_string(),
+                    display_name: String::new(),
+                    factors: factors.iter().map(|f| f.to_string()).collect(),
+                    secondary_realm_hash: String::new(),
+                })
+                .collect(),
+        }
+    }
+
+    fn picked(g: &GatewayInfo) -> Result<String, String> {
+        g.password_option(None).map(|o| o.id)
+    }
+
+    #[test]
+    fn password_option_prefers_vpn() {
+        let g = gateway(&[
+            ("vpn_cert", &["certificate"]),
+            ("vpn_Password", &["password"]),
+            ("vpn", &["securid"]),
+        ]);
+        assert_eq!(picked(&g).unwrap(), "vpn");
+        assert_eq!(
+            g.password_option(Some("vpn_Password")).unwrap().id,
+            "vpn_Password"
+        );
+        assert!(g.password_option(Some("vpn_other")).is_err());
+    }
+
+    #[test]
+    fn password_option_without_vpn() {
+        let g = gateway(&[
+            ("vpn_SSO_Azure", &["identity_provider"]),
+            ("vpn_MFA", &["password", "sms"]),
+        ]);
+        assert_eq!(picked(&g).unwrap(), "vpn_MFA");
+        let g = gateway(&[("vpn", &["certificate"]), ("vpn_MFA", &["password"])]);
+        assert_eq!(picked(&g).unwrap(), "vpn_MFA");
+        assert!(picked(&gateway(&[("vpn_cert", &["certificate"])])).is_err());
+    }
 }

@@ -167,6 +167,8 @@ pub fn cmd_ike(args: &[String]) {
     let mut pw_realm_hash: Option<String> = None;
     let realm = match &cert_login {
         Some(c) => c.realm.clone(),
+        // The probe stops before any login option is sent.
+        None if probe_sig => realm.unwrap_or_default(),
         None => match resolve_password_realm(&host, realm.as_deref()) {
             Ok((r, h)) => {
                 pw_realm_hash = h;
