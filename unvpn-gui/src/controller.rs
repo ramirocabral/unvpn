@@ -579,7 +579,9 @@ impl App {
             view: self.tray_view.clone(),
             tx: self.tx.clone(),
         };
-        match tray.spawn() {
+        // The bar may own the watcher name before its host is registered (login race);
+        // keep the service up so it registers once the host appears or restarts.
+        match tray.assume_sni_available(true).spawn() {
             Ok(h) => *self.tray.borrow_mut() = Some(h),
             Err(e) => eprintln!("unvpn: tray unavailable ({e}) — running as a normal window."),
         }
