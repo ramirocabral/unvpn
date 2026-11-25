@@ -52,6 +52,7 @@ impl App {
         self.forti_proto_row.set_visible(l.forti_protocol);
         self.sso_row.set_visible(l.sso_choice);
         self.ua_row.set_visible(l.sso_user_agent);
+        self.split_row.set_visible(l.split);
         self.cp_auth_row.set_visible(l.cp_auth_choice);
         self.user_row.set_visible(l.user.shown());
         self.password_row.set_visible(l.password.shown());
@@ -357,6 +358,7 @@ impl App {
         self.psk_row
             .set_text(&profiles::secret_get(&profiles::psk_account(&p.name)).unwrap_or_default());
         self.ua_row.set_text(&p.sso_user_agent);
+        self.split_row.set_text(&p.split_routes.join(" "));
         self.emssn_row.set_text(&p.emssn);
         self.fctver_row.set_text(&p.fctver);
         self.remember_row.set_active(p.remember_password);
@@ -423,6 +425,17 @@ impl App {
                 self.cert_row.text().trim().to_string()
             } else {
                 String::new()
+            },
+            split_routes: if l.split {
+                self.split_row
+                    .text()
+                    .split([' ', ',', '\t', '\n'])
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            } else {
+                Vec::new()
             },
         }
     }
@@ -580,6 +593,7 @@ impl App {
         self.realm_row.set_text("");
         self.psk_row.set_text("");
         self.ua_row.set_text("");
+        self.split_row.set_text("");
         self.emssn_row.set_text("");
         self.fctver_row.set_text("");
         self.token_row.set_text("");

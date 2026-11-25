@@ -6,8 +6,42 @@ use crate::tun;
 use std::fs::File;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 pub type Net = (Ipv4Addr, u8);
+
+/// Session-wide split-tunnel override (`--split`), parsed once at the top level:
+/// the only subnets routed into the tunnel, with the system's own default route
+/// and DNS left as they are. Applies to every back-end that routes through
+/// [`configure`].
+static SPLIT: Mutex<Vec<Net>> = Mutex::new(Vec::new());
+
+/// Set the split-tunnel override from the top-level flags, before any back-end runs.
+pub fn set_split(nets: Vec<Net>) {
+    *SPLIT.lock().unwrap() = nets;
+}
+
+fn split_override() -> Vec<Net> {
+    SPLIT.lock().unwrap().clone()
+}
+
+/// An `addr/len` IPv4 CIDR (e.g. `10.0.0.0/8`), as `--split` takes.
+pub fn parse_cidr(s: &str) -> Result<Net, String> {
+    let (addr, len) = s
+        .split_once('/')
+        .ok_or_else(|| format!("bad CIDR (expected addr/len): {s}"))?;
+    let addr: Ipv4Addr = addr
+        .trim()
+        .parse()
+        .map_err(|_| format!("bad IPv4 address in CIDR: {s}"))?;
+    let len: u8 = len
+        .trim()
+        .parse()
+        .ok()
+        .filter(|&l| l <= 32)
+        .ok_or_else(|| format!("bad prefix length in CIDR (0–32): {s}"))?;
+    Ok((addr, len))
+}
 
 /// The routes of one tunnel.
 #[derive(Debug, Default, Clone)]
@@ -185,6 +219,30 @@ pub fn configure(
     dns: &[Ipv4Addr],
     domains: &str,
 ) -> Result<NetRestore, String> {
+    // A session-wide `--split` turns any routing back-end into a split tunnel:
+    // only these subnets go into the tunnel, the default route and the system
+    // resolver stay as they are, so the connection never takes over the machine.
+    let split = split_override();
+    let split_active = !split.is_empty();
+    let split_plan = plan.and_then(|p| {
+        split_active.then(|| RoutePlan {
+            gateway: p.gateway,
+            exclude: Vec::new(),
+            full: false,
+            include: split.clone(),
+        })
+    });
+    let (plan, dns, domains): (Option<&RoutePlan>, &[Ipv4Addr], &str) = match &split_plan {
+        Some(sp) => {
+            out!(
+                "# split tunnel (--split): {} subnet(s) into the tunnel; default route and DNS kept",
+                sp.include.len()
+            );
+            (Some(sp), &[], "")
+        }
+        None => (plan, dns, domains),
+    };
+
     let mut restore = NetRestore::default();
     match plan {
         None => out!("# --no-routes: installing no routes/DNS (reach hosts with `ping -I {dev}`)"),
@@ -311,6 +369,15 @@ mod tests {
                 pin: None,
             }
         );
+    }
+
+    #[test]
+    fn parse_cidr_validates_address_and_prefix() {
+        assert_eq!(parse_cidr("10.157.0.0/16").unwrap(), (ip("10.157.0.0"), 16));
+        assert_eq!(parse_cidr("0.0.0.0/0").unwrap(), (ip("0.0.0.0"), 0));
+        assert!(parse_cidr("10.0.0.0").is_err()); // no prefix
+        assert!(parse_cidr("10.0.0.0/33").is_err()); // prefix out of range
+        assert!(parse_cidr("nope/8").is_err()); // bad address
     }
 
     #[test]

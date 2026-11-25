@@ -87,6 +87,7 @@ struct App {
     realm_row: adw::EntryRow,
     psk_row: adw::PasswordEntryRow,
     ua_row: adw::EntryRow,
+    split_row: adw::EntryRow,
     // FortiClient IPsec "advanced" fields, tucked into a collapsible expander so the
     // common form stays short.
     advanced_row: adw::ExpanderRow,

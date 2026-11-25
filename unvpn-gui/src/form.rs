@@ -61,6 +61,9 @@ pub struct Layout {
     pub key_pass: bool,
     pub killswitch: bool,
     pub no_dtls: bool,
+    /// Split-tunnel override (a list of CIDRs to route into the tunnel), for every
+    /// back-end that routes through the shared config (all but WireGuard).
+    pub split: bool,
 }
 
 impl Layout {
@@ -131,6 +134,8 @@ impl Layout {
             // WireGuard is dual-stack and kernel-routed: the kill switch doesn't apply.
             killswitch: b != Backend::WireGuard,
             no_dtls: b.uses_dtls(),
+            // WireGuard is kernel-routed via its own AllowedIPs, not this override.
+            split: b != Backend::WireGuard,
         }
     }
 }
@@ -214,6 +219,8 @@ mod tests {
         let wg = Layout::of(Backend::WireGuard, none);
         assert!(wg.gateway_file && !wg.gateway_must_exist && !wg.killswitch);
         assert!(!wg.remember_password);
+        // Split routes apply to every routing back-end, but not kernel-routed WireGuard.
+        assert!(!wg.split && Layout::of(Backend::Forti, none).split);
         let gp = Layout::of(Backend::GlobalProtect, none);
         assert_eq!(
             (gp.gateway_title, gp.realm_title),

@@ -141,6 +141,13 @@ pub struct Profile {
     /// the engine as `--pin`; a different certificate there is then refused.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pins: BTreeMap<String, String>,
+    /// Split-tunnel override: route only these subnets (`addr/len` CIDRs) through
+    /// the tunnel and keep the system's own default route, DNS and traffic. Empty
+    /// honours whatever the gateway pushes (usually a full tunnel). Passed to the
+    /// engine as one `--split` per entry; used by every back-end but WireGuard,
+    /// which splits via its own config.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub split_routes: Vec<String>,
 }
 
 impl Profile {
@@ -491,6 +498,13 @@ pub fn engine_args(p: &Profile, psk: bool) -> Vec<String> {
         a.push("--no-dtls");
     }
     let mut out: Vec<String> = a.into_iter().map(String::from).collect();
+    // Split routes apply to any back-end that routes through the shared config
+    // (every one but WireGuard, which routes itself via its own AllowedIPs).
+    if p.backend != Backend::WireGuard {
+        for r in p.split_routes.iter().map(|r| r.trim()).filter(|r| !r.is_empty()) {
+            out.extend(["--split".to_string(), r.to_string()]);
+        }
+    }
     for (endpoint, fp) in &p.pins {
         out.extend(["--pin".to_string(), format!("{endpoint}={fp}")]);
     }
@@ -738,6 +752,19 @@ mod tests {
         assert_eq!(
             args("backend = \"ivanti\"\ngateway = \"vpn.example.com\"\nsso = true\nno_dtls = true"),
             "ivanti -g vpn.example.com --saml --connect"
+        );
+    }
+
+    #[test]
+    fn split_routes_go_to_the_engine_for_any_routing_backend() {
+        assert_eq!(
+            args("backend = \"forti\"\ngateway = \"vpn.example.com\"\nuser = \"alice\"\nsplit_routes = [\"10.0.0.0/8\", \"192.168.1.0/24\"]"),
+            "forti -g vpn.example.com -u alice --connect --split 10.0.0.0/8 --split 192.168.1.0/24"
+        );
+        // WireGuard splits via its own config, so --split is not emitted for it.
+        assert_eq!(
+            args("backend = \"wireguard\"\ngateway = \"/x/wg0.conf\"\nsplit_routes = [\"10.0.0.0/8\"]"),
+            "wireguard -c /x/wg0.conf --connect"
         );
     }
 

@@ -157,6 +157,11 @@ impl App {
         let ua_row = adw::EntryRow::builder()
             .title("SSO User-Agent (optional)")
             .build();
+        // Split tunnel: space/comma-separated CIDRs that go through the tunnel;
+        // everything else (and the default route + DNS) is left alone.
+        let split_row = adw::EntryRow::builder()
+            .title("Split routes (optional, e.g. 10.0.0.0/8)")
+            .build();
 
         // FortiClient IPsec advanced settings, collapsed by default so the form isn't
         // cluttered. Deployment-specific values that most profiles leave blank.
@@ -222,6 +227,7 @@ impl App {
         form_group.add(&enroll_row);
         form_group.add(&psk_row);
         form_group.add(&ua_row);
+        form_group.add(&split_row);
         form_group.add(&user_row);
         form_group.add(&password_row);
         form_group.add(&key_pass_row);
@@ -370,6 +376,7 @@ impl App {
             realm_row,
             psk_row,
             ua_row,
+            split_row,
             advanced_row,
             emssn_row,
             fctver_row,

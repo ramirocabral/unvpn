@@ -131,6 +131,7 @@ fn usage() {
     eprintln!(
         "  -g is the full gateway URL incl. any group path, e.g. https://vpn.example.com/GROUP"
     );
+    eprintln!("  --split <addr>/<len> (global) makes any back-end a split tunnel; see `unvpn --help`");
     eprintln!("  password/OTP are read from stdin (no echo) when not given with --password/--code");
 }
 

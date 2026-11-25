@@ -43,22 +43,35 @@ pub fn main() {
     // back-end sees the same policy without each parsing these itself.
     //   --killswitch   fail-closed firewall (default off)
     //   --allow-ipv6   keep IPv6 egress (default: blocked, since the tunnels are v4)
+    //   --split <addr/len>   split tunnel: route only these subnets, keep the rest (repeatable)
     //   --pin [<host>:<port>=]sha256:<hex>   trust that gateway certificate (repeatable)
     //   --insecure     trust any gateway certificate
     //   --label <name> the connection's name in `unvpn status`
     //   --detachable   once up, keep the tunnel when stdin closes
     let mut killswitch = false;
     let mut block_ipv6 = true;
+    let mut split: Vec<tunnel_common::Net> = Vec::new();
     let mut tls_flags: Vec<String> = Vec::new();
     let mut pins: Vec<String> = Vec::new();
     let mut insecure = false;
     let mut label = String::new();
     let mut args: Vec<String> = Vec::new();
     let mut it = std::env::args().skip(1);
+    let bad_cidr = |e: String| -> ! {
+        eprintln!("{e}");
+        std::process::exit(2);
+    };
     while let Some(a) = it.next() {
         match a.as_str() {
             "--killswitch" => killswitch = true,
             "--allow-ipv6" => block_ipv6 = false,
+            "--split" => {
+                let Some(v) = it.next() else {
+                    eprintln!("--split needs a value: <addr>/<len>");
+                    std::process::exit(2);
+                };
+                split.push(tunnel_common::parse_cidr(&v).unwrap_or_else(|e| bad_cidr(e)));
+            }
             "--detachable" => sysnet::set_detachable(true),
             "--label" => {
                 let Some(v) = it.next() else {
@@ -79,6 +92,10 @@ pub fn main() {
                 pins.push(v.clone());
                 tls_flags.extend([a, v]);
             }
+            _ if a.starts_with("--split=") => {
+                let v = a.strip_prefix("--split=").unwrap();
+                split.push(tunnel_common::parse_cidr(v).unwrap_or_else(|e| bad_cidr(e)));
+            }
             _ => match a.strip_prefix("--pin=") {
                 Some(v) => {
                     pins.push(v.to_string());
@@ -87,6 +104,13 @@ pub fn main() {
                 None => args.push(a),
             },
         }
+    }
+    // A split tunnel's whole point is to keep the machine's own network up, so the
+    // leak guard (kill switch, IPv6 block) would defeat it — turn both off with it.
+    if !split.is_empty() {
+        killswitch = false;
+        block_ipv6 = false;
+        tunnel_common::set_split(split);
     }
     leakguard::configure(killswitch, block_ipv6);
     if let Err(e) = net::trust::configure(&pins, insecure) {
@@ -248,6 +272,9 @@ fn usage(out: &mut dyn Write) {
         out,
         "  --allow-ipv6   keep IPv6 egress (default: blocked, since the tunnels are IPv4-only)"
     );
+    let _ = writeln!(out, "  --split <addr>/<len>");
+    let _ = writeln!(out, "                 split tunnel: route only these subnets through the tunnel (repeatable) and");
+    let _ = writeln!(out, "                 keep the system's default route and DNS, so internet/DNS stay as they are");
     let _ = writeln!(out, "  --pin [<host>:<port>=]sha256:<hex>");
     let _ = writeln!(out, "                 trust this gateway certificate when no system CA vouches for it (repeatable);");
     let _ = writeln!(
