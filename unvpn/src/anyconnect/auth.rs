@@ -676,7 +676,15 @@ fn fill_form(
                     v
                 }
                 (Kind::Password, "verify_password") => new_password.clone().unwrap_or_default(),
-                // secondary_password, answer, a re-asked password in a challenge, …
+                (Kind::Password, "secondary_password") => {
+                    // The second factor (an RSA token / OTP, or a second password).
+                    // Both password fields are labelled just "Password" and the form's
+                    // message addresses the whole form ("enter your username and
+                    // password"), so neither tells the user this is the second factor —
+                    // ask for it in plain words instead of echoing that message.
+                    p.ask("code", "Token code or second-factor password")?
+                }
+                // answer, a re-asked password in a challenge, …
                 (Kind::Password, _) => p.ask("code", &prompt_msg(f))?,
             }
         };
@@ -882,6 +890,42 @@ mod tests {
         assert_eq!(a2, vec![("answer".into(), "987654".into())]);
         assert_eq!(s2.asked[0].0, "code");
         assert!(s2.asked[0].1.contains("Enter your OTP"));
+    }
+
+    #[test]
+    fn secondary_password_prompt_is_clear_not_the_form_message() {
+        // A gateway whose group asks for username + password + a second factor, all
+        // in one form with the generic "enter your username and password" message.
+        let f = parse_reply(
+            r#"<config-auth type="auth-request"><auth id="main"><title>Login</title><message>Please enter your username and password.</message><form><input type="text" name="username" label="Username:"/><input type="password" name="password" label="Password:"/><input type="password" name="secondary_password" label="Password:"/></form></auth></config-auth>"#,
+        )
+        .unwrap()
+        .form
+        .unwrap();
+        let creds = Creds {
+            user: "alice".into(),
+            password: Some("primary".into()),
+            group: None,
+        };
+        let mut s = Script {
+            pw: String::new(),
+            asked: vec![],
+            answers: vec!["token123".into()],
+        };
+        let mut sent = false;
+        let a = fill_form(&f, None, &creds, &mut sent, &mut s).unwrap();
+        assert_eq!(
+            a,
+            vec![
+                ("username".into(), "alice".into()),
+                ("password".into(), "primary".into()),
+                ("secondary_password".into(), "token123".into()),
+            ]
+        );
+        // The second factor is asked for plainly — not "enter your username and password".
+        assert_eq!(s.asked[0].0, "code");
+        assert!(!s.asked[0].1.to_lowercase().contains("username"));
+        assert!(s.asked[0].1.to_lowercase().contains("token"));
     }
 
     #[test]
