@@ -477,6 +477,24 @@ impl Vpn {
         self.send(EngineEvent::StateChanged);
     }
 
+    /// A disconnect that is taking too long (a wedged logout, a lingering control
+    /// socket): stop showing `Disconnecting` so the UI can't stall on it. A
+    /// followed engine is released — it tears down on its own; our own engine is
+    /// left running to finish, and [`Vpn::poll`] reaps it when it exits. Returns
+    /// whether anything changed.
+    pub fn give_up_disconnect(&mut self) -> bool {
+        {
+            let mut st = self.state.lock().unwrap();
+            if *st != State::Disconnecting {
+                return false;
+            }
+            *st = State::Disconnected;
+        }
+        self.attached = None;
+        self.send(EngineEvent::StateChanged);
+        true
+    }
+
     /// The engine has exited (for quitting, which waits for that a few seconds).
     pub fn gone(&mut self) -> bool {
         match (self.child.as_mut(), &self.attached) {

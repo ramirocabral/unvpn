@@ -15,6 +15,11 @@ use crate::{profiles, tray, App};
 /// A drop shorter than this (a transparent reconnect) raises no notification.
 const DROP_NOTICE_AFTER: Duration = Duration::from_secs(5);
 
+/// Still tearing down this long after `disconnect`: stop waiting on it in the UI,
+/// so a wedged logout or a lingering control socket can't leave a row stuck on
+/// "disconnecting". The engine's own teardown is unaffected and finishes anyway.
+const DISCONNECT_WATCHDOG: Duration = Duration::from_secs(10);
+
 impl App {
     /// The running connection that goes by `name`.
     pub(crate) fn session_named(&self, name: &str) -> Option<SessionId> {
@@ -252,6 +257,18 @@ impl App {
         self.with_session(id, |s| s.vpn.disconnect());
         self.clear_prompt_of(id);
         self.on_session_state(id);
+        // Don't let a stalled teardown leave the row stuck on "disconnecting".
+        let app = self.rc();
+        glib::timeout_add_local_once(DISCONNECT_WATCHDOG, move || app.give_up_disconnect(id));
+    }
+
+    /// The watchdog from [`disconnect_session`]: if a connection is still shown as
+    /// `Disconnecting` after a grace period, stop waiting on its engine.
+    fn give_up_disconnect(&self, id: SessionId) {
+        if self.with_session(id, |s| s.vpn.give_up_disconnect()) == Some(true) {
+            self.session_log(id, "disconnect is taking too long — giving up on it");
+            self.on_session_state(id);
+        }
     }
 
     pub(crate) fn disconnect_all(&self) {

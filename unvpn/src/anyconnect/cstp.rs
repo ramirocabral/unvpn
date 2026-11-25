@@ -34,6 +34,9 @@ static AC_STOP: AtomicBool = AtomicBool::new(false);
 const TUN_NAME: &str = "cpac0";
 const TUNNEL_PATH: &str = "/CSCOSSLC/tunnel";
 const MAX_RECONNECT_TRIES: u32 = 10;
+/// The teardown logout is courtesy only; bound it well under the session timeout
+/// so a dead path can't stall the disconnect (and the UI's "disconnecting").
+const LOGOUT_TIMEOUT: Duration = Duration::from_secs(3);
 
 const AC_DATA: u8 = 0;
 const AC_DPD_OUT: u8 = 3;
@@ -150,12 +153,8 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
 
     AC_STOP.store(false, Ordering::SeqCst);
     tunnel_common::arm_stop(&AC_STOP)?;
-    let plan = (!opts.no_routes).then(|| {
-        route_plan(
-            tunnel_common::resolve_v4(&session.ep.host, session.ep.port).ok(),
-            &cfg,
-        )
-    });
+    let gw = tunnel_common::resolve_v4(&session.ep.host, session.ep.port).ok();
+    let plan = (!opts.no_routes).then(|| route_plan(gw, &cfg));
     let restore = tunnel_common::configure(&tun_name, plan.as_ref(), &dns, &cfg.domains.join(" "))?;
 
     if opts.watch_stdin {
@@ -217,7 +216,9 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
         dtls = try_dtls(session, &chan, &newcfg, opts.no_dtls);
     };
 
-    // Teardown: BYE frame, then logout, then NetRestore (DNS + routes) on drop.
+    // Teardown: BYE frame, then restore DNS/routes, then a best-effort logout.
+    // Restoring before the logout returns the user's connectivity at once and
+    // keeps a dead gateway from stalling teardown — the logout is bounded too.
     out!("# disconnecting — sending BYE, restoring DNS/routes …");
     if let Some(d) = &dtls {
         let _ = d.send(AC_DISCONN, &[0xb0]);
@@ -225,12 +226,16 @@ pub fn run(session: &mut Session, opts: RunOpts) -> Result<(), String> {
     let _ = chan.send(AC_DISCONN, &[0xb0]);
     drop(dtls);
     drop(chan);
+    drop(restore);
+    let logout_ep = http::Endpoint {
+        timeout: LOGOUT_TIMEOUT,
+        ..session.ep.clone()
+    };
     let _ = http::send(
-        &session.ep,
+        &logout_ep,
         Request::post("/+webvpn+/webvpn_logout.html", None, b""),
         &mut session.cookies,
     );
-    drop(restore);
     final_result
 }
 
