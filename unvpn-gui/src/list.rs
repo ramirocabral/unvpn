@@ -35,8 +35,24 @@ impl App {
                 .valign(gtk::Align::Center)
                 .tooltip_text("Delete profile")
                 .build();
+            let menu_btn = gtk::MenuButton::builder()
+                .icon_name("view-more-symbolic")
+                .css_classes(["flat"])
+                .valign(gtk::Align::Center)
+                .tooltip_text("More")
+                .build();
+            let popover = gtk::Popover::builder().build();
+            let export_item = gtk::Button::builder()
+                .label("Export…")
+                .css_classes(["flat"])
+                .build();
+            let pbox = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            pbox.append(&export_item);
+            popover.set_child(Some(&pbox));
+            menu_btn.set_popover(Some(&popover));
             row.add_suffix(&conn);
             row.add_suffix(&del);
+            row.add_suffix(&menu_btn);
             let handle = gtk::Image::from_icon_name("list-drag-handle-symbolic");
             handle.set_tooltip_text(Some("Drag to reorder"));
             row.add_prefix(&handle);
@@ -65,6 +81,16 @@ impl App {
             let app3 = app_rc.clone();
             let name = p.name.clone();
             del.connect_clicked(move |_| app3.confirm_delete_profile(&name));
+            let app4 = app_rc.clone();
+            let name = p.name.clone();
+            export_item.connect_clicked(glib::clone!(
+                #[weak]
+                popover,
+                move |_| {
+                    popover.popdown();
+                    app4.export_profile_named(&name);
+                }
+            ));
 
             self.profiles_group.add(&row);
             self.profile_rows.borrow_mut().push(row);
@@ -279,11 +305,37 @@ impl App {
     }
 
     pub(crate) fn export_profiles(&self) {
-        let n = self.profiles.borrow().len();
-        if n == 0 {
+        let profs = self.profiles.borrow().clone();
+        if profs.is_empty() {
             self.toast("No saved profiles to export");
             return;
         }
+        self.start_export(profs, "unvpn-profiles".to_string());
+    }
+
+    /// Export a single saved profile, named on its export file.
+    pub(crate) fn export_profile_named(&self, name: &str) {
+        let Some(p) = self
+            .profiles
+            .borrow()
+            .iter()
+            .find(|p| p.name == name)
+            .cloned()
+        else {
+            self.toast("Profile not found");
+            return;
+        };
+        self.start_export(vec![p], format!("unvpn-{}", bundle::slug(name)));
+    }
+
+    /// Ask for a passphrase, then a file, and seal the given profiles into it.
+    fn start_export(&self, profs: Vec<Profile>, default_name: String) {
+        let n = profs.len();
+        let what = if n == 1 {
+            "This profile, with its saved password, PSK and VPN files,".to_string()
+        } else {
+            format!("{n} profiles, with their saved passwords, PSKs and VPN files,")
+        };
         let pass = adw::PasswordEntryRow::builder().title("Passphrase").build();
         let confirm = adw::PasswordEntryRow::builder()
             .title("Repeat passphrase")
@@ -292,8 +344,8 @@ impl App {
         let dialog = passphrase_dialog(
             "Export Profiles",
             &format!(
-                "{n} profile(s), with their saved passwords, PSKs and VPN files. The export is encrypted \
-                 with this passphrase (at least {} characters); you'll need it to import.",
+                "{what} is exported encrypted with this passphrase (at least {} characters); \
+                 you'll need it to import.",
                 bundle::MIN_PASSPHRASE
             ),
             ("export", "Export…"),
@@ -323,18 +375,18 @@ impl App {
                 #[weak]
                 pass,
                 move |_, _| {
-                    app.pick_export_file(pass.text().to_string());
+                    app.pick_export_file(pass.text().to_string(), profs.clone(), default_name.clone());
                 }
             ),
         );
         dialog.present(Some(&self.window));
     }
 
-    pub(crate) fn pick_export_file(&self, pass: String) {
+    fn pick_export_file(&self, pass: String, profs: Vec<Profile>, default_name: String) {
         let dialog = gtk::FileDialog::builder()
             .title("Export Profiles")
             .modal(true)
-            .initial_name(format!("unvpn-profiles.{}", bundle::FILE_EXT))
+            .initial_name(format!("{default_name}.{}", bundle::FILE_EXT))
             .build();
         let app = self.rc();
         dialog.save(Some(&self.window), gio::Cancellable::NONE, move |res| {
@@ -344,12 +396,12 @@ impl App {
             if path.extension().is_none() {
                 path.set_extension(bundle::FILE_EXT);
             }
-            app.write_export(path, pass);
+            app.write_export(path, pass, profs);
         });
     }
 
-    pub(crate) fn write_export(&self, path: std::path::PathBuf, pass: String) {
-        let (b, skipped) = bundle::collect(&self.profiles.borrow());
+    fn write_export(&self, path: std::path::PathBuf, pass: String, profs: Vec<Profile>) {
+        let (b, skipped) = bundle::collect(&profs);
         let n = b.entries.len();
         let app = self.rc();
         glib::spawn_future_local(async move {

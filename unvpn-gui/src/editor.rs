@@ -498,6 +498,16 @@ impl App {
         self.toast(&format!("Saved profile “{name}”"));
     }
 
+    /// Export the profile currently open in the editor, keyed by its name.
+    pub(crate) fn export_current_profile(&self) {
+        let name = self.name_row.text().trim().to_string();
+        if name.is_empty() || !self.profiles.borrow().iter().any(|p| p.name == name) {
+            self.toast("Save the profile first, then export");
+            return;
+        }
+        self.export_profile_named(&name);
+    }
+
     /// Show the saved profile's trusted gateway certificates, if any.
     pub(crate) fn update_pins_row(&self) {
         let name = self.name_row.text().trim().to_string();

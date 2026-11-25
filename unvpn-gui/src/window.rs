@@ -44,7 +44,7 @@ impl App {
         let search_bar = gtk::SearchBar::builder()
             .child(
                 &adw::Clamp::builder()
-                    .maximum_size(536)
+                    .maximum_size(616)
                     .child(&search_entry)
                     .build(),
             )
@@ -310,8 +310,14 @@ impl App {
             .build();
         search_bar.set_key_capture_widget(Some(&main_page));
 
+        let editor_header = adw::HeaderBar::new();
+        let editor_export_btn = gtk::Button::builder()
+            .label("Export…")
+            .tooltip_text("Export this profile")
+            .build();
+        editor_header.pack_end(&editor_export_btn);
         let editor_toolbar = adw::ToolbarView::new();
-        editor_toolbar.add_top_bar(&adw::HeaderBar::new());
+        editor_toolbar.add_top_bar(&editor_header);
         editor_toolbar.set_content(Some(&editor_content));
         let editor_page = adw::NavigationPage::builder()
             .tag("editor")
@@ -327,7 +333,7 @@ impl App {
         let window = adw::ApplicationWindow::builder()
             .application(app)
             .title("unvpn")
-            .default_width(600)
+            .default_width(680)
             .default_height(840)
             .content(&toast)
             .build();
@@ -396,14 +402,19 @@ impl App {
         });
         *this.me.borrow_mut() = Rc::downgrade(&this);
 
-        Self::wire(&this, &add_btn, &forget_pins_btn);
+        Self::wire(&this, &add_btn, &forget_pins_btn, &editor_export_btn);
         this.refresh_profiles_list();
         this.update_form_visibility();
         this.sync_ui();
         this
     }
 
-    pub(crate) fn wire(app: &Rc<Self>, add_btn: &gtk::Button, forget_pins: &gtk::Button) {
+    pub(crate) fn wire(
+        app: &Rc<Self>,
+        add_btn: &gtk::Button,
+        forget_pins: &gtk::Button,
+        editor_export: &gtk::Button,
+    ) {
         app.backend_row.connect_selected_notify(glib::clone!(
             #[strong]
             app,
@@ -509,6 +520,11 @@ impl App {
             app,
             move |_| app.save_profile()
         ));
+        editor_export.connect_clicked(glib::clone!(
+            #[strong]
+            app,
+            move |_| app.export_current_profile()
+        ));
         add_btn.connect_clicked(glib::clone!(
             #[strong]
             app,
@@ -588,7 +604,7 @@ fn page_content(children: &[&gtk::Widget]) -> gtk::ScrolledWindow {
         content.append(*c);
     }
     let clamp = adw::Clamp::builder()
-        .maximum_size(560)
+        .maximum_size(640)
         .child(&content)
         .build();
     gtk::ScrolledWindow::builder()
