@@ -11,7 +11,9 @@
 //!    short sleep. Boottime counts time spent suspended, so a 2 s sleep that took
 //!    far longer means the machine was asleep in between.
 //!  - Network change: a `NETLINK_ROUTE` socket subscribed to link / address /
-//!    route events.
+//!    route events. An event only counts when the kernel's route to the gateway
+//!    moved (device, source address, next hop or carrier), so a DHCP renewal of
+//!    the same address or a container's veth doesn't tear down a working tunnel.
 //!
 //! Kicks are rate-limited so a burst of netlink events (including the churn our own
 //! reconnect causes) collapses into one.
@@ -30,9 +32,14 @@ const RTM_NEWADDR: u16 = 20;
 const RTM_DELADDR: u16 = 21;
 const RTM_NEWROUTE: u16 = 24;
 const RTM_DELROUTE: u16 = 25;
-/// Route attributes: destination address and output interface index.
+const RTM_GETROUTE: u16 = 26;
+const NLMSG_ERROR: u16 = 2;
+const NLM_F_REQUEST: u16 = 1;
+/// Route attributes.
 const RTA_DST: u16 = 1;
 const RTA_OIF: u16 = 4;
+const RTA_GATEWAY: u16 = 5;
+const RTA_PREFSRC: u16 = 7;
 /// Link (`IFLA_IFNAME`) and address (`IFA_LABEL`) attribute carrying the device name.
 const ATTR_NAME: u16 = 3;
 
@@ -51,6 +58,13 @@ static GATEWAY: AtomicU32 = AtomicU32::new(0);
 
 pub fn watch_gateway(gw: std::net::Ipv4Addr) {
     GATEWAY.store(u32::from(gw), Ordering::SeqCst);
+}
+
+fn gateway() -> Option<std::net::Ipv4Addr> {
+    match GATEWAY.load(Ordering::SeqCst) {
+        0 => None,
+        g => Some(std::net::Ipv4Addr::from(g)),
+    }
 }
 
 /// Stop treating `name`'s own netlink events (its routes/address/link) as a network
@@ -125,12 +139,12 @@ fn boottime_secs() -> u64 {
     ts.tv_sec as u64
 }
 
-/// Fire a kick unless one fired within the cooldown. The write wakes any data loop
-/// blocked in `poll`.
-fn kick(reason: u8) {
+/// Fire a kick unless one fired within the cooldown (then `false`). The write wakes
+/// any data loop blocked in `poll`.
+fn kick(reason: u8) -> bool {
     let now = boottime_secs();
     if !cooldown_elapsed(LAST_KICK.load(Ordering::SeqCst), now, COOLDOWN_SECS) {
-        return;
+        return false;
     }
     LAST_KICK.store(now, Ordering::SeqCst);
     REASON.store(reason, Ordering::SeqCst);
@@ -140,6 +154,7 @@ fn kick(reason: u8) {
             unsafe { libc::write(fd, &one as *const u64 as *const libc::c_void, 8) };
         }
     }
+    true
 }
 
 fn cooldown_elapsed(last: u64, now: u64, cooldown: u64) -> bool {
@@ -157,7 +172,7 @@ fn spawn_resume_watcher() {
             std::thread::sleep(Duration::from_secs(2));
             let now = boottime_secs();
             if suspend_detected(now.saturating_sub(last), SUSPEND_GAP_SECS) {
-                kick(REASON_RESUME);
+                let _ = kick(REASON_RESUME);
             }
             last = now;
         }
@@ -191,6 +206,7 @@ fn spawn_netlink_watcher() {
             return;
         }
         let mut buf = [0u8; 8192];
+        let mut path = current_path();
         loop {
             let n = unsafe { libc::recv(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), 0) };
             if n <= 0 {
@@ -204,8 +220,15 @@ fn spawn_netlink_watcher() {
             // Only kick for a change outside unvpn's tunnels. Our own device's churn
             // (its routes, address and link on every reconnect) would loop us, and
             // another session's tunnel coming or going is no change of our path.
-            if batch_has_foreign_event(&buf[..n as usize]) {
-                kick(REASON_NETCHANGE);
+            if !batch_has_foreign_event(&buf[..n as usize]) {
+                continue;
+            }
+            // Unknown gateway or a failed lookup (`None`) counts as a move. The
+            // baseline only advances once a kick fired, so a move inside the
+            // cooldown is still caught by the next event.
+            let now = current_path();
+            if (now.is_none() || now != path) && kick(REASON_NETCHANGE) {
+                path = now;
             }
         }
         unsafe { libc::close(fd) };
@@ -221,17 +244,141 @@ fn batch_has_foreign_event(data: &[u8]) -> bool {
     if own == 0 {
         return !data.is_empty();
     }
-    let gw = match GATEWAY.load(Ordering::SeqCst) {
-        0 => None,
-        g => Some(std::net::Ipv4Addr::from(g)),
-    };
-    batch_has_foreign(data, gw, &|idx, name| {
+    batch_has_foreign(data, gateway(), &|idx, name| {
         idx == own
             || match name {
                 Some(n) => crate::tun::is_unvpn_device(n),
                 None => index_name(idx).is_some_and(|n| crate::tun::is_unvpn_device(&n)),
             }
     })
+}
+
+/// Where packets to the gateway leave the machine.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct GwPath {
+    oif: u32,
+    src: Option<std::net::Ipv4Addr>,
+    via: Option<std::net::Ipv4Addr>,
+    carrier: bool,
+}
+
+/// `Some(None)`: the gateway is unreachable. `None`: unknown gateway, or the kernel
+/// couldn't be asked.
+fn current_path() -> Option<Option<GwPath>> {
+    let mut path = route_to(gateway()?)?;
+    if let Some(p) = path.as_mut() {
+        p.carrier = has_carrier(p.oif);
+    }
+    Some(path)
+}
+
+/// The kernel's route to `gw`, as `ip route get` reports it.
+fn route_to(gw: std::net::Ipv4Addr) -> Option<Option<GwPath>> {
+    let fd = unsafe {
+        libc::socket(
+            libc::AF_NETLINK,
+            libc::SOCK_RAW | libc::SOCK_CLOEXEC,
+            libc::NETLINK_ROUTE,
+        )
+    };
+    if fd < 0 {
+        return None;
+    }
+    let tv = libc::timeval {
+        tv_sec: 1,
+        tv_usec: 0,
+    };
+    unsafe {
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_RCVTIMEO,
+            &tv as *const libc::timeval as *const libc::c_void,
+            std::mem::size_of::<libc::timeval>() as libc::socklen_t,
+        )
+    };
+    let req = route_get_request(gw);
+    let mut kernel: libc::sockaddr_nl = unsafe { std::mem::zeroed() };
+    kernel.nl_family = libc::AF_NETLINK as u16;
+    let sent = unsafe {
+        libc::sendto(
+            fd,
+            req.as_ptr() as *const libc::c_void,
+            req.len(),
+            0,
+            &kernel as *const libc::sockaddr_nl as *const libc::sockaddr,
+            std::mem::size_of::<libc::sockaddr_nl>() as libc::socklen_t,
+        )
+    };
+    let mut buf = [0u8; 4096];
+    let n = if sent == req.len() as isize {
+        unsafe { libc::recv(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), 0) }
+    } else {
+        -1
+    };
+    unsafe { libc::close(fd) };
+    if n <= 0 {
+        return None;
+    }
+    parse_route_reply(&buf[..n as usize])
+}
+
+fn route_get_request(gw: std::net::Ipv4Addr) -> Vec<u8> {
+    let mut m = Vec::with_capacity(36);
+    m.extend_from_slice(&36u32.to_ne_bytes());
+    m.extend_from_slice(&RTM_GETROUTE.to_ne_bytes());
+    m.extend_from_slice(&NLM_F_REQUEST.to_ne_bytes());
+    // seq, pid
+    m.extend_from_slice(&1u32.to_ne_bytes());
+    m.extend_from_slice(&0u32.to_ne_bytes());
+    // rtmsg: family, dst_len, src_len, tos, table, protocol, scope, type, flags.
+    m.extend_from_slice(&[libc::AF_INET as u8, 32, 0, 0, 0, 0, 0, 0]);
+    m.extend_from_slice(&0u32.to_ne_bytes());
+    m.extend_from_slice(&8u16.to_ne_bytes());
+    m.extend_from_slice(&RTA_DST.to_ne_bytes());
+    m.extend_from_slice(&gw.octets());
+    m
+}
+
+/// The route from a `RTM_GETROUTE` reply (carrier left `false`); `Some(None)` when
+/// the kernel answered with an error (no route).
+fn parse_route_reply(data: &[u8]) -> Option<Option<GwPath>> {
+    if data.len() < 16 {
+        return None;
+    }
+    let len = u32::from_ne_bytes([data[0], data[1], data[2], data[3]]) as usize;
+    let ty = u16::from_ne_bytes([data[4], data[5]]);
+    let payload = data.get(16..len)?;
+    match ty {
+        NLMSG_ERROR => {
+            let b = payload.get(..4)?;
+            (i32::from_ne_bytes([b[0], b[1], b[2], b[3]]) != 0).then_some(None)
+        }
+        RTM_NEWROUTE => {
+            let rtas = payload.get(12..)?;
+            let v4 = |t| {
+                attr(rtas, t)
+                    .and_then(|b| b.get(..4))
+                    .map(|b| std::net::Ipv4Addr::new(b[0], b[1], b[2], b[3]))
+            };
+            let oif = attr(rtas, RTA_OIF)
+                .and_then(|b| b.get(..4))
+                .map(|b| u32::from_ne_bytes([b[0], b[1], b[2], b[3]]))?;
+            Some(Some(GwPath {
+                oif,
+                src: v4(RTA_PREFSRC),
+                via: v4(RTA_GATEWAY),
+                carrier: false,
+            }))
+        }
+        _ => None,
+    }
+}
+
+fn has_carrier(idx: u32) -> bool {
+    index_name(idx)
+        .and_then(|n| std::fs::read_to_string(format!("/sys/class/net/{n}/carrier")).ok())
+        .is_some_and(|c| c.trim() == "1")
 }
 
 fn index_name(idx: u32) -> Option<String> {
@@ -495,6 +642,67 @@ mod tests {
             (std::net::Ipv4Addr::new(10, 0, 0, 0), 8),
             std::net::Ipv4Addr::new(11, 0, 0, 1)
         ));
+    }
+
+    fn rta(ty: u16, v: &[u8]) -> Vec<u8> {
+        let mut a = ((4 + v.len()) as u16).to_ne_bytes().to_vec();
+        a.extend_from_slice(&ty.to_ne_bytes());
+        a.extend_from_slice(v);
+        a
+    }
+
+    #[test]
+    fn route_get_request_asks_for_one_host() {
+        let r = route_get_request(std::net::Ipv4Addr::new(198, 51, 100, 7));
+        assert_eq!(r.len(), 36);
+        assert_eq!(u32::from_ne_bytes([r[0], r[1], r[2], r[3]]), 36);
+        assert_eq!(u16::from_ne_bytes([r[4], r[5]]), RTM_GETROUTE);
+        assert_eq!(&r[16..18], &[libc::AF_INET as u8, 32]);
+        assert_eq!(attr(&r[28..], RTA_DST), Some(&[198, 51, 100, 7][..]));
+    }
+
+    #[test]
+    fn route_reply_gives_the_path() {
+        let mut p = vec![0u8; 12];
+        p.extend(rta(RTA_OIF, &2u32.to_ne_bytes()));
+        p.extend(rta(RTA_PREFSRC, &[192, 0, 2, 10]));
+        p.extend(rta(RTA_GATEWAY, &[192, 0, 2, 1]));
+        assert_eq!(
+            parse_route_reply(&nlmsg(RTM_NEWROUTE, &p)),
+            Some(Some(GwPath {
+                oif: 2,
+                src: Some(std::net::Ipv4Addr::new(192, 0, 2, 10)),
+                via: Some(std::net::Ipv4Addr::new(192, 0, 2, 1)),
+                carrier: false,
+            }))
+        );
+        // Same route, different source address (new DHCP lease): a different path.
+        let mut q = vec![0u8; 12];
+        q.extend(rta(RTA_OIF, &2u32.to_ne_bytes()));
+        q.extend(rta(RTA_PREFSRC, &[192, 0, 2, 11]));
+        q.extend(rta(RTA_GATEWAY, &[192, 0, 2, 1]));
+        assert_ne!(
+            parse_route_reply(&nlmsg(RTM_NEWROUTE, &p)),
+            parse_route_reply(&nlmsg(RTM_NEWROUTE, &q))
+        );
+    }
+
+    #[test]
+    fn route_reply_error_means_unreachable() {
+        let mut p = (-libc::ENETUNREACH).to_ne_bytes().to_vec();
+        p.extend_from_slice(&[0u8; 16]);
+        assert_eq!(parse_route_reply(&nlmsg(NLMSG_ERROR, &p)), Some(None));
+        assert_eq!(parse_route_reply(&[0u8; 8]), None);
+        assert_eq!(parse_route_reply(&nlmsg(RTM_NEWROUTE, &[0u8; 12])), None);
+    }
+
+    #[test]
+    fn kernel_route_lookup_works() {
+        let lo = unsafe { libc::if_nametoindex(c"lo".as_ptr()) };
+        let p = route_to(std::net::Ipv4Addr::LOCALHOST)
+            .flatten()
+            .expect("route to 127.0.0.1");
+        assert_eq!(p.oif, lo);
     }
 
     #[test]
